@@ -13,7 +13,7 @@ on:
 jobs:
   test:
     name: Test
-    runs-on: self-hosted
+    runs-on: ubuntu:latest
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -25,6 +25,8 @@ jobs:
         run: go test ./...
       - name: Run Postgres integration tests
         run: go test -tags=integration ./internal/store
+      - name: Run bot app integration tests
+        run: go test -tags=integration ./cmd/time-table-bot
 
   push_to_registry:
     name: Push Docker image to Docker Hub
@@ -48,13 +50,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
         with:
-          images: t1mon1106/time-table-bot
+          images: b1gslick/time-table-bot
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }},t1mon1106/time-table-bot:latest
+          tags: ${{ steps.meta.outputs.tags }},b1gslick/time-table-bot:latest
           labels: ${{ steps.meta.outputs.labels }}

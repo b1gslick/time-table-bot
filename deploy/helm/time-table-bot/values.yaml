@@ -1,9 +1,9 @@
 replicaCount: 1
 
 image:
-  repository: t1mon1106/time-table-bot
-  tag: latest
-  pullPolicy: IfNotPresent
+  repository: b1gslick/time-table-bot
+  tag: main
+  pullPolicy: Always
 
 serviceAccount:
   create: false

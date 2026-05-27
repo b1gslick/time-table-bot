@@ -60,6 +60,10 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleSetProfile(ctx, msg.Chat.ID, current, text)
 	case "/setservices":
 		return b.handleSetServices(ctx, msg.Chat.ID, current, text)
+	case "/service_add", "/addservice":
+		return b.handleServiceAdd(ctx, msg.Chat.ID, current, parts)
+	case "/services":
+		return b.handleServices(ctx, msg.Chat.ID, current)
 	case "/sethours":
 		return b.handleSetHours(ctx, msg.Chat.ID, current, text)
 	case "/setduration":
@@ -207,6 +211,56 @@ func (b *Bot) handleSetServices(ctx context.Context, chatID int64, actor UserRec
 		return b.sendText(ctx, chatID, tr(actor.Language, "services_failed"))
 	}
 	return b.sendText(ctx, chatID, tr(actor.Language, "services_ok"))
+}
+
+func (b *Bot) handleServiceAdd(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 3 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_usage"))
+	}
+	duration, err := strconv.Atoi(parts[1])
+	if err != nil || duration <= 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
+	}
+	name := strings.TrimSpace(strings.Join(parts[2:], " "))
+	if name == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_usage"))
+	}
+	if err := b.store.AddService(ctx, actor.TelegramID, name, duration, ""); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "service_add_ok", name, duration))
+}
+
+func (b *Bot) handleServices(ctx context.Context, chatID int64, actor UserRecord) error {
+	services, err := b.store.ListServices(ctx, actor.TelegramID)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
+	}
+	if len(services) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_empty"))
+	}
+	var sb strings.Builder
+	sb.WriteString(tr(actor.Language, "services_header"))
+	for i, service := range services {
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		sb.WriteString(service.Name)
+		sb.WriteString(" - ")
+		sb.WriteString(strconv.Itoa(service.DurationMin))
+		sb.WriteString(" ")
+		sb.WriteString(tr(actor.Language, "minutes_short"))
+		if service.AdminName != "" {
+			sb.WriteString(" (@")
+			sb.WriteString(service.AdminName)
+			sb.WriteString(")")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(tr(actor.Language, "services_footer"))
+	return b.sendText(ctx, chatID, sb.String())
 }
 
 func (b *Bot) handleSetHours(ctx context.Context, chatID int64, actor UserRecord, text string) error {
@@ -367,7 +421,27 @@ func (b *Bot) handleBlock(ctx context.Context, chatID int64, actor UserRecord, p
 func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	var monthStart time.Time
 	var err error
-	if len(parts) >= 2 {
+	var serviceIndexes []int
+	for _, part := range parts[1:] {
+		if month, parseErr := time.Parse(monthLayout, part); parseErr == nil {
+			monthStart = month
+			continue
+		}
+		for _, token := range strings.Split(part, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			index, parseErr := strconv.Atoi(token)
+			if parseErr != nil || index <= 0 {
+				return b.sendText(ctx, chatID, tr(actor.Language, "free_usage"))
+			}
+			serviceIndexes = append(serviceIndexes, index)
+		}
+	}
+	if !monthStart.IsZero() {
+		// Parsed above.
+	} else if len(parts) >= 2 && len(serviceIndexes) == 0 {
 		monthStart, err = time.Parse(monthLayout, parts[1])
 		if err != nil {
 			return b.sendText(ctx, chatID, tr(actor.Language, "free_usage"))
@@ -375,6 +449,42 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	} else {
 		now := time.Now()
 		monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	}
+
+	if len(serviceIndexes) > 0 {
+		slots, err := b.store.ListFreeSlotsForServices(ctx, actor.TelegramID, serviceIndexes, monthStart)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+				return b.sendText(ctx, chatID, tr(actor.Language, "free_services_need_list"))
+			}
+			return b.sendText(ctx, chatID, tr(actor.Language, "free_failed"))
+		}
+		if len(slots) == 0 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "free_empty"))
+		}
+		var sb strings.Builder
+		sb.WriteString(tr(actor.Language, "free_services_header", slots[0].DurationMin, strings.Join(slots[0].ServiceNames, ", ")))
+		limit := len(slots)
+		if limit > 40 {
+			limit = 40
+		}
+		for i := 0; i < limit; i++ {
+			sb.WriteString(strconv.Itoa(i + 1))
+			sb.WriteString(". ")
+			sb.WriteString(slots[i].StartAt.Format(dateTimeLayout))
+			sb.WriteString(" - ")
+			sb.WriteString(slots[i].EndAt.Format("15:04"))
+			if slots[i].AdminName != "" {
+				sb.WriteString(" (@")
+				sb.WriteString(slots[i].AdminName)
+				sb.WriteString(")")
+			}
+			sb.WriteString("\n")
+		}
+		if len(slots) > limit {
+			sb.WriteString(tr(actor.Language, "free_more", len(slots)-limit))
+		}
+		return b.sendText(ctx, chatID, sb.String())
 	}
 
 	slots, err := b.store.ListFreeSlotsForMonth(ctx, actor.TelegramID, monthStart)

@@ -121,6 +121,67 @@ func (s *appStore) SetServicesText(ctx context.Context, adminTelegramID int64, t
 	return s.repo.SetAdminSetting(ctx, adminID, "services_text", strings.TrimSpace(text))
 }
 
+func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error {
+	if strings.TrimSpace(name) == "" || durationMin <= 0 {
+		return store.ErrInvalidArgument
+	}
+	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	_, err = s.repo.UpsertAdminService(ctx, domain.AdminService{
+		AdminUserID: adminID,
+		Name:        strings.TrimSpace(name),
+		DurationMin: durationMin,
+		IsActive:    true,
+	})
+	return err
+}
+
+func (s *appStore) ListServices(ctx context.Context, telegramID int64) ([]bot.ServiceView, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+SELECT svc.id, COALESCE(a.username, ''), svc.name, svc.description, svc.duration_min, svc.price_cents
+FROM admin_services svc
+JOIN users a ON a.id = svc.admin_user_id
+WHERE svc.is_active = TRUE
+`
+	args := []any{}
+	if isBotAdmin(actor.Role) {
+		query += " AND a.telegram_id = $1"
+		args = append(args, telegramID)
+	}
+	query += " ORDER BY a.username ASC, svc.created_at ASC;"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list services: %w", err)
+	}
+	defer rows.Close()
+
+	var services []bot.ServiceView
+	var ids []int64
+	for rows.Next() {
+		var item bot.ServiceView
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.Name, &item.Description, &item.DurationMin, &item.PriceCents); err != nil {
+			return nil, err
+		}
+		services = append(services, item)
+		ids = append(ids, item.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if telegramID > 0 {
+		_ = s.saveInt64sForUser(ctx, telegramID, "last_services", ids)
+	}
+	return services, nil
+}
+
 func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error {
 	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
@@ -262,7 +323,15 @@ func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID 
 	if err != nil {
 		return err
 	}
-	return s.repo.DeleteBooking(ctx, bookingID, "cancelled_by_admin")
+	if err := s.repo.DeleteBooking(ctx, bookingID, "cancelled_by_admin"); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+UPDATE bookings
+SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(), note = note || ';cancelled_by_admin'
+WHERE status = 'blocked' AND note = $1;
+`, coveredByBookingNote(bookingID))
+	return err
 }
 
 func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error {
@@ -326,8 +395,92 @@ ORDER BY s.start_at ASC;
 	}
 	if telegramID > 0 {
 		_ = s.saveTimesForUser(ctx, telegramID, "last_free_slots", slots)
+		_ = s.clearSettingForUser(ctx, telegramID, "last_availability_slots")
 	}
 	return slots, nil
+}
+
+func (s *appStore) ListFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, monthStart time.Time) ([]bot.AvailabilitySlot, error) {
+	if len(serviceIndexes) == 0 {
+		return nil, store.ErrInvalidArgument
+	}
+	serviceIDs, err := s.loadInt64sForUser(ctx, telegramID, "last_services")
+	if err != nil {
+		return nil, err
+	}
+	selectedIDs := make([]int64, 0, len(serviceIndexes))
+	for _, index := range serviceIndexes {
+		if index <= 0 || index > len(serviceIDs) {
+			return nil, store.ErrInvalidArgument
+		}
+		selectedIDs = append(selectedIDs, serviceIDs[index-1])
+	}
+	services, err := s.servicesByIDs(ctx, selectedIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(services) != len(selectedIDs) {
+		return nil, store.ErrNotFound
+	}
+	adminID := services[0].AdminUserID
+	totalDuration := 0
+	serviceNames := make([]string, 0, len(services))
+	for _, service := range services {
+		if service.AdminUserID != adminID {
+			return nil, store.ErrInvalidArgument
+		}
+		totalDuration += service.DurationMin
+		serviceNames = append(serviceNames, service.Name)
+	}
+
+	from := time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, s.loc)
+	to := from.AddDate(0, 1, 0)
+	baseSlots, err := s.availableBaseSlots(ctx, adminID, from, to)
+	if err != nil {
+		return nil, err
+	}
+
+	adminName, err := s.usernameByID(ctx, adminID)
+	if err != nil {
+		adminName = ""
+	}
+
+	var out []bot.AvailabilitySlot
+	var cache []availabilityCacheEntry
+	needed := time.Duration(totalDuration) * time.Minute
+	for i := range baseSlots {
+		start := baseSlots[i].StartAt
+		current := start
+		var covered []int64
+		for j := i; j < len(baseSlots) && current.Sub(start) < needed; j++ {
+			if !baseSlots[j].StartAt.Equal(current) {
+				break
+			}
+			covered = append(covered, baseSlots[j].ID)
+			current = baseSlots[j].EndAt
+		}
+		if current.Sub(start) < needed {
+			continue
+		}
+		end := start.Add(needed)
+		out = append(out, bot.AvailabilitySlot{
+			StartAt:      start.In(s.loc),
+			EndAt:        end.In(s.loc),
+			AdminName:    adminName,
+			ServiceNames: serviceNames,
+			DurationMin:  totalDuration,
+		})
+		cache = append(cache, availabilityCacheEntry{
+			Start:        start.In(s.loc).Format(time.RFC3339),
+			End:          end.In(s.loc).Format(time.RFC3339),
+			SlotIDs:      covered,
+			ServiceIDs:   selectedIDs,
+			ServiceNames: serviceNames,
+			DurationMin:  totalDuration,
+		})
+	}
+	_ = s.saveAvailabilityForUser(ctx, telegramID, cache)
+	return out, nil
 }
 
 func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {
@@ -336,7 +489,7 @@ func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from ti
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT b.id, COALESCE(a.username, ''), s.start_at, s.end_at, b.status, b.travel_minutes
+SELECT b.id, COALESCE(a.username, ''), s.start_at, s.end_at, b.status, b.travel_minutes, b.note
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 JOIN users a ON a.id = s.admin_user_id
@@ -354,11 +507,15 @@ LIMIT 20;
 	var times []time.Time
 	for rows.Next() {
 		var item bot.BookingView
-		if err := rows.Scan(&item.ID, &item.AdminName, &item.StartAt, &item.EndAt, &item.Status, &item.TravelMin); err != nil {
+		var note string
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.StartAt, &item.EndAt, &item.Status, &item.TravelMin, &note); err != nil {
 			return nil, err
 		}
 		item.StartAt = item.StartAt.In(s.loc)
 		item.EndAt = item.EndAt.In(s.loc)
+		if duration := bookingDurationFromNote(note); duration > 0 {
+			item.EndAt = item.StartAt.Add(time.Duration(duration) * time.Minute)
+		}
 		items = append(items, item)
 		times = append(times, item.StartAt)
 	}
@@ -389,6 +546,14 @@ func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time
 }
 
 func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error) {
+	availability, err := s.loadAvailabilityForUser(ctx, telegramID)
+	if err == nil && len(availability) > 0 {
+		if index <= 0 || index > len(availability) {
+			return time.Time{}, store.ErrInvalidArgument
+		}
+		return s.bookAvailability(ctx, telegramID, availability[index-1], travelMin)
+	}
+
 	slots, err := s.loadTimesForUser(ctx, telegramID, "last_free_slots")
 	if err != nil {
 		return time.Time{}, err
@@ -823,6 +988,264 @@ func (s *appStore) loadTimesForUser(ctx context.Context, telegramID int64, key s
 	return out, nil
 }
 
+type baseSlot struct {
+	ID      int64
+	StartAt time.Time
+	EndAt   time.Time
+}
+
+type availabilityCacheEntry struct {
+	Start        string   `json:"start"`
+	End          string   `json:"end"`
+	SlotIDs      []int64  `json:"slot_ids"`
+	ServiceIDs   []int64  `json:"service_ids"`
+	ServiceNames []string `json:"service_names"`
+	DurationMin  int      `json:"duration_min"`
+}
+
+type bookingServiceNote struct {
+	ServiceIDs   []int64  `json:"service_ids"`
+	ServiceNames []string `json:"service_names"`
+	DurationMin  int      `json:"duration_min"`
+}
+
+func (s *appStore) saveInt64sForUser(ctx context.Context, telegramID int64, key string, values []int64) error {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, userID, key, string(data))
+}
+
+func (s *appStore) loadInt64sForUser(ctx context.Context, telegramID int64, key string) ([]int64, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.stringSetting(ctx, userID, key, "")
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, store.ErrNotFound
+	}
+	var out []int64
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *appStore) saveAvailabilityForUser(ctx context.Context, telegramID int64, values []availabilityCacheEntry) error {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, userID, "last_availability_slots", string(data))
+}
+
+func (s *appStore) loadAvailabilityForUser(ctx context.Context, telegramID int64) ([]availabilityCacheEntry, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.stringSetting(ctx, userID, "last_availability_slots", "")
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, store.ErrNotFound
+	}
+	var out []availabilityCacheEntry
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *appStore) clearSettingForUser(ctx context.Context, telegramID int64, key string) error {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+DELETE FROM admin_settings
+WHERE admin_user_id = $1 AND key = $2;
+`, userID, key)
+	return err
+}
+
+func (s *appStore) servicesByIDs(ctx context.Context, ids []int64) ([]domain.AdminService, error) {
+	if len(ids) == 0 {
+		return nil, store.ErrInvalidArgument
+	}
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for i, id := range ids {
+		if id <= 0 {
+			return nil, store.ErrInvalidArgument
+		}
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, admin_user_id, name, description, duration_min, price_cents, is_active, created_at, updated_at
+FROM admin_services
+WHERE is_active = TRUE AND id IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY array_position(ARRAY[`+strings.Join(placeholders, ",")+`]::bigint[], id);
+`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.AdminService
+	for rows.Next() {
+		var service domain.AdminService
+		if err := rows.Scan(&service.ID, &service.AdminUserID, &service.Name, &service.Description, &service.DurationMin, &service.PriceCents, &service.IsActive, &service.CreatedAt, &service.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, service)
+	}
+	return out, rows.Err()
+}
+
+func (s *appStore) availableBaseSlots(ctx context.Context, adminID int64, from, to time.Time) ([]baseSlot, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.start_at, s.end_at
+FROM schedule_slots s
+LEFT JOIN bookings b ON b.slot_id = s.id AND b.status IN ('booked', 'blocked')
+WHERE s.admin_user_id = $1
+  AND s.status = 'open'
+  AND s.start_at >= $2
+  AND s.start_at < $3
+GROUP BY s.id
+HAVING COUNT(b.id) < s.capacity
+ORDER BY s.start_at ASC;
+`, adminID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []baseSlot
+	for rows.Next() {
+		var slot baseSlot
+		if err := rows.Scan(&slot.ID, &slot.StartAt, &slot.EndAt); err != nil {
+			return nil, err
+		}
+		slot.StartAt = slot.StartAt.In(s.loc)
+		slot.EndAt = slot.EndAt.In(s.loc)
+		out = append(out, slot)
+	}
+	return out, rows.Err()
+}
+
+func (s *appStore) usernameByID(ctx context.Context, userID int64) (string, error) {
+	var username string
+	err := s.db.QueryRowContext(ctx, `SELECT username FROM users WHERE id = $1`, userID).Scan(&username)
+	return username, err
+}
+
+func (s *appStore) bookAvailability(ctx context.Context, telegramID int64, entry availabilityCacheEntry, travelMin int) (time.Time, error) {
+	if len(entry.SlotIDs) == 0 {
+		return time.Time{}, store.ErrInvalidArgument
+	}
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	start, err := time.Parse(time.RFC3339, entry.Start)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, slotID := range entry.SlotIDs {
+		var capacity int
+		err := tx.QueryRowContext(ctx, `
+SELECT capacity
+FROM schedule_slots
+WHERE id = $1 AND status = 'open'
+FOR UPDATE;
+`, slotID).Scan(&capacity)
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, store.ErrSlotUnavailable
+		}
+		if err != nil {
+			return time.Time{}, err
+		}
+		var booked int
+		if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM bookings
+WHERE slot_id = $1 AND status IN ('booked', 'blocked');
+`, slotID).Scan(&booked); err != nil {
+			return time.Time{}, err
+		}
+		if booked >= capacity {
+			return time.Time{}, store.ErrSlotUnavailable
+		}
+	}
+
+	var serviceID any
+	if len(entry.ServiceIDs) > 0 {
+		serviceID = entry.ServiceIDs[0]
+	}
+	note, err := json.Marshal(bookingServiceNote{
+		ServiceIDs:   entry.ServiceIDs,
+		ServiceNames: entry.ServiceNames,
+		DurationMin:  entry.DurationMin,
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	var bookingID int64
+	if err := tx.QueryRowContext(ctx, `
+INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
+VALUES ($1, $2, $3, 'booked', $4, $5)
+RETURNING id;
+`, entry.SlotIDs[0], userID, serviceID, normalizeTravel(travelMin), string(note)).Scan(&bookingID); err != nil {
+		return time.Time{}, err
+	}
+	for _, slotID := range entry.SlotIDs[1:] {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
+VALUES ($1, NULL, NULL, 'blocked', $2, $3);
+`, slotID, normalizeTravel(travelMin), coveredByBookingNote(bookingID)); err != nil {
+			return time.Time{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, err
+	}
+	return start.In(s.loc), nil
+}
+
+func coveredByBookingNote(bookingID int64) string {
+	return fmt.Sprintf("covered_by_booking:%d", bookingID)
+}
+
+func bookingDurationFromNote(note string) int {
+	var parsed bookingServiceNote
+	if err := json.Unmarshal([]byte(note), &parsed); err != nil {
+		return 0
+	}
+	return parsed.DurationMin
+}
+
 func normalizeUsername(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "@")
@@ -838,6 +1261,10 @@ func normalizeTravel(minutes int) int {
 
 func validBotRole(role bot.Role) bool {
 	return role == bot.RoleUser || role == bot.RoleAdmin || role == bot.RoleSuperAdmin
+}
+
+func isBotAdmin(role bot.Role) bool {
+	return role == bot.RoleAdmin || role == bot.RoleSuperAdmin
 }
 
 func splitName(fullName string) (string, string) {

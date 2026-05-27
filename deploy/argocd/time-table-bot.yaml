@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: time-table-bot
+  namespace: argocd
+spec:
+  destination:
+    namespace: time-table-bot
+    server: "https://kubernetes.default.svc"
+  source:
+    path: deploy/helm/time-table-bot
+    repoURL: "https://github.com/b1gslick/time-table-bot"
+    targetRevision: HEAD
+    helm:
+      parameters:
+        - name: image.repository
+          value: b1gslick/time-table-bot
+        - name: image.tag
+          value: main
+        - name: image.pullPolicy
+          value: Always
+        - name: postgres.user
+          value: postgres
+        - name: postgres.db
+          value: time_table_bot
+        - name: postgres.persistence.hostPath.enabled
+          value: "true"
+        - name: postgres.persistence.hostPath.path
+          value: /mnt/pv-data/time-table-bot-postgres
+        - name: env.superAdminUsername
+          value: tim1106
+        - name: env.timezone
+          value: Europe/Nicosia
+  project: default
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 5s
+        maxDuration: 3m0s
+        factor: 2

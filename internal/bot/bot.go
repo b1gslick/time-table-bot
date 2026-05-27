@@ -54,6 +54,23 @@ type BookingView struct {
 	TravelMin int
 }
 
+type ServiceView struct {
+	ID          int64
+	AdminName   string
+	Name        string
+	Description string
+	DurationMin int
+	PriceCents  int64
+}
+
+type AvailabilitySlot struct {
+	StartAt      time.Time
+	EndAt        time.Time
+	AdminName    string
+	ServiceNames []string
+	DurationMin  int
+}
+
 type GenerateScheduleRequest struct {
 	Month       time.Time
 	Weekdays    []time.Weekday
@@ -77,6 +94,8 @@ type Store interface {
 
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
+	AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error
+	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
 	SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error
 	SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error
 	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
@@ -87,6 +106,7 @@ type Store interface {
 	BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error
 
 	ListFreeSlotsForMonth(ctx context.Context, telegramID int64, monthStart time.Time) ([]time.Time, error)
+	ListFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, monthStart time.Time) ([]AvailabilitySlot, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error
 	BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error)
