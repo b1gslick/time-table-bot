@@ -48,7 +48,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
         with:
-          images: b1gslick/time-table-bot
+          images: t1mon1106/time-table-bot
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -56,5 +56,5 @@ jobs:
           file: ./Dockerfile
           platforms: linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }},b1gslick/time-table-bot:latest
+          tags: ${{ steps.meta.outputs.tags }},t1mon1106/time-table-bot:latest
           labels: ${{ steps.meta.outputs.labels }}

@@ -91,5 +91,5 @@ Integration tests используют Testcontainers и поднимают ре
 Dockerfile не фиксирует `amd64`: при обычном `docker compose build` собирается нативная архитектура машины, а через Buildx CI собирает `linux/arm64` для Raspberry Pi:
 
 ```bash
-docker buildx build --platform linux/arm64 -t b1gslick/time-table-bot:latest .
+docker buildx build --platform linux/arm64 -t t1mon1106/time-table-bot:latest .
 ```
