@@ -32,6 +32,8 @@ DATABASE_URL='postgres://timetable:timetable@localhost:5432/timetable?sslmode=di
 
 ## Команды
 
+- Подробная инструкция для админа: [docs/admin-guide.md](docs/admin-guide.md).
+
 - Для клиента: `/schedule` показывает свободные места с номерами, `/book 3` записывает на номер 3, `/my` показывает свои записи, `/move 1 3` переносит запись 1 на свободное место 3, `/lang ru|en` меняет язык, `/settravel 30` задает время в пути.
 - Для админа: `/sethours пн-пт 10:00-18:00`, `/setduration 60`, `/generate 2026-06`, `/appoint @username YYYY-MM-DD HH:MM`, `/cancel @username YYYY-MM-DD HH:MM`, `/reschedule @username from_date from_time to_date to_time`, `/block YYYY-MM-DD HH:MM`.
 - Super admin: `/admin_add @username`, `/admin_remove @username`, `/role @username [user|admin|super_admin]`.
