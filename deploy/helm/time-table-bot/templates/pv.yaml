@@ -1,0 +1,21 @@
+{{- if .Values.postgres.persistence.hostPath.enabled }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "time-table-bot.fullname" . }}-postgres-pv
+  labels:
+    {{- include "time-table-bot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  capacity:
+    storage: {{ .Values.postgres.persistence.size | quote }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  {{- if .Values.postgres.persistence.storageClass }}
+  storageClassName: {{ .Values.postgres.persistence.storageClass | quote }}
+  {{- end }}
+  hostPath:
+    path: {{ .Values.postgres.persistence.hostPath.path | quote }}
+{{- end }}

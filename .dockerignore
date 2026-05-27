@@ -1,0 +1,13 @@
+.git
+.gitignore
+.codex
+.agents
+deploy
+README.md
+*.md
+.env
+.env.*
+bin
+dist
+tmp
+*.log

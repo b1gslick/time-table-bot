@@ -1,0 +1,52 @@
+replicaCount: 1
+
+image:
+  repository: timon/time-table-bot
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: false
+  automount: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+env:
+  superAdminUsername: tim1106
+  timezone: Europe/Nicosia
+  databaseUrl:
+    value: ""
+    secretName: ""
+    secretKey: ""
+  telegramBotToken:
+    secretName: time-table-bot-secrets
+    secretKey: telegram-bot-token
+
+postgres:
+  image: postgres:16
+  host: postgres
+  port: 5432
+  user: timetable
+  db: timetable
+  passwordSecret:
+    name: time-table-bot-secrets
+    key: postgres-password
+  persistence:
+    storageClass: local-storage
+    size: 20Gi
+    hostPath:
+      enabled: false
+      path: /mnt/pv-data/time-table-bot-postgres
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,23 @@
+Create secrets before install:
+
+  kubectl create secret generic {{ .Values.env.telegramBotToken.secretName }} \
+    --from-literal={{ .Values.env.telegramBotToken.secretKey }}='<telegram-bot-token>' \
+    --from-literal={{ .Values.postgres.passwordSecret.key }}='<postgres-password>'
+
+Optional: if you want to pass DATABASE_URL as a full secret value:
+
+  kubectl create secret generic my-db-url-secret \
+    --from-literal=database-url='postgres://user:pass@postgres:5432/db?sslmode=disable'
+
+  helm install {{ .Release.Name }} ./deploy/helm/time-table-bot \
+    --namespace {{ .Release.Namespace }} \
+    --set env.databaseUrl.secretName=my-db-url-secret \
+    --set env.databaseUrl.secretKey=database-url
+
+Install with generated DATABASE_URL from POSTGRES_*:
+
+  helm install {{ .Release.Name }} ./deploy/helm/time-table-bot --namespace {{ .Release.Namespace }}
+
+Render templates locally (without cluster access):
+
+  helm template {{ .Release.Name }} ./deploy/helm/time-table-bot --namespace {{ .Release.Namespace }}

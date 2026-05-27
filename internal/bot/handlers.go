@@ -1,0 +1,424 @@
+package bot
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"time-table-bot/internal/telegram"
+)
+
+const (
+	dateTimeLayout = "2006-01-02 15:04"
+	monthLayout    = "2006-01"
+)
+
+func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
+	user := UserRecord{
+		TelegramID: msg.From.ID,
+		Username:   normalizeUsername(msg.From.Username),
+		FirstName:  msg.From.FirstName,
+		LastName:   msg.From.LastName,
+		Role:       RoleUser,
+		TravelMin:  30,
+		Language:   LangRU,
+	}
+	if user.Username == superAdminUsername {
+		user.Role = RoleSuperAdmin
+	}
+
+	current, err := b.store.RegisterOrUpdateUser(ctx, user)
+	if err != nil {
+		return b.sendText(ctx, msg.Chat.ID, tr(LangRU, "register_failed"))
+	}
+
+	text := strings.TrimSpace(msg.Text)
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	cmd := strings.ToLower(parts[0])
+
+	switch cmd {
+	case "/start":
+		return b.handleStart(ctx, msg.Chat.ID, current)
+	case "/help":
+		return b.sendHelp(ctx, msg.Chat.ID, current)
+	case "/lang", "/language":
+		return b.handleLanguage(ctx, msg.Chat.ID, current, parts)
+	case "/role":
+		return b.handleRole(ctx, msg.Chat.ID, current, parts)
+	case "/admin_add":
+		return b.handleAdminAdd(ctx, msg.Chat.ID, current, parts)
+	case "/admin_remove":
+		return b.handleAdminRemove(ctx, msg.Chat.ID, current, parts)
+	case "/setprofile":
+		return b.handleSetProfile(ctx, msg.Chat.ID, current, text)
+	case "/setservices":
+		return b.handleSetServices(ctx, msg.Chat.ID, current, text)
+	case "/sethours":
+		return b.handleSetHours(ctx, msg.Chat.ID, current, text)
+	case "/setduration":
+		return b.handleSetDuration(ctx, msg.Chat.ID, current, parts)
+	case "/appoint":
+		return b.handleAppoint(ctx, msg.Chat.ID, current, parts)
+	case "/cancel":
+		return b.handleCancel(ctx, msg.Chat.ID, current, parts)
+	case "/reschedule":
+		return b.handleReschedule(ctx, msg.Chat.ID, current, parts)
+	case "/block":
+		return b.handleBlock(ctx, msg.Chat.ID, current, parts)
+	case "/free", "/schedule":
+		return b.handleFree(ctx, msg.Chat.ID, current, parts)
+	case "/book":
+		return b.handleBook(ctx, msg.Chat.ID, current, parts)
+	case "/move":
+		return b.handleMove(ctx, msg.Chat.ID, current, parts)
+	case "/settravel":
+		return b.handleSetTravel(ctx, msg.Chat.ID, current, parts)
+	default:
+		return b.sendText(ctx, msg.Chat.ID, tr(current.Language, "unknown_command"))
+	}
+}
+
+func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) error {
+	txt := tr(user.Language, "start", user.Username, roleLabel(user.Language, user.Role), user.Language)
+	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForRole(user.Role))
+}
+
+func (b *Bot) sendHelp(ctx context.Context, chatID int64, user UserRecord) error {
+	text := tr(user.Language, "help_base")
+	if user.Role == RoleAdmin || user.Role == RoleSuperAdmin {
+		text += "\nAdmin:\n" + tr(user.Language, "help_admin")
+	}
+	if user.Role == RoleSuperAdmin {
+		text += "\nSuper admin:\n" + tr(user.Language, "help_super")
+	}
+	return b.sendText(ctx, chatID, text)
+}
+
+func (b *Bot) handleAdminAdd(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if actor.Role != RoleSuperAdmin {
+		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_add"))
+	}
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_add_usage"))
+	}
+	username := normalizeUsername(parts[1])
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "bad_username"))
+	}
+	if err := b.store.SetUserRole(ctx, username, RoleAdmin); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_add_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "admin_added", username))
+}
+
+func (b *Bot) handleAdminRemove(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if actor.Role != RoleSuperAdmin {
+		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_remove"))
+	}
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_remove_usage"))
+	}
+	username := normalizeUsername(parts[1])
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "bad_username"))
+	}
+	if err := b.store.SetUserRole(ctx, username, RoleUser); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_remove_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "admin_removed", username))
+}
+
+func (b *Bot) handleRole(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if actor.Role != RoleSuperAdmin {
+		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_role"))
+	}
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "role_usage"))
+	}
+	username := normalizeUsername(parts[1])
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "bad_username"))
+	}
+	if len(parts) == 2 {
+		user, err := b.store.GetUserByUsername(ctx, username)
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "role_show_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(actor.Language, "role_current", username, user.Role))
+	}
+	role := Role(strings.ToLower(parts[2]))
+	if role != RoleUser && role != RoleAdmin && role != RoleSuperAdmin {
+		return b.sendText(ctx, chatID, tr(actor.Language, "role_bad"))
+	}
+	if err := b.store.SetUserRole(ctx, username, role); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "role_set_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "role_set", username, role))
+}
+
+func (b *Bot) handleLanguage(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "lang_usage"))
+	}
+	lang := strings.ToLower(parts[1])
+	if lang != LangRU && lang != LangEN {
+		return b.sendText(ctx, chatID, tr(actor.Language, "lang_usage"))
+	}
+	if err := b.store.SetUserLanguage(ctx, actor.TelegramID, lang); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "lang_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(lang, "lang_set"))
+}
+
+func (b *Bot) handleSetProfile(ctx context.Context, chatID int64, actor UserRecord, text string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(text, "/setprofile"))
+	if value == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "profile_usage"))
+	}
+	if err := b.store.SetProfileText(ctx, actor.TelegramID, value); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "profile_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "profile_ok"))
+}
+
+func (b *Bot) handleSetServices(ctx context.Context, chatID int64, actor UserRecord, text string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(text, "/setservices"))
+	if value == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_usage"))
+	}
+	if err := b.store.SetServicesText(ctx, actor.TelegramID, value); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "services_ok"))
+}
+
+func (b *Bot) handleSetHours(ctx context.Context, chatID int64, actor UserRecord, text string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(text, "/sethours"))
+	if value == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "hours_usage"))
+	}
+	if err := b.store.SetWorkHoursText(ctx, actor.TelegramID, value); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "hours_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "hours_ok"))
+}
+
+func (b *Bot) handleSetDuration(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "duration_usage"))
+	}
+	duration, err := strconv.Atoi(parts[1])
+	if err != nil || duration <= 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
+	}
+	if err := b.store.SetSessionDuration(ctx, actor.TelegramID, duration); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "duration_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "duration_ok"))
+}
+
+func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 4 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_usage"))
+	}
+	username := normalizeUsername(parts[1])
+	start, err := parseDateTime(parts[2], parts[3])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "datetime_bad_example"))
+	}
+	travel := 30
+	if len(parts) >= 5 {
+		travel, err = strconv.Atoi(parts[4])
+		if err != nil || travel < 0 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "travel_bad"))
+		}
+	}
+	if err := b.store.AddBookingByUsername(ctx, actor.TelegramID, username, start, travel); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ok", username))
+}
+
+func (b *Bot) handleCancel(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 4 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "cancel_usage"))
+	}
+	username := normalizeUsername(parts[1])
+	start, err := parseDateTime(parts[2], parts[3])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "datetime_bad"))
+	}
+	if err := b.store.DeleteBookingByUsername(ctx, actor.TelegramID, username, start); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "cancel_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "cancel_ok", username))
+}
+
+func (b *Bot) handleReschedule(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, "Команда доступна только админу.")
+	}
+	if len(parts) < 6 {
+		return b.sendText(ctx, chatID, "Формат: /reschedule @username YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM")
+	}
+	username := normalizeUsername(parts[1])
+	fromStart, err := parseDateTime(parts[2], parts[3])
+	if err != nil {
+		return b.sendText(ctx, chatID, "Некорректная исходная дата/время.")
+	}
+	toStart, err := parseDateTime(parts[4], parts[5])
+	if err != nil {
+		return b.sendText(ctx, chatID, "Некорректная новая дата/время.")
+	}
+	if err := b.store.RescheduleBookingByUsername(ctx, actor.TelegramID, username, fromStart, toStart); err != nil {
+		return b.sendText(ctx, chatID, "Не удалось перенести запись.")
+	}
+	return b.sendText(ctx, chatID, "Запись перенесена для @"+username)
+}
+
+func (b *Bot) handleBlock(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, "Команда доступна только админу.")
+	}
+	if len(parts) < 3 {
+		return b.sendText(ctx, chatID, "Формат: /block YYYY-MM-DD HH:MM")
+	}
+	start, err := parseDateTime(parts[1], parts[2])
+	if err != nil {
+		return b.sendText(ctx, chatID, "Некорректная дата/время.")
+	}
+	if err := b.store.BlockSlot(ctx, actor.TelegramID, start); err != nil {
+		return b.sendText(ctx, chatID, "Не удалось заблокировать слот.")
+	}
+	return b.sendText(ctx, chatID, "Слот заблокирован.")
+}
+
+func (b *Bot) handleFree(ctx context.Context, chatID int64, parts []string) error {
+	var monthStart time.Time
+	var err error
+	if len(parts) >= 2 {
+		monthStart, err = time.Parse(monthLayout, parts[1])
+		if err != nil {
+			return b.sendText(ctx, chatID, "Формат: /free или /free YYYY-MM")
+		}
+	} else {
+		now := time.Now()
+		monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	}
+
+	slots, err := b.store.ListFreeSlotsForMonth(ctx, monthStart)
+	if err != nil {
+		return b.sendText(ctx, chatID, "Не удалось получить свободные слоты.")
+	}
+	if len(slots) == 0 {
+		return b.sendText(ctx, chatID, "Свободных слотов нет.")
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Свободные слоты:\n")
+	limit := len(slots)
+	if limit > 40 {
+		limit = 40
+	}
+	for i := 0; i < limit; i++ {
+		sb.WriteString("- ")
+		sb.WriteString(slots[i].Format(dateTimeLayout))
+		sb.WriteString("\n")
+	}
+	if len(slots) > limit {
+		sb.WriteString(fmt.Sprintf("... и еще %d слотов", len(slots)-limit))
+	}
+
+	return b.sendText(ctx, chatID, sb.String())
+}
+
+func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 3 {
+		return b.sendText(ctx, chatID, "Формат: /book YYYY-MM-DD HH:MM [минуты_в_пути]")
+	}
+	start, err := parseDateTime(parts[1], parts[2])
+	if err != nil {
+		return b.sendText(ctx, chatID, "Некорректная дата/время.")
+	}
+	travel := actor.TravelMin
+	if travel <= 0 {
+		travel = 30
+	}
+	if len(parts) >= 4 {
+		travel, err = strconv.Atoi(parts[3])
+		if err != nil || travel < 0 {
+			return b.sendText(ctx, chatID, "Некорректные минуты в пути.")
+		}
+	}
+	if err := b.store.BookForUser(ctx, actor.TelegramID, start, travel); err != nil {
+		return b.sendText(ctx, chatID, "Не удалось выполнить запись.")
+	}
+	return b.sendText(ctx, chatID, fmt.Sprintf("Вы записаны на %s. Время в пути: %d мин.", start.Format(dateTimeLayout), travel))
+}
+
+func (b *Bot) handleSetTravel(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, "Формат: /settravel 30")
+	}
+	minutes, err := strconv.Atoi(parts[1])
+	if err != nil || minutes < 0 {
+		return b.sendText(ctx, chatID, "Введите целое число >= 0.")
+	}
+	if err := b.store.SetUserTravelDefault(ctx, actor.TelegramID, minutes); err != nil {
+		return b.sendText(ctx, chatID, "Не удалось сохранить значение.")
+	}
+	return b.sendText(ctx, chatID, fmt.Sprintf("Время в пути по умолчанию: %d мин.", minutes))
+}
+
+func (b *Bot) sendText(ctx context.Context, chatID int64, text string) error {
+	return b.tg.SendMessage(ctx, telegram.SendMessageRequest{
+		ChatID: chatID,
+		Text:   text,
+	})
+}
+
+func (b *Bot) sendTextWithKeyboard(ctx context.Context, chatID int64, text string, kb *telegram.ReplyMarkup) error {
+	return b.tg.SendMessage(ctx, telegram.SendMessageRequest{
+		ChatID:      chatID,
+		Text:        text,
+		ReplyMarkup: kb,
+	})
+}
+
+func normalizeUsername(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "@")
+	return strings.ToLower(value)
+}
+
+func parseDateTime(datePart, timePart string) (time.Time, error) {
+	return time.ParseInLocation(dateTimeLayout, datePart+" "+timePart, time.Local)
+}
+
+func isAdmin(role Role) bool {
+	return role == RoleAdmin || role == RoleSuperAdmin
+}
