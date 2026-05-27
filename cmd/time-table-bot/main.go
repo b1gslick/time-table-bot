@@ -30,6 +30,7 @@ func main() {
 	if err != nil {
 		logger.Fatalf("timezone error: %v", err)
 	}
+	time.Local = loc
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

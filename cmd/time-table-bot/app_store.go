@@ -76,6 +76,17 @@ ON CONFLICT(username) DO UPDATE SET
 	return nil
 }
 
+func (s *appStore) SetUserLanguage(ctx context.Context, telegramID int64, language string) error {
+	if language != bot.LangRU && language != bot.LangEN {
+		return store.ErrInvalidArgument
+	}
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, userID, "language", language)
+}
+
 func (s *appStore) SetUserTravelDefault(ctx context.Context, telegramID int64, travelMin int) error {
 	if travelMin < 0 {
 		return store.ErrInvalidArgument
@@ -237,6 +248,59 @@ func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time
 	return err
 }
 
+func (s *appStore) MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (bot.MoveResult, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return bot.MoveResult{}, err
+	}
+
+	var (
+		bookingID      int64
+		adminID        int64
+		adminChatID    sql.NullInt64
+		clientUsername string
+	)
+	err = s.db.QueryRowContext(ctx, `
+SELECT b.id, s.admin_user_id, a.telegram_id, u.username
+FROM bookings b
+JOIN schedule_slots s ON s.id = b.slot_id
+JOIN users u ON u.id = b.user_id
+JOIN users a ON a.id = s.admin_user_id
+WHERE b.user_id = $1
+  AND s.start_at = $2
+  AND b.status = 'booked'
+LIMIT 1;
+`, userID, fromStart.In(s.loc)).Scan(&bookingID, &adminID, &adminChatID, &clientUsername)
+	if errors.Is(err, sql.ErrNoRows) {
+		return bot.MoveResult{}, store.ErrNotFound
+	}
+	if err != nil {
+		return bot.MoveResult{}, err
+	}
+
+	newSlotID, err := s.availableSlotIDByAdminStart(ctx, adminID, toStart)
+	if err != nil {
+		return bot.MoveResult{}, err
+	}
+	if err := s.repo.RescheduleBooking(ctx, bookingID, newSlotID); err != nil {
+		return bot.MoveResult{}, err
+	}
+
+	result := bot.MoveResult{
+		Username:      clientUsername,
+		FromStart:     fromStart.In(s.loc),
+		ToStart:       toStart.In(s.loc),
+		AdminLanguage: bot.LangRU,
+	}
+	if adminChatID.Valid {
+		result.AdminChatID = adminChatID.Int64
+	}
+	if lang, err := s.stringSetting(ctx, adminID, "language", bot.LangRU); err == nil {
+		result.AdminLanguage = lang
+	}
+	return result, nil
+}
+
 func (s *appStore) PrepareUpcomingReminders(ctx context.Context, now time.Time) error {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT b.id, b.travel_minutes, s.start_at, u.telegram_id, u.username, a.telegram_id
@@ -366,6 +430,9 @@ func (s *appStore) userRecordFromDomain(ctx context.Context, u domain.User) (bot
 	if u.TelegramID != nil {
 		rec.TelegramID = *u.TelegramID
 	}
+	if lang, err := s.stringSetting(ctx, u.ID, "language", bot.LangRU); err == nil {
+		rec.Language = lang
+	}
 	travel, err := s.intSetting(ctx, u.ID, "travel_default", defaultTravelMinutes)
 	if err == nil {
 		rec.TravelMin = travel
@@ -457,6 +524,26 @@ LIMIT 1;
 	return id, err
 }
 
+func (s *appStore) availableSlotIDByAdminStart(ctx context.Context, adminID int64, start time.Time) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT s.id
+FROM schedule_slots s
+LEFT JOIN bookings b ON b.slot_id = s.id AND b.status IN ('booked', 'blocked')
+WHERE s.admin_user_id = $1
+  AND s.status = 'open'
+  AND s.start_at = $2
+GROUP BY s.id
+HAVING COUNT(b.id) < s.capacity
+ORDER BY s.start_at ASC
+LIMIT 1;
+`, adminID, start.In(s.loc)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, store.ErrSlotUnavailable
+	}
+	return id, err
+}
+
 func (s *appStore) bookingIDByAdminUserStart(ctx context.Context, adminTelegramID int64, username string, start time.Time) (int64, error) {
 	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
@@ -498,6 +585,26 @@ WHERE admin_user_id = $1 AND key = $2;
 		return fallback, err
 	}
 	return out, nil
+}
+
+func (s *appStore) stringSetting(ctx context.Context, userID int64, key, fallback string) (string, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `
+SELECT value
+FROM admin_settings
+WHERE admin_user_id = $1 AND key = $2;
+`, userID, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fallback, nil
+	}
+	if err != nil {
+		return fallback, err
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	return raw, nil
 }
 
 func normalizeUsername(value string) string {

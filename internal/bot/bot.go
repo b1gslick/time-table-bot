@@ -38,8 +38,11 @@ type Booking struct {
 }
 
 type MoveResult struct {
-	AdminChatID int64
-	AdminText   string
+	AdminChatID   int64
+	AdminLanguage string
+	Username      string
+	FromStart     time.Time
+	ToStart       time.Time
 }
 
 type Store interface {

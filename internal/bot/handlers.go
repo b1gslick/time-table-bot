@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -280,50 +279,50 @@ func (b *Bot) handleCancel(ctx context.Context, chatID int64, actor UserRecord, 
 
 func (b *Bot) handleReschedule(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if !isAdmin(actor.Role) {
-		return b.sendText(ctx, chatID, "Команда доступна только админу.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 6 {
-		return b.sendText(ctx, chatID, "Формат: /reschedule @username YYYY-MM-DD HH:MM YYYY-MM-DD HH:MM")
+		return b.sendText(ctx, chatID, tr(actor.Language, "reschedule_usage"))
 	}
 	username := normalizeUsername(parts[1])
 	fromStart, err := parseDateTime(parts[2], parts[3])
 	if err != nil {
-		return b.sendText(ctx, chatID, "Некорректная исходная дата/время.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "from_datetime_bad"))
 	}
 	toStart, err := parseDateTime(parts[4], parts[5])
 	if err != nil {
-		return b.sendText(ctx, chatID, "Некорректная новая дата/время.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "to_datetime_bad"))
 	}
 	if err := b.store.RescheduleBookingByUsername(ctx, actor.TelegramID, username, fromStart, toStart); err != nil {
-		return b.sendText(ctx, chatID, "Не удалось перенести запись.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "reschedule_failed"))
 	}
-	return b.sendText(ctx, chatID, "Запись перенесена для @"+username)
+	return b.sendText(ctx, chatID, tr(actor.Language, "reschedule_ok", username))
 }
 
 func (b *Bot) handleBlock(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if !isAdmin(actor.Role) {
-		return b.sendText(ctx, chatID, "Команда доступна только админу.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 3 {
-		return b.sendText(ctx, chatID, "Формат: /block YYYY-MM-DD HH:MM")
+		return b.sendText(ctx, chatID, tr(actor.Language, "block_usage"))
 	}
 	start, err := parseDateTime(parts[1], parts[2])
 	if err != nil {
-		return b.sendText(ctx, chatID, "Некорректная дата/время.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "datetime_bad"))
 	}
 	if err := b.store.BlockSlot(ctx, actor.TelegramID, start); err != nil {
-		return b.sendText(ctx, chatID, "Не удалось заблокировать слот.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "block_failed"))
 	}
-	return b.sendText(ctx, chatID, "Слот заблокирован.")
+	return b.sendText(ctx, chatID, tr(actor.Language, "block_ok"))
 }
 
-func (b *Bot) handleFree(ctx context.Context, chatID int64, parts []string) error {
+func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	var monthStart time.Time
 	var err error
 	if len(parts) >= 2 {
 		monthStart, err = time.Parse(monthLayout, parts[1])
 		if err != nil {
-			return b.sendText(ctx, chatID, "Формат: /free или /free YYYY-MM")
+			return b.sendText(ctx, chatID, tr(actor.Language, "free_usage"))
 		}
 	} else {
 		now := time.Now()
@@ -332,14 +331,14 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, parts []string) erro
 
 	slots, err := b.store.ListFreeSlotsForMonth(ctx, monthStart)
 	if err != nil {
-		return b.sendText(ctx, chatID, "Не удалось получить свободные слоты.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "free_failed"))
 	}
 	if len(slots) == 0 {
-		return b.sendText(ctx, chatID, "Свободных слотов нет.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "free_empty"))
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Свободные слоты:\n")
+	sb.WriteString(tr(actor.Language, "free_header"))
 	limit := len(slots)
 	if limit > 40 {
 		limit = 40
@@ -350,7 +349,7 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, parts []string) erro
 		sb.WriteString("\n")
 	}
 	if len(slots) > limit {
-		sb.WriteString(fmt.Sprintf("... и еще %d слотов", len(slots)-limit))
+		sb.WriteString(tr(actor.Language, "free_more", len(slots)-limit))
 	}
 
 	return b.sendText(ctx, chatID, sb.String())
@@ -358,11 +357,11 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, parts []string) erro
 
 func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if len(parts) < 3 {
-		return b.sendText(ctx, chatID, "Формат: /book YYYY-MM-DD HH:MM [минуты_в_пути]")
+		return b.sendText(ctx, chatID, tr(actor.Language, "book_usage"))
 	}
 	start, err := parseDateTime(parts[1], parts[2])
 	if err != nil {
-		return b.sendText(ctx, chatID, "Некорректная дата/время.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "datetime_bad"))
 	}
 	travel := actor.TravelMin
 	if travel <= 0 {
@@ -371,27 +370,52 @@ func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, pa
 	if len(parts) >= 4 {
 		travel, err = strconv.Atoi(parts[3])
 		if err != nil || travel < 0 {
-			return b.sendText(ctx, chatID, "Некорректные минуты в пути.")
+			return b.sendText(ctx, chatID, tr(actor.Language, "travel_bad"))
 		}
 	}
 	if err := b.store.BookForUser(ctx, actor.TelegramID, start, travel); err != nil {
-		return b.sendText(ctx, chatID, "Не удалось выполнить запись.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "book_failed"))
 	}
-	return b.sendText(ctx, chatID, fmt.Sprintf("Вы записаны на %s. Время в пути: %d мин.", start.Format(dateTimeLayout), travel))
+	return b.sendText(ctx, chatID, tr(actor.Language, "book_ok", start.Format(dateTimeLayout), travel))
+}
+
+func (b *Bot) handleMove(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 5 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "move_usage"))
+	}
+	fromStart, err := parseDateTime(parts[1], parts[2])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "from_datetime_bad"))
+	}
+	toStart, err := parseDateTime(parts[3], parts[4])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "to_datetime_bad"))
+	}
+	result, err := b.store.MoveBookingForUser(ctx, actor.TelegramID, fromStart, toStart)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "move_failed"))
+	}
+	if result.AdminChatID > 0 {
+		text := tr(result.AdminLanguage, "move_admin_notice", result.Username, result.FromStart.Format(dateTimeLayout), result.ToStart.Format(dateTimeLayout))
+		if err := b.sendText(ctx, result.AdminChatID, text); err != nil {
+			b.logger.Printf("notify admin about move failed: %v", err)
+		}
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "move_ok", fromStart.Format(dateTimeLayout), toStart.Format(dateTimeLayout)))
 }
 
 func (b *Bot) handleSetTravel(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if len(parts) < 2 {
-		return b.sendText(ctx, chatID, "Формат: /settravel 30")
+		return b.sendText(ctx, chatID, tr(actor.Language, "settravel_usage"))
 	}
 	minutes, err := strconv.Atoi(parts[1])
 	if err != nil || minutes < 0 {
-		return b.sendText(ctx, chatID, "Введите целое число >= 0.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "settravel_bad"))
 	}
 	if err := b.store.SetUserTravelDefault(ctx, actor.TelegramID, minutes); err != nil {
-		return b.sendText(ctx, chatID, "Не удалось сохранить значение.")
+		return b.sendText(ctx, chatID, tr(actor.Language, "settravel_failed"))
 	}
-	return b.sendText(ctx, chatID, fmt.Sprintf("Время в пути по умолчанию: %d мин.", minutes))
+	return b.sendText(ctx, chatID, tr(actor.Language, "settravel_ok", minutes))
 }
 
 func (b *Bot) sendText(ctx context.Context, chatID int64, text string) error {
