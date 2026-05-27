@@ -18,7 +18,7 @@ var (
 )
 
 type Repository interface {
-	BootstrapSuperAdmin(ctx context.Context) error
+	BootstrapSuperAdmin(ctx context.Context, username string) error
 	UpsertUser(ctx context.Context, telegramID int64, username, fullName string) (domain.User, error)
 	GetUserRole(ctx context.Context, telegramID int64) (domain.Role, error)
 

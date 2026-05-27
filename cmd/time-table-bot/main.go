@@ -49,7 +49,7 @@ func main() {
 	if err := repo.ApplySchema(ctx); err != nil {
 		logger.Fatalf("apply schema error: %v", err)
 	}
-	if err := repo.BootstrapSuperAdmin(ctx); err != nil {
+	if err := repo.BootstrapSuperAdmin(ctx, cfg.SuperAdminUsername); err != nil {
 		logger.Fatalf("bootstrap super admin error: %v", err)
 	}
 
@@ -59,7 +59,7 @@ func main() {
 	svc := scheduler.New(appStore, telegramSender{client: tg}, loc, logger)
 	go svc.Start(ctx)
 	go func() {
-		if err := bot.New(tg, appStore, logger).Run(ctx); err != nil && ctx.Err() == nil {
+		if err := bot.New(tg, appStore, logger, cfg.SuperAdminUsername).Run(ctx); err != nil && ctx.Err() == nil {
 			logger.Printf("bot stopped: %v", err)
 			cancel()
 		}

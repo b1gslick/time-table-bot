@@ -23,6 +23,8 @@ jobs:
           go-version-file: go.mod
       - name: Run tests
         run: go test ./...
+      - name: Run Postgres integration tests
+        run: go test -tags=integration ./internal/store
 
   push_to_registry:
     name: Push Docker image to Docker Hub
@@ -52,6 +54,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }},t1mon1106/time-table-bot:latest
           labels: ${{ steps.meta.outputs.labels }}

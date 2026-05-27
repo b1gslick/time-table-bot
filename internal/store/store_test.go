@@ -35,8 +35,8 @@ func TestBootstrapSuperAdmin_UsesNormalizedUsernameAndRole(t *testing.T) {
 	db := openRecorderDB(t, rec)
 	t.Cleanup(func() { _ = db.Close() })
 
-	s := NewSQLiteStore(db)
-	if err := s.BootstrapSuperAdmin(context.Background()); err != nil {
+	s := NewPostgresStore(db)
+	if err := s.BootstrapSuperAdmin(context.Background(), "  @Tim1106  "); err != nil {
 		t.Fatalf("BootstrapSuperAdmin error: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestApplySchema_ExecutesEmbeddedSchema(t *testing.T) {
 	db := openRecorderDB(t, rec)
 	t.Cleanup(func() { _ = db.Close() })
 
-	s := NewSQLiteStore(db)
+	s := NewPostgresStore(db)
 	if err := s.ApplySchema(context.Background()); err != nil {
 		t.Fatalf("ApplySchema error: %v", err)
 	}

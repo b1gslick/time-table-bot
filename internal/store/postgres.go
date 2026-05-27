@@ -23,11 +23,6 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
-// NewSQLiteStore is kept as a temporary compatibility alias for older tests/callers.
-func NewSQLiteStore(db *sql.DB) *PostgresStore {
-	return NewPostgresStore(db)
-}
-
 func (s *PostgresStore) ApplySchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
@@ -35,7 +30,11 @@ func (s *PostgresStore) ApplySchema(ctx context.Context) error {
 	return nil
 }
 
-func (s *PostgresStore) BootstrapSuperAdmin(ctx context.Context) error {
+func (s *PostgresStore) BootstrapSuperAdmin(ctx context.Context, username string) error {
+	username = normalizeUsername(username)
+	if username == "" {
+		username = DefaultSuperAdminUsername
+	}
 	const q = `
 INSERT INTO users (telegram_id, username, full_name, role)
 VALUES (NULL, $1, '', $2)
@@ -43,7 +42,7 @@ ON CONFLICT(username) DO UPDATE SET
 	role = EXCLUDED.role,
 	updated_at = NOW();
 `
-	if _, err := s.db.ExecContext(ctx, q, normalizeUsername(DefaultSuperAdminUsername), domain.RoleSuperAdmin); err != nil {
+	if _, err := s.db.ExecContext(ctx, q, username, domain.RoleSuperAdmin); err != nil {
 		return fmt.Errorf("bootstrap super admin: %w", err)
 	}
 	return nil

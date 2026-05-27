@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -125,7 +126,21 @@ func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, 
 	if err != nil {
 		return err
 	}
-	return s.repo.SetAdminSetting(ctx, adminID, "work_hours_text", strings.TrimSpace(text))
+	text = strings.TrimSpace(text)
+	if err := s.repo.SetAdminSetting(ctx, adminID, "work_hours_text", text); err != nil {
+		return err
+	}
+	parts := strings.Fields(text)
+	if len(parts) >= 2 {
+		if days, err := parseWeekdaysSetting(parts[0]); err == nil {
+			_ = s.repo.SetAdminSetting(ctx, adminID, "work_days", strings.Join(days, ","))
+		}
+		if start, end, err := parseDayRangeSetting(parts[1]); err == nil && end > start {
+			_ = s.repo.SetAdminSetting(ctx, adminID, "work_start", formatClockDuration(start))
+			_ = s.repo.SetAdminSetting(ctx, adminID, "work_end", formatClockDuration(end))
+		}
+	}
+	return nil
 }
 
 func (s *appStore) SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error {
@@ -137,6 +152,86 @@ func (s *appStore) SetSessionDuration(ctx context.Context, adminTelegramID int64
 		return err
 	}
 	return s.repo.SetAdminSetting(ctx, adminID, "session_duration", fmt.Sprintf("%d", durationMin))
+}
+
+func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, req bot.GenerateScheduleRequest) (bot.GenerateScheduleResult, error) {
+	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return bot.GenerateScheduleResult{}, err
+	}
+	if req.Month.IsZero() {
+		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+	}
+	if len(req.Weekdays) == 0 {
+		raw, err := s.stringSetting(ctx, adminID, "work_days", "")
+		if err != nil || raw == "" {
+			return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+		}
+		days, err := parseStoredWeekdays(raw)
+		if err != nil {
+			return bot.GenerateScheduleResult{}, err
+		}
+		req.Weekdays = days
+	}
+	if req.DayStart == 0 && req.DayEnd == 0 {
+		startRaw, err1 := s.stringSetting(ctx, adminID, "work_start", "")
+		endRaw, err2 := s.stringSetting(ctx, adminID, "work_end", "")
+		if err1 != nil || err2 != nil || startRaw == "" || endRaw == "" {
+			return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+		}
+		req.DayStart, err = parseClockSetting(startRaw)
+		if err != nil {
+			return bot.GenerateScheduleResult{}, err
+		}
+		req.DayEnd, err = parseClockSetting(endRaw)
+		if err != nil {
+			return bot.GenerateScheduleResult{}, err
+		}
+	}
+	if req.DurationMin <= 0 {
+		req.DurationMin, err = s.intSetting(ctx, adminID, "session_duration", defaultSessionDuration)
+		if err != nil || req.DurationMin <= 0 {
+			req.DurationMin = defaultSessionDuration
+		}
+	}
+	if req.DayEnd <= req.DayStart || req.DurationMin <= 0 {
+		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+	}
+
+	monthStart := time.Date(req.Month.Year(), req.Month.Month(), 1, 0, 0, 0, 0, s.loc)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+	daySet := map[time.Weekday]bool{}
+	for _, day := range req.Weekdays {
+		daySet[day] = true
+	}
+
+	var result bot.GenerateScheduleResult
+	for day := monthStart; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
+		if !daySet[day.Weekday()] {
+			continue
+		}
+		for offset := req.DayStart; offset+time.Duration(req.DurationMin)*time.Minute <= req.DayEnd; offset += time.Duration(req.DurationMin) * time.Minute {
+			start := day.Add(offset)
+			if _, err := s.slotIDByAdminStart(ctx, adminID, start); err == nil {
+				result.Skipped++
+				continue
+			} else if !errors.Is(err, store.ErrNotFound) {
+				return result, err
+			}
+			_, err := s.repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+				AdminUserID: adminID,
+				StartAt:     start,
+				EndAt:       start.Add(time.Duration(req.DurationMin) * time.Minute),
+				Capacity:    1,
+				Status:      domain.SlotStatusOpen,
+			})
+			if err != nil {
+				return result, err
+			}
+			result.Created++
+		}
+	}
+	return result, nil
 }
 
 func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time, travelMin int) error {
@@ -199,7 +294,7 @@ func (s *appStore) BlockSlot(ctx context.Context, adminTelegramID int64, start t
 	return err
 }
 
-func (s *appStore) ListFreeSlotsForMonth(ctx context.Context, monthStart time.Time) ([]time.Time, error) {
+func (s *appStore) ListFreeSlotsForMonth(ctx context.Context, telegramID int64, monthStart time.Time) ([]time.Time, error) {
 	from := time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, s.loc)
 	to := from.AddDate(0, 1, 0)
 	rows, err := s.db.QueryContext(ctx, `
@@ -226,7 +321,52 @@ ORDER BY s.start_at ASC;
 		}
 		slots = append(slots, start.In(s.loc))
 	}
-	return slots, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if telegramID > 0 {
+		_ = s.saveTimesForUser(ctx, telegramID, "last_free_slots", slots)
+	}
+	return slots, nil
+}
+
+func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT b.id, COALESCE(a.username, ''), s.start_at, s.end_at, b.status, b.travel_minutes
+FROM bookings b
+JOIN schedule_slots s ON s.id = b.slot_id
+JOIN users a ON a.id = s.admin_user_id
+WHERE b.user_id = $1
+  AND b.status = 'booked'
+  AND s.start_at >= $2
+ORDER BY s.start_at ASC
+LIMIT 20;
+`, userID, from.In(s.loc))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []bot.BookingView
+	var times []time.Time
+	for rows.Next() {
+		var item bot.BookingView
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.StartAt, &item.EndAt, &item.Status, &item.TravelMin); err != nil {
+			return nil, err
+		}
+		item.StartAt = item.StartAt.In(s.loc)
+		item.EndAt = item.EndAt.In(s.loc)
+		items = append(items, item)
+		times = append(times, item.StartAt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = s.saveTimesForUser(ctx, telegramID, "last_my_bookings", times)
+	return items, nil
 }
 
 func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error {
@@ -246,6 +386,18 @@ func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time
 		Note:          "created_by_user",
 	})
 	return err
+}
+
+func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error) {
+	slots, err := s.loadTimesForUser(ctx, telegramID, "last_free_slots")
+	if err != nil {
+		return time.Time{}, err
+	}
+	if index <= 0 || index > len(slots) {
+		return time.Time{}, store.ErrInvalidArgument
+	}
+	start := slots[index-1]
+	return start, s.BookForUser(ctx, telegramID, start, travelMin)
 }
 
 func (s *appStore) MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (bot.MoveResult, error) {
@@ -301,13 +453,32 @@ LIMIT 1;
 	return result, nil
 }
 
+func (s *appStore) MoveBookingForUserByIndex(ctx context.Context, telegramID int64, bookingIndex, slotIndex int) (bot.MoveResult, error) {
+	bookings, err := s.loadTimesForUser(ctx, telegramID, "last_my_bookings")
+	if err != nil {
+		return bot.MoveResult{}, err
+	}
+	slots, err := s.loadTimesForUser(ctx, telegramID, "last_free_slots")
+	if err != nil {
+		return bot.MoveResult{}, err
+	}
+	if bookingIndex <= 0 || bookingIndex > len(bookings) || slotIndex <= 0 || slotIndex > len(slots) {
+		return bot.MoveResult{}, store.ErrInvalidArgument
+	}
+	return s.MoveBookingForUser(ctx, telegramID, bookings[bookingIndex-1], slots[slotIndex-1])
+}
+
 func (s *appStore) PrepareUpcomingReminders(ctx context.Context, now time.Time) error {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT b.id, b.travel_minutes, s.start_at, u.telegram_id, u.username, a.telegram_id
+SELECT b.id, b.travel_minutes, s.start_at, u.telegram_id, u.username, a.telegram_id,
+       COALESCE(ul.value, 'ru') AS user_language,
+       COALESCE(al.value, 'ru') AS admin_language
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 LEFT JOIN users u ON u.id = b.user_id
 JOIN users a ON a.id = s.admin_user_id
+LEFT JOIN admin_settings ul ON ul.admin_user_id = u.id AND ul.key = 'language'
+LEFT JOIN admin_settings al ON al.admin_user_id = a.id AND al.key = 'language'
 WHERE b.status = 'booked'
   AND s.start_at >= $1
   AND s.start_at < $2;
@@ -325,8 +496,10 @@ WHERE b.status = 'booked'
 			userChatID    sql.NullInt64
 			username      sql.NullString
 			adminChatID   sql.NullInt64
+			userLanguage  string
+			adminLanguage string
 		)
-		if err := rows.Scan(&bookingID, &travelMinutes, &startAt, &userChatID, &username, &adminChatID); err != nil {
+		if err := rows.Scan(&bookingID, &travelMinutes, &startAt, &userChatID, &username, &adminChatID, &userLanguage, &adminLanguage); err != nil {
 			return err
 		}
 		startAt = startAt.In(s.loc)
@@ -336,15 +509,15 @@ WHERE b.status = 'booked'
 		}
 
 		if userChatID.Valid {
-			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_before", "user", startAt.Add(-24*time.Hour), fmt.Sprintf("Напоминание: у вас запись %s.", startAt.Format("02.01.2006 15:04"))); err != nil {
+			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_before", "user", startAt.Add(-24*time.Hour), userReminderDayBefore(userLanguage, startAt)); err != nil {
 				return err
 			}
-			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_of_user", "user", startAt.Add(-time.Duration(normalizeTravel(travelMinutes)+10)*time.Minute), fmt.Sprintf("Скоро запись в %s. Учтите время в пути.", startAt.Format("15:04"))); err != nil {
+			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_of_user", "user", startAt.Add(-time.Duration(normalizeTravel(travelMinutes)+10)*time.Minute), userReminderTravel(userLanguage, startAt)); err != nil {
 				return err
 			}
 		}
 		if adminChatID.Valid {
-			if err := s.upsertReminder(ctx, bookingID, adminChatID.Int64, "day_before", "admin", startAt.Add(-24*time.Hour), fmt.Sprintf("Напоминание: завтра запись у клиента %s в %s.", userLabel, startAt.Format("02.01.2006 15:04"))); err != nil {
+			if err := s.upsertReminder(ctx, bookingID, adminChatID.Int64, "day_before", "admin", startAt.Add(-24*time.Hour), adminReminderDayBefore(adminLanguage, userLabel, startAt)); err != nil {
 				return err
 			}
 		}
@@ -607,6 +780,49 @@ WHERE admin_user_id = $1 AND key = $2;
 	return raw, nil
 }
 
+func (s *appStore) saveTimesForUser(ctx context.Context, telegramID int64, key string, values []time.Time) error {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	raw := make([]string, 0, len(values))
+	for _, value := range values {
+		raw = append(raw, value.In(s.loc).Format(time.RFC3339))
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, userID, key, string(data))
+}
+
+func (s *appStore) loadTimesForUser(ctx context.Context, telegramID int64, key string) ([]time.Time, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := s.stringSetting(ctx, userID, key, "")
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, store.ErrNotFound
+	}
+	var encoded []string
+	if err := json.Unmarshal([]byte(raw), &encoded); err != nil {
+		return nil, err
+	}
+	out := make([]time.Time, 0, len(encoded))
+	for _, item := range encoded {
+		parsed, err := time.Parse(time.RFC3339, item)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, parsed.In(s.loc))
+	}
+	return out, nil
+}
+
 func normalizeUsername(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "@")
@@ -633,4 +849,151 @@ func splitName(fullName string) (string, string) {
 		return parts[0], ""
 	}
 	return parts[0], strings.Join(parts[1:], " ")
+}
+
+func parseWeekdaysSetting(raw string) ([]string, error) {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, " ", "")
+	raw = strings.ReplaceAll(raw, "пн", "mon")
+	raw = strings.ReplaceAll(raw, "вт", "tue")
+	raw = strings.ReplaceAll(raw, "ср", "wed")
+	raw = strings.ReplaceAll(raw, "чт", "thu")
+	raw = strings.ReplaceAll(raw, "пт", "fri")
+	raw = strings.ReplaceAll(raw, "сб", "sat")
+	raw = strings.ReplaceAll(raw, "вс", "sun")
+	if strings.Contains(raw, "-") && !strings.Contains(raw, ",") {
+		parts := strings.Split(raw, "-")
+		if len(parts) != 2 {
+			return nil, store.ErrInvalidArgument
+		}
+		start, ok := weekdayName(parts[0])
+		if !ok {
+			return nil, store.ErrInvalidArgument
+		}
+		end, ok := weekdayName(parts[1])
+		if !ok {
+			return nil, store.ErrInvalidArgument
+		}
+		var out []string
+		for day := start; ; day = (day + 1) % 7 {
+			out = append(out, weekdayString(day))
+			if day == end {
+				return out, nil
+			}
+		}
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		day, ok := weekdayName(part)
+		if !ok {
+			return nil, store.ErrInvalidArgument
+		}
+		out = append(out, weekdayString(day))
+	}
+	return out, nil
+}
+
+func parseStoredWeekdays(raw string) ([]time.Weekday, error) {
+	var out []time.Weekday
+	for _, part := range strings.Split(raw, ",") {
+		day, ok := weekdayName(part)
+		if !ok {
+			return nil, store.ErrInvalidArgument
+		}
+		out = append(out, day)
+	}
+	return out, nil
+}
+
+func weekdayName(raw string) (time.Weekday, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "mon", "monday", "1":
+		return time.Monday, true
+	case "tue", "tuesday", "2":
+		return time.Tuesday, true
+	case "wed", "wednesday", "3":
+		return time.Wednesday, true
+	case "thu", "thursday", "4":
+		return time.Thursday, true
+	case "fri", "friday", "5":
+		return time.Friday, true
+	case "sat", "saturday", "6":
+		return time.Saturday, true
+	case "sun", "sunday", "7":
+		return time.Sunday, true
+	default:
+		return time.Sunday, false
+	}
+}
+
+func weekdayString(day time.Weekday) string {
+	switch day {
+	case time.Monday:
+		return "mon"
+	case time.Tuesday:
+		return "tue"
+	case time.Wednesday:
+		return "wed"
+	case time.Thursday:
+		return "thu"
+	case time.Friday:
+		return "fri"
+	case time.Saturday:
+		return "sat"
+	default:
+		return "sun"
+	}
+}
+
+func parseDayRangeSetting(raw string) (time.Duration, time.Duration, error) {
+	parts := strings.Split(strings.TrimSpace(raw), "-")
+	if len(parts) != 2 {
+		return 0, 0, store.ErrInvalidArgument
+	}
+	start, err := parseClockSetting(parts[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	end, err := parseClockSetting(parts[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	return start, end, nil
+}
+
+func parseClockSetting(raw string) (time.Duration, error) {
+	var hour, minute int
+	if _, err := fmt.Sscanf(strings.TrimSpace(raw), "%d:%d", &hour, &minute); err != nil {
+		return 0, err
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, store.ErrInvalidArgument
+	}
+	return time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute, nil
+}
+
+func formatClockDuration(value time.Duration) string {
+	totalMinutes := int(value / time.Minute)
+	return fmt.Sprintf("%02d:%02d", totalMinutes/60, totalMinutes%60)
+}
+
+func userReminderDayBefore(language string, startAt time.Time) string {
+	if language == bot.LangEN {
+		return fmt.Sprintf("Reminder: you have a booking on %s.", startAt.Format("02.01.2006 15:04"))
+	}
+	return fmt.Sprintf("Напоминание: у вас запись %s.", startAt.Format("02.01.2006 15:04"))
+}
+
+func userReminderTravel(language string, startAt time.Time) string {
+	if language == bot.LangEN {
+		return fmt.Sprintf("Your booking starts at %s. Consider your travel time.", startAt.Format("15:04"))
+	}
+	return fmt.Sprintf("Скоро запись в %s. Учтите время в пути.", startAt.Format("15:04"))
+}
+
+func adminReminderDayBefore(language, userLabel string, startAt time.Time) string {
+	if language == bot.LangEN {
+		return fmt.Sprintf("Reminder: tomorrow client %s has a booking at %s.", userLabel, startAt.Format("02.01.2006 15:04"))
+	}
+	return fmt.Sprintf("Напоминание: завтра запись у клиента %s в %s.", userLabel, startAt.Format("02.01.2006 15:04"))
 }

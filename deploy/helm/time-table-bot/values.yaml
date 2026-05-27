@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: timon/time-table-bot
+  repository: t1mon1106/time-table-bot
   tag: latest
   pullPolicy: IfNotPresent
 

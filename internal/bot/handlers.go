@@ -2,10 +2,12 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
 
+	"time-table-bot/internal/store"
 	"time-table-bot/internal/telegram"
 )
 
@@ -24,7 +26,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 		TravelMin:  30,
 		Language:   LangRU,
 	}
-	if user.Username == superAdminUsername {
+	if user.Username == b.superAdminUsername {
 		user.Role = RoleSuperAdmin
 	}
 
@@ -62,6 +64,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleSetHours(ctx, msg.Chat.ID, current, text)
 	case "/setduration":
 		return b.handleSetDuration(ctx, msg.Chat.ID, current, parts)
+	case "/generate", "/gen":
+		return b.handleGenerate(ctx, msg.Chat.ID, current, parts)
 	case "/appoint":
 		return b.handleAppoint(ctx, msg.Chat.ID, current, parts)
 	case "/cancel":
@@ -72,6 +76,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleBlock(ctx, msg.Chat.ID, current, parts)
 	case "/free", "/schedule":
 		return b.handleFree(ctx, msg.Chat.ID, current, parts)
+	case "/my":
+		return b.handleMy(ctx, msg.Chat.ID, current)
 	case "/book":
 		return b.handleBook(ctx, msg.Chat.ID, current, parts)
 	case "/move":
@@ -234,6 +240,48 @@ func (b *Bot) handleSetDuration(ctx context.Context, chatID int64, actor UserRec
 	return b.sendText(ctx, chatID, tr(actor.Language, "duration_ok"))
 }
 
+func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
+	}
+	monthStart, err := time.Parse(monthLayout, parts[1])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
+	}
+	req := GenerateScheduleRequest{Month: monthStart}
+	if len(parts) >= 4 {
+		days, err := parseWeekdays(parts[2])
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_bad_days"))
+		}
+		start, end, err := parseDayRange(parts[3])
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_bad_time"))
+		}
+		if end <= start {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_bad_range"))
+		}
+		req.Weekdays = days
+		req.DayStart = start
+		req.DayEnd = end
+	}
+	if len(parts) >= 5 {
+		duration, err := strconv.Atoi(parts[4])
+		if err != nil || duration <= 0 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
+		}
+		req.DurationMin = duration
+	}
+	result, err := b.store.GenerateSchedule(ctx, actor.TelegramID, req)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "generate_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "generate_ok", result.Created, result.Skipped))
+}
+
 func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
@@ -329,7 +377,7 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 		monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 	}
 
-	slots, err := b.store.ListFreeSlotsForMonth(ctx, monthStart)
+	slots, err := b.store.ListFreeSlotsForMonth(ctx, actor.TelegramID, monthStart)
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "free_failed"))
 	}
@@ -344,7 +392,8 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 		limit = 40
 	}
 	for i := 0; i < limit; i++ {
-		sb.WriteString("- ")
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
 		sb.WriteString(slots[i].Format(dateTimeLayout))
 		sb.WriteString("\n")
 	}
@@ -355,17 +404,58 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	return b.sendText(ctx, chatID, sb.String())
 }
 
-func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
-	if len(parts) < 3 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "book_usage"))
-	}
-	start, err := parseDateTime(parts[1], parts[2])
+func (b *Bot) handleMy(ctx context.Context, chatID int64, actor UserRecord) error {
+	items, err := b.store.ListMyBookings(ctx, actor.TelegramID, time.Now())
 	if err != nil {
-		return b.sendText(ctx, chatID, tr(actor.Language, "datetime_bad"))
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_failed"))
+	}
+	if len(items) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_empty"))
+	}
+	var sb strings.Builder
+	sb.WriteString(tr(actor.Language, "my_header"))
+	limit := len(items)
+	if limit > 20 {
+		limit = 20
+	}
+	for i := 0; i < limit; i++ {
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		sb.WriteString(items[i].StartAt.Format(dateTimeLayout))
+		if items[i].AdminName != "" {
+			sb.WriteString(" - ")
+			sb.WriteString(items[i].AdminName)
+		}
+		sb.WriteString("\n")
+	}
+	return b.sendText(ctx, chatID, sb.String())
+}
+
+func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "book_usage"))
 	}
 	travel := actor.TravelMin
 	if travel <= 0 {
 		travel = 30
+	}
+	if len(parts) == 2 {
+		index, err := strconv.Atoi(parts[1])
+		if err != nil || index <= 0 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "book_usage"))
+		}
+		start, err := b.store.BookForUserByIndex(ctx, actor.TelegramID, index, travel)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+				return b.sendText(ctx, chatID, tr(actor.Language, "book_need_schedule"))
+			}
+			return b.sendText(ctx, chatID, tr(actor.Language, "book_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(actor.Language, "book_ok", start.Format(dateTimeLayout), travel))
+	}
+	start, err := parseDateTime(parts[1], parts[2])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "datetime_bad"))
 	}
 	if len(parts) >= 4 {
 		travel, err = strconv.Atoi(parts[3])
@@ -380,6 +470,25 @@ func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, pa
 }
 
 func (b *Bot) handleMove(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 3 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "move_usage"))
+	}
+	if len(parts) == 3 {
+		bookingIndex, err1 := strconv.Atoi(parts[1])
+		slotIndex, err2 := strconv.Atoi(parts[2])
+		if err1 != nil || err2 != nil || bookingIndex <= 0 || slotIndex <= 0 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "move_usage"))
+		}
+		result, err := b.store.MoveBookingForUserByIndex(ctx, actor.TelegramID, bookingIndex, slotIndex)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+				return b.sendText(ctx, chatID, tr(actor.Language, "move_need_lists"))
+			}
+			return b.sendText(ctx, chatID, tr(actor.Language, "move_failed"))
+		}
+		b.notifyMove(ctx, result)
+		return b.sendText(ctx, chatID, tr(actor.Language, "move_ok", result.FromStart.Format(dateTimeLayout), result.ToStart.Format(dateTimeLayout)))
+	}
 	if len(parts) < 5 {
 		return b.sendText(ctx, chatID, tr(actor.Language, "move_usage"))
 	}
@@ -395,13 +504,17 @@ func (b *Bot) handleMove(ctx context.Context, chatID int64, actor UserRecord, pa
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "move_failed"))
 	}
+	b.notifyMove(ctx, result)
+	return b.sendText(ctx, chatID, tr(actor.Language, "move_ok", fromStart.Format(dateTimeLayout), toStart.Format(dateTimeLayout)))
+}
+
+func (b *Bot) notifyMove(ctx context.Context, result MoveResult) {
 	if result.AdminChatID > 0 {
 		text := tr(result.AdminLanguage, "move_admin_notice", result.Username, result.FromStart.Format(dateTimeLayout), result.ToStart.Format(dateTimeLayout))
 		if err := b.sendText(ctx, result.AdminChatID, text); err != nil {
 			b.logger.Printf("notify admin about move failed: %v", err)
 		}
 	}
-	return b.sendText(ctx, chatID, tr(actor.Language, "move_ok", fromStart.Format(dateTimeLayout), toStart.Format(dateTimeLayout)))
 }
 
 func (b *Bot) handleSetTravel(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {

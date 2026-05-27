@@ -2,8 +2,6 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-timetable}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-timetable}
@@ -23,10 +21,8 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://timetable:timetable@postgres:5432/timetable?sslmode=disable}
+      DATABASE_URL: postgres://${POSTGRES_USER:-timetable}:${POSTGRES_PASSWORD:-timetable}@postgres:5432/${POSTGRES_DB:-timetable}?sslmode=disable
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       SUPER_ADMIN_USERNAME: ${SUPER_ADMIN_USERNAME:-tim1106}
       TIMEZONE: ${TIMEZONE:-Europe/Nicosia}

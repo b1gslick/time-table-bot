@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS schedule_slots (
 
 CREATE INDEX IF NOT EXISTS idx_schedule_slots_admin_time
     ON schedule_slots(admin_user_id, start_at, end_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_slots_admin_start_unique
+    ON schedule_slots(admin_user_id, start_at);
 CREATE INDEX IF NOT EXISTS idx_schedule_slots_status
     ON schedule_slots(status);
 

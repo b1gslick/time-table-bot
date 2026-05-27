@@ -10,7 +10,7 @@ import (
 	"time-table-bot/internal/telegram"
 )
 
-const superAdminUsername = "tim1106"
+const defaultSuperAdminUsername = "tim1106"
 
 type Role string
 
@@ -45,6 +45,28 @@ type MoveResult struct {
 	ToStart       time.Time
 }
 
+type BookingView struct {
+	ID        int64
+	AdminName string
+	StartAt   time.Time
+	EndAt     time.Time
+	Status    string
+	TravelMin int
+}
+
+type GenerateScheduleRequest struct {
+	Month       time.Time
+	Weekdays    []time.Weekday
+	DayStart    time.Duration
+	DayEnd      time.Duration
+	DurationMin int
+}
+
+type GenerateScheduleResult struct {
+	Created int
+	Skipped int
+}
+
 type Store interface {
 	RegisterOrUpdateUser(ctx context.Context, user UserRecord) (UserRecord, error)
 	GetUserByTelegramID(ctx context.Context, telegramID int64) (UserRecord, error)
@@ -57,28 +79,42 @@ type Store interface {
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
 	SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error
 	SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error
+	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
 
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time, travelMin int) error
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
 	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error
 	BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error
 
-	ListFreeSlotsForMonth(ctx context.Context, monthStart time.Time) ([]time.Time, error)
+	ListFreeSlotsForMonth(ctx context.Context, telegramID int64, monthStart time.Time) ([]time.Time, error)
+	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error
+	BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error)
 	MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (MoveResult, error)
+	MoveBookingForUserByIndex(ctx context.Context, telegramID int64, bookingIndex, slotIndex int) (MoveResult, error)
 }
 
 type Bot struct {
-	tg     *telegram.Client
-	store  Store
-	logger *log.Logger
+	tg                 *telegram.Client
+	store              Store
+	logger             *log.Logger
+	superAdminUsername string
 }
 
-func New(tg *telegram.Client, store Store, logger *log.Logger) *Bot {
+func New(tg *telegram.Client, store Store, logger *log.Logger, superAdminUsername ...string) *Bot {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Bot{tg: tg, store: store, logger: logger}
+	username := defaultSuperAdminUsername
+	if len(superAdminUsername) > 0 && strings.TrimSpace(superAdminUsername[0]) != "" {
+		username = superAdminUsername[0]
+	}
+	return &Bot{
+		tg:                 tg,
+		store:              store,
+		logger:             logger,
+		superAdminUsername: normalizeUsername(username),
+	}
 }
 
 func (b *Bot) Run(ctx context.Context) error {
