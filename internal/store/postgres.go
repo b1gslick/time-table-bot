@@ -535,7 +535,7 @@ func (s *PostgresStore) ListRemindersToSend(ctx context.Context, before time.Tim
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, booking_id, chat_id, kind, recipient_role, send_at, sent_at, channel, payload, created_at
+SELECT id, booking_id, dedupe_key, chat_id, kind, recipient_role, send_at, sent_at, channel, payload, created_at
 FROM reminders
 WHERE sent_at IS NULL
   AND send_at <= $1
@@ -550,11 +550,15 @@ LIMIT $2;
 	items := make([]domain.Reminder, 0)
 	for rows.Next() {
 		var (
-			r      domain.Reminder
-			sentAt sql.NullTime
+			r         domain.Reminder
+			bookingID sql.NullInt64
+			sentAt    sql.NullTime
 		)
-		if err := rows.Scan(&r.ID, &r.BookingID, &r.ChatID, &r.Kind, &r.RecipientRole, &r.SendAt, &sentAt, &r.Channel, &r.Payload, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &bookingID, &r.DedupeKey, &r.ChatID, &r.Kind, &r.RecipientRole, &r.SendAt, &sentAt, &r.Channel, &r.Payload, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan reminder: %w", err)
+		}
+		if bookingID.Valid {
+			r.BookingID = &bookingID.Int64
 		}
 		r.SentAt = nullTimePtr(sentAt)
 		items = append(items, r)

@@ -34,7 +34,7 @@ DATABASE_URL='postgres://timetable:timetable@localhost:5432/timetable?sslmode=di
 
 - Подробная инструкция для админа: [docs/admin-guide.md](docs/admin-guide.md).
 
-- Для клиента: `/services` показывает услуги с номерами, `/schedule 1 4` показывает свободное время под выбранные услуги, `/book 3` записывает на номер 3, `/my` показывает свои записи, `/move 1 3` переносит запись 1 на свободное место 3, `/lang ru|en` меняет язык, `/settravel 30` задает время в пути.
+- Для клиента: после `/start` бот интерактивно ведет по шагам: выбор языка, описание мастера, выбор одной или нескольких услуг, ближайшее время или конкретные даты, выбор свободного слота. Команды `/services`, `/schedule 1 4`, `/book 3`, `/my`, `/move 1 3`, `/lang ru|en`, `/settravel 30` остаются как быстрый ручной режим.
 - Для админа: `/service_add 30 Название` добавляет услугу с длительностью, `/services` показывает свои услуги, `/sethours пн-пт 10:00-18:00`, `/setduration 15`, `/generate 2026-06`, `/appoint @username YYYY-MM-DD HH:MM`, `/cancel @username YYYY-MM-DD HH:MM`, `/reschedule @username from_date from_time to_date to_time`, `/block YYYY-MM-DD HH:MM`.
 - Super admin: `/admin_add @username`, `/admin_remove @username`, `/role @username [user|admin|super_admin]`.
 
@@ -54,7 +54,7 @@ Scheduler раз в минуту готовит и отправляет напо
 
 ## Kubernetes / Helm
 
-Chart находится в `deploy/helm/time-table-bot` и повторяет паттерн `cluster-cfg/repeater`: bot `Deployment`, PostgreSQL `StatefulSet`, `Service`, опциональный hostPath PV и secrets. CI публикует multi-arch image `linux/amd64` и `linux/arm64`, поэтому один и тот же tag подходит для обычного сервера и Raspberry Pi. ArgoCD Application лежит в `deploy/argocd/time-table-bot.yaml`.
+Chart находится в `deploy/helm/time-table-bot` и повторяет паттерн `cluster-cfg/repeater`: bot `Deployment`, PostgreSQL `StatefulSet`, `Service`, опциональный hostPath PV и secrets. CI публикует image `linux/arm64` для Raspberry Pi. ArgoCD Application лежит в `deploy/argocd/time-table-bot.yaml`.
 
 ```bash
 kubectl create secret generic time-table-bot-secrets \
@@ -86,10 +86,10 @@ docker compose --env-file .env.example config
 
 Integration tests используют Testcontainers и поднимают реальный `postgres:16-alpine`, поэтому нужен доступ к Docker socket.
 
-## Multi-Arch Docker
+## Docker для Raspberry Pi
 
-Dockerfile не фиксирует `amd64`: при обычном `docker compose build` собирается нативная архитектура машины, а через Buildx можно собрать обе платформы:
+Dockerfile не фиксирует `amd64`: при обычном `docker compose build` собирается нативная архитектура машины, а через Buildx CI собирает `linux/arm64` для Raspberry Pi:
 
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t t1mon1106/time-table-bot:latest .
+docker buildx build --platform linux/arm64 -t b1gslick/time-table-bot:latest .
 ```

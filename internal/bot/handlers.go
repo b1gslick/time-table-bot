@@ -16,6 +16,15 @@ const (
 	monthLayout    = "2006-01"
 )
 
+const (
+	conversationStepLanguage   = "language"
+	conversationStepService    = "service"
+	conversationStepMore       = "more"
+	conversationStepTimeChoice = "time_choice"
+	conversationStepDates      = "dates"
+	conversationStepSlot       = "slot"
+)
+
 func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 	user := UserRecord{
 		TelegramID: msg.From.ID,
@@ -80,6 +89,8 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleBlock(ctx, msg.Chat.ID, current, parts)
 	case "/free", "/schedule":
 		return b.handleFree(ctx, msg.Chat.ID, current, parts)
+	case "/month", "/request_month":
+		return b.handleRequestMonth(ctx, msg.Chat.ID, current, parts)
 	case "/my":
 		return b.handleMy(ctx, msg.Chat.ID, current)
 	case "/book":
@@ -89,11 +100,22 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 	case "/settravel":
 		return b.handleSetTravel(ctx, msg.Chat.ID, current, parts)
 	default:
+		if !strings.HasPrefix(cmd, "/") && current.Role == RoleUser {
+			if handled, err := b.handleConversation(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
+		}
 		return b.sendText(ctx, msg.Chat.ID, tr(current.Language, "unknown_command"))
 	}
 }
 
 func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) error {
+	if user.Role == RoleUser {
+		if err := b.store.SetConversationState(ctx, user.TelegramID, ConversationState{Step: conversationStepLanguage}); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "choose_language"), languageKeyboard())
+	}
 	txt := tr(user.Language, "start", user.Username, roleLabel(user.Language, user.Role), user.Language)
 	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForRole(user.Role))
 }
@@ -305,8 +327,14 @@ func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
 	}
-	req := GenerateScheduleRequest{Month: monthStart}
-	if len(parts) >= 4 {
+	req := GenerateScheduleRequest{Month: monthStart, Months: 1}
+	if len(parts) == 3 {
+		months, err := strconv.Atoi(parts[2])
+		if err != nil || months <= 0 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
+		}
+		req.Months = months
+	} else if len(parts) >= 4 {
 		days, err := parseWeekdays(parts[2])
 		if err != nil {
 			return b.sendText(ctx, chatID, tr(actor.Language, "generate_bad_days"))
@@ -512,6 +540,25 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	}
 
 	return b.sendText(ctx, chatID, sb.String())
+}
+
+func (b *Bot) handleRequestMonth(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if len(parts) < 2 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "month_request_usage"))
+	}
+	monthStart, err := time.Parse(monthLayout, parts[1])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "month_request_usage"))
+	}
+	requested, err := b.store.RequestMissingMonth(ctx, actor.TelegramID, monthStart)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "month_request_failed"))
+	}
+	month := monthStart.Format(monthLayout)
+	if !requested {
+		return b.sendText(ctx, chatID, tr(actor.Language, "month_request_exists", month, month))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "month_request_ok", month))
 }
 
 func (b *Bot) handleMy(ctx context.Context, chatID int64, actor UserRecord) error {

@@ -97,6 +97,168 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 	}
 }
 
+func TestAppStore_GenerateScheduleForMultipleMonths(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "work_days", "mon"); err != nil {
+		t.Fatalf("set work_days: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "work_start", "10:00"); err != nil {
+		t.Fatalf("set work_start: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "work_end", "11:00"); err != nil {
+		t.Fatalf("set work_end: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "session_duration", "30"); err != nil {
+		t.Fatalf("set session_duration: %v", err)
+	}
+
+	result, err := app.GenerateSchedule(ctx, 2001, bot.GenerateScheduleRequest{
+		Month:  time.Date(2026, 6, 1, 0, 0, 0, 0, loc),
+		Months: 2,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchedule: %v", err)
+	}
+	if result.Created == 0 {
+		t.Fatalf("created slots = 0, want slots for two months")
+	}
+
+	var juneSlots, julySlots int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM schedule_slots
+WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
+`, admin.ID, time.Date(2026, 6, 1, 0, 0, 0, 0, loc), time.Date(2026, 7, 1, 0, 0, 0, 0, loc)).Scan(&juneSlots); err != nil {
+		t.Fatalf("count june slots: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM schedule_slots
+WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
+`, admin.ID, time.Date(2026, 7, 1, 0, 0, 0, 0, loc), time.Date(2026, 8, 1, 0, 0, 0, 0, loc)).Scan(&julySlots); err != nil {
+		t.Fatalf("count july slots: %v", err)
+	}
+	if juneSlots == 0 || julySlots == 0 {
+		t.Fatalf("juneSlots=%d julySlots=%d, want both months filled", juneSlots, julySlots)
+	}
+}
+
+func TestAppStore_AdminScheduleReminderAndMissingMonthNotice(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := app.RegisterOrUpdateUser(ctx, bot.UserRecord{TelegramID: 3001, Username: "client", Language: bot.LangRU}); err != nil {
+		t.Fatalf("Register client: %v", err)
+	}
+
+	if err := app.PrepareUpcomingReminders(ctx, time.Date(2026, 6, 15, 11, 0, 0, 0, loc)); err != nil {
+		t.Fatalf("PrepareUpcomingReminders: %v", err)
+	}
+	reminders, err := app.DueReminders(ctx, time.Date(2026, 6, 15, 11, 1, 0, 0, loc), 10)
+	if err != nil {
+		t.Fatalf("DueReminders after admin reminder: %v", err)
+	}
+	if len(reminders) != 1 || reminders[0].ChatID != 2001 {
+		t.Fatalf("admin reminders = %#v, want one reminder for admin", reminders)
+	}
+	if err := app.MarkReminderSent(ctx, reminders[0].ID, time.Date(2026, 6, 15, 11, 2, 0, 0, loc)); err != nil {
+		t.Fatalf("MarkReminderSent: %v", err)
+	}
+
+	if _, err := app.ListFreeSlotsForMonth(ctx, 3001, time.Date(2026, 8, 1, 0, 0, 0, 0, loc)); err != nil {
+		t.Fatalf("ListFreeSlotsForMonth: %v", err)
+	}
+	reminders, err = app.DueReminders(ctx, time.Now().Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("DueReminders after missing month notice: %v", err)
+	}
+	if len(reminders) != 1 || reminders[0].ChatID != 2001 {
+		t.Fatalf("reminders = %#v, want one missing month notice for admin", reminders)
+	}
+}
+
+func TestAppStore_RequestMissingMonth(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := app.RegisterOrUpdateUser(ctx, bot.UserRecord{TelegramID: 3001, Username: "client", Language: bot.LangRU}); err != nil {
+		t.Fatalf("Register client: %v", err)
+	}
+
+	requested, err := app.RequestMissingMonth(ctx, 3001, time.Date(2026, 9, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("RequestMissingMonth: %v", err)
+	}
+	if !requested {
+		t.Fatal("requested = false, want true for month without schedule")
+	}
+	reminders, err := app.DueReminders(ctx, time.Now().Add(time.Minute), 10)
+	if err != nil {
+		t.Fatalf("DueReminders: %v", err)
+	}
+	if len(reminders) != 1 || reminders[0].ChatID != 2001 {
+		t.Fatalf("reminders = %#v, want one admin notice", reminders)
+	}
+
+	if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+		AdminUserID: admin.ID,
+		StartAt:     time.Date(2026, 10, 5, 10, 0, 0, 0, loc),
+		EndAt:       time.Date(2026, 10, 5, 10, 30, 0, 0, loc),
+		Capacity:    1,
+		Status:      domain.SlotStatusOpen,
+	}); err != nil {
+		t.Fatalf("CreateScheduleSlot: %v", err)
+	}
+	requested, err = app.RequestMissingMonth(ctx, 3001, time.Date(2026, 10, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("RequestMissingMonth existing: %v", err)
+	}
+	if requested {
+		t.Fatal("requested = true, want false for existing schedule month")
+	}
+}
+
 func openAppStorePostgresContainer(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
 	req := testcontainers.ContainerRequest{

@@ -84,7 +84,8 @@ CREATE INDEX IF NOT EXISTS idx_bookings_user_status
 
 CREATE TABLE IF NOT EXISTS reminders (
     id BIGSERIAL PRIMARY KEY,
-    booking_id BIGINT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    booking_id BIGINT REFERENCES bookings(id) ON DELETE CASCADE,
+    dedupe_key TEXT NOT NULL DEFAULT '',
     chat_id BIGINT NOT NULL,
     kind TEXT NOT NULL,
     recipient_role TEXT NOT NULL,
@@ -96,5 +97,15 @@ CREATE TABLE IF NOT EXISTS reminders (
     UNIQUE (booking_id, kind, recipient_role, chat_id)
 );
 
+ALTER TABLE reminders
+    ALTER COLUMN booking_id DROP NOT NULL;
+
+ALTER TABLE reminders
+    ADD COLUMN IF NOT EXISTS dedupe_key TEXT NOT NULL DEFAULT '';
+
 CREATE INDEX IF NOT EXISTS idx_reminders_due
     ON reminders(sent_at, send_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_dedupe_unique
+    ON reminders(dedupe_key, kind, recipient_role, chat_id)
+    WHERE dedupe_key <> '';

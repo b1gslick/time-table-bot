@@ -73,6 +73,7 @@ type AvailabilitySlot struct {
 
 type GenerateScheduleRequest struct {
 	Month       time.Time
+	Months      int
 	Weekdays    []time.Weekday
 	DayStart    time.Duration
 	DayEnd      time.Duration
@@ -82,6 +83,11 @@ type GenerateScheduleRequest struct {
 type GenerateScheduleResult struct {
 	Created int
 	Skipped int
+}
+
+type ConversationState struct {
+	Step           string `json:"step"`
+	ServiceIndexes []int  `json:"service_indexes,omitempty"`
 }
 
 type Store interface {
@@ -96,6 +102,7 @@ type Store interface {
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
 	AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error
 	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
+	MasterIntro(ctx context.Context, telegramID int64) (string, error)
 	SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error
 	SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error
 	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
@@ -107,11 +114,18 @@ type Store interface {
 
 	ListFreeSlotsForMonth(ctx context.Context, telegramID int64, monthStart time.Time) ([]time.Time, error)
 	ListFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, monthStart time.Time) ([]AvailabilitySlot, error)
+	ListFreeSlotsForServicesRange(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time) ([]AvailabilitySlot, error)
+	ListFreeSlotsForServicesDates(ctx context.Context, telegramID int64, serviceIndexes []int, dates []time.Time) ([]AvailabilitySlot, error)
+	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error
 	BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error)
 	MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (MoveResult, error)
 	MoveBookingForUserByIndex(ctx context.Context, telegramID int64, bookingIndex, slotIndex int) (MoveResult, error)
+
+	GetConversationState(ctx context.Context, telegramID int64) (ConversationState, error)
+	SetConversationState(ctx context.Context, telegramID int64, state ConversationState) error
+	ClearConversationState(ctx context.Context, telegramID int64) error
 }
 
 type Bot struct {

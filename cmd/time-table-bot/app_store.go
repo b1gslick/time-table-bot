@@ -182,6 +182,51 @@ WHERE svc.is_active = TRUE
 	return services, nil
 }
 
+func (s *appStore) MasterIntro(ctx context.Context, telegramID int64) (string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT u.username,
+       COALESCE(p.description, '') AS description,
+       COALESCE(st.value, '') AS services_text
+FROM users u
+LEFT JOIN admin_profiles p ON p.user_id = u.id
+LEFT JOIN admin_settings st ON st.admin_user_id = u.id AND st.key = 'services_text'
+WHERE u.role IN ('admin', 'super_admin')
+ORDER BY u.username ASC
+LIMIT 5;
+`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var parts []string
+	for rows.Next() {
+		var username, description, servicesText string
+		if err := rows.Scan(&username, &description, &servicesText); err != nil {
+			return "", err
+		}
+		var sb strings.Builder
+		sb.WriteString("@")
+		sb.WriteString(username)
+		if strings.TrimSpace(description) != "" {
+			sb.WriteString("\n")
+			sb.WriteString(strings.TrimSpace(description))
+		}
+		if strings.TrimSpace(servicesText) != "" {
+			sb.WriteString("\n")
+			sb.WriteString(strings.TrimSpace(servicesText))
+		}
+		parts = append(parts, sb.String())
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
 func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error {
 	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
@@ -258,38 +303,47 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 	if req.DayEnd <= req.DayStart || req.DurationMin <= 0 {
 		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
 	}
+	if req.Months <= 0 {
+		req.Months = 1
+	}
+	if req.Months > 12 {
+		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+	}
 
 	monthStart := time.Date(req.Month.Year(), req.Month.Month(), 1, 0, 0, 0, 0, s.loc)
-	monthEnd := monthStart.AddDate(0, 1, 0)
 	daySet := map[time.Weekday]bool{}
 	for _, day := range req.Weekdays {
 		daySet[day] = true
 	}
 
 	var result bot.GenerateScheduleResult
-	for day := monthStart; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
-		if !daySet[day.Weekday()] {
-			continue
-		}
-		for offset := req.DayStart; offset+time.Duration(req.DurationMin)*time.Minute <= req.DayEnd; offset += time.Duration(req.DurationMin) * time.Minute {
-			start := day.Add(offset)
-			if _, err := s.slotIDByAdminStart(ctx, adminID, start); err == nil {
-				result.Skipped++
+	for monthOffset := 0; monthOffset < req.Months; monthOffset++ {
+		currentMonthStart := monthStart.AddDate(0, monthOffset, 0)
+		currentMonthEnd := currentMonthStart.AddDate(0, 1, 0)
+		for day := currentMonthStart; day.Before(currentMonthEnd); day = day.AddDate(0, 0, 1) {
+			if !daySet[day.Weekday()] {
 				continue
-			} else if !errors.Is(err, store.ErrNotFound) {
-				return result, err
 			}
-			_, err := s.repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
-				AdminUserID: adminID,
-				StartAt:     start,
-				EndAt:       start.Add(time.Duration(req.DurationMin) * time.Minute),
-				Capacity:    1,
-				Status:      domain.SlotStatusOpen,
-			})
-			if err != nil {
-				return result, err
+			for offset := req.DayStart; offset+time.Duration(req.DurationMin)*time.Minute <= req.DayEnd; offset += time.Duration(req.DurationMin) * time.Minute {
+				start := day.Add(offset)
+				if _, err := s.slotIDByAdminStart(ctx, adminID, start); err == nil {
+					result.Skipped++
+					continue
+				} else if !errors.Is(err, store.ErrNotFound) {
+					return result, err
+				}
+				_, err := s.repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+					AdminUserID: adminID,
+					StartAt:     start,
+					EndAt:       start.Add(time.Duration(req.DurationMin) * time.Minute),
+					Capacity:    1,
+					Status:      domain.SlotStatusOpen,
+				})
+				if err != nil {
+					return result, err
+				}
+				result.Created++
 			}
-			result.Created++
 		}
 	}
 	return result, nil
@@ -396,11 +450,59 @@ ORDER BY s.start_at ASC;
 	if telegramID > 0 {
 		_ = s.saveTimesForUser(ctx, telegramID, "last_free_slots", slots)
 		_ = s.clearSettingForUser(ctx, telegramID, "last_availability_slots")
+		if len(slots) == 0 {
+			_ = s.notifyAdminsAboutMissingRequestedMonth(ctx, telegramID, from)
+		}
 	}
 	return slots, nil
 }
 
 func (s *appStore) ListFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, monthStart time.Time) ([]bot.AvailabilitySlot, error) {
+	from := time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, s.loc)
+	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, from, from.AddDate(0, 1, 0), nil)
+}
+
+func (s *appStore) ListFreeSlotsForServicesRange(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time) ([]bot.AvailabilitySlot, error) {
+	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, from.In(s.loc), to.In(s.loc), nil)
+}
+
+func (s *appStore) ListFreeSlotsForServicesDates(ctx context.Context, telegramID int64, serviceIndexes []int, dates []time.Time) ([]bot.AvailabilitySlot, error) {
+	if len(dates) == 0 {
+		return nil, store.ErrInvalidArgument
+	}
+	allowed := map[string]bool{}
+	minDate := dateOnlyLocal(dates[0], s.loc)
+	maxDate := minDate
+	for _, date := range dates {
+		day := dateOnlyLocal(date, s.loc)
+		allowed[day.Format("2006-01-02")] = true
+		if day.Before(minDate) {
+			minDate = day
+		}
+		if day.After(maxDate) {
+			maxDate = day
+		}
+	}
+	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, minDate, maxDate.AddDate(0, 0, 1), allowed)
+}
+
+func (s *appStore) RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error) {
+	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
+	to := from.AddDate(0, 1, 0)
+	hasAnySlots, err := s.hasAnyScheduleInRange(ctx, from, to)
+	if err != nil {
+		return false, err
+	}
+	if hasAnySlots {
+		return false, nil
+	}
+	if err := s.notifyAdminsAboutMissingRequestedMonth(ctx, telegramID, from); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time, allowedDates map[string]bool) ([]bot.AvailabilitySlot, error) {
 	if len(serviceIndexes) == 0 {
 		return nil, store.ErrInvalidArgument
 	}
@@ -433,8 +535,6 @@ func (s *appStore) ListFreeSlotsForServices(ctx context.Context, telegramID int6
 		serviceNames = append(serviceNames, service.Name)
 	}
 
-	from := time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, s.loc)
-	to := from.AddDate(0, 1, 0)
 	baseSlots, err := s.availableBaseSlots(ctx, adminID, from, to)
 	if err != nil {
 		return nil, err
@@ -450,6 +550,9 @@ func (s *appStore) ListFreeSlotsForServices(ctx context.Context, telegramID int6
 	needed := time.Duration(totalDuration) * time.Minute
 	for i := range baseSlots {
 		start := baseSlots[i].StartAt
+		if len(allowedDates) > 0 && !allowedDates[start.In(s.loc).Format("2006-01-02")] {
+			continue
+		}
 		current := start
 		var covered []int64
 		for j := i; j < len(baseSlots) && current.Sub(start) < needed; j++ {
@@ -480,6 +583,9 @@ func (s *appStore) ListFreeSlotsForServices(ctx context.Context, telegramID int6
 		})
 	}
 	_ = s.saveAvailabilityForUser(ctx, telegramID, cache)
+	if telegramID > 0 && len(out) == 0 && isWholeMonthRange(from, to, s.loc) {
+		_ = s.notifyAdminsAboutMissingRequestedMonth(ctx, telegramID, from)
+	}
 	return out, nil
 }
 
@@ -694,7 +800,10 @@ WHERE b.status = 'booked'
 			}
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return s.prepareAdminScheduleReminders(ctx, now)
 }
 
 func (s *appStore) DueReminders(ctx context.Context, now time.Time, limit int) ([]scheduler.Reminder, error) {
@@ -738,6 +847,150 @@ ON CONFLICT(booking_id, kind, recipient_role, chat_id) DO UPDATE SET
 	payload = EXCLUDED.payload;
 `, bookingID, chatID, kind, recipientRole, sendAt, payload)
 	return err
+}
+
+func (s *appStore) upsertSystemReminder(ctx context.Context, dedupeKey string, chatID int64, kind, recipientRole string, sendAt time.Time, payload string) error {
+	if strings.TrimSpace(dedupeKey) == "" || chatID <= 0 {
+		return store.ErrInvalidArgument
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO reminders (booking_id, dedupe_key, chat_id, kind, recipient_role, send_at, channel, payload)
+VALUES (NULL, $1, $2, $3, $4, $5, 'telegram', $6)
+ON CONFLICT(dedupe_key, kind, recipient_role, chat_id) WHERE dedupe_key <> '' DO UPDATE SET
+	send_at = EXCLUDED.send_at,
+	payload = EXCLUDED.payload;
+`, dedupeKey, chatID, kind, recipientRole, sendAt, payload)
+	return err
+}
+
+func (s *appStore) prepareAdminScheduleReminders(ctx context.Context, now time.Time) error {
+	now = now.In(s.loc)
+	if now.Day() != 15 {
+		return nil
+	}
+
+	nextMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, s.loc).AddDate(0, 1, 0)
+	nextMonthEnd := nextMonth.AddDate(0, 1, 0)
+	sendAt := time.Date(now.Year(), now.Month(), 15, 10, 0, 0, 0, s.loc)
+	if now.After(sendAt) {
+		sendAt = now
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT u.id, u.telegram_id, COALESCE(l.value, 'ru') AS language
+FROM users u
+LEFT JOIN admin_settings l ON l.admin_user_id = u.id AND l.key = 'language'
+WHERE u.role IN ('admin', 'super_admin')
+  AND u.telegram_id IS NOT NULL;
+`)
+	if err != nil {
+		return fmt.Errorf("select admins for schedule reminders: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			adminID  int64
+			chatID   int64
+			language string
+		)
+		if err := rows.Scan(&adminID, &chatID, &language); err != nil {
+			return err
+		}
+		hasSlots, err := s.adminHasScheduleInRange(ctx, adminID, nextMonth, nextMonthEnd)
+		if err != nil {
+			return err
+		}
+		if hasSlots {
+			continue
+		}
+		month := nextMonth.Format("2006-01")
+		dedupeKey := fmt.Sprintf("admin_month_missing:%d:%s", adminID, month)
+		if err := s.upsertSystemReminder(ctx, dedupeKey, chatID, "admin_month_missing", "admin", sendAt, adminMonthMissingReminder(language, month)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *appStore) notifyAdminsAboutMissingRequestedMonth(ctx context.Context, requesterTelegramID int64, monthStart time.Time) error {
+	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
+	to := from.AddDate(0, 1, 0)
+	hasAnySlots, err := s.hasAnyScheduleInRange(ctx, from, to)
+	if err != nil {
+		return err
+	}
+	if hasAnySlots {
+		return nil
+	}
+
+	requesterLabel := "@client"
+	if requester, err := s.lookupUser(ctx, "telegram_id = $1", requesterTelegramID); err == nil && requester.Username != "" {
+		requesterLabel = "@" + requester.Username
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT u.id, u.telegram_id, COALESCE(l.value, 'ru') AS language
+FROM users u
+LEFT JOIN admin_settings l ON l.admin_user_id = u.id AND l.key = 'language'
+WHERE u.role IN ('admin', 'super_admin')
+  AND u.telegram_id IS NOT NULL;
+`)
+	if err != nil {
+		return fmt.Errorf("select admins for missing month notice: %w", err)
+	}
+	defer rows.Close()
+
+	month := from.Format("2006-01")
+	for rows.Next() {
+		var (
+			adminID  int64
+			chatID   int64
+			language string
+		)
+		if err := rows.Scan(&adminID, &chatID, &language); err != nil {
+			return err
+		}
+		dedupeKey := fmt.Sprintf("client_requested_missing_month:%d:%s", adminID, month)
+		payload := adminMonthRequestedNotice(language, requesterLabel, month)
+		if err := s.upsertSystemReminder(ctx, dedupeKey, chatID, "client_requested_missing_month", "admin", time.Now().In(s.loc), payload); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *appStore) adminHasScheduleInRange(ctx context.Context, adminID int64, from, to time.Time) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM schedule_slots
+	WHERE admin_user_id = $1
+	  AND start_at >= $2
+	  AND start_at < $3
+);
+`, adminID, from, to).Scan(&exists)
+	return exists, err
+}
+
+func (s *appStore) hasAnyScheduleInRange(ctx context.Context, from, to time.Time) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM schedule_slots
+	WHERE start_at >= $1
+	  AND start_at < $2
+);
+`, from, to).Scan(&exists)
+	return exists, err
+}
+
+func isWholeMonthRange(from, to time.Time, loc *time.Location) bool {
+	start := from.In(loc)
+	monthStart := time.Date(start.Year(), start.Month(), 1, 0, 0, 0, 0, loc)
+	return start.Equal(monthStart) && to.In(loc).Equal(monthStart.AddDate(0, 1, 0))
 }
 
 func (s *appStore) lookupUser(ctx context.Context, where string, arg any) (domain.User, error) {
@@ -1078,6 +1331,41 @@ func (s *appStore) loadAvailabilityForUser(ctx context.Context, telegramID int64
 	return out, nil
 }
 
+func (s *appStore) GetConversationState(ctx context.Context, telegramID int64) (bot.ConversationState, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return bot.ConversationState{}, err
+	}
+	raw, err := s.stringSetting(ctx, userID, "conversation_state", "")
+	if err != nil {
+		return bot.ConversationState{}, err
+	}
+	if raw == "" {
+		return bot.ConversationState{}, store.ErrNotFound
+	}
+	var state bot.ConversationState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return bot.ConversationState{}, err
+	}
+	return state, nil
+}
+
+func (s *appStore) SetConversationState(ctx context.Context, telegramID int64, state bot.ConversationState) error {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, userID, "conversation_state", string(data))
+}
+
+func (s *appStore) ClearConversationState(ctx context.Context, telegramID int64) error {
+	return s.clearSettingForUser(ctx, telegramID, "conversation_state")
+}
+
 func (s *appStore) clearSettingForUser(ctx context.Context, telegramID int64, key string) error {
 	userID, err := s.userIDByTelegram(ctx, telegramID)
 	if err != nil {
@@ -1377,6 +1665,11 @@ func coveredByBookingNote(bookingID int64) string {
 	return fmt.Sprintf("covered_by_booking:%d", bookingID)
 }
 
+func dateOnlyLocal(value time.Time, loc *time.Location) time.Time {
+	value = value.In(loc)
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, loc)
+}
+
 func bookingDurationFromNote(note string) int {
 	var parsed bookingServiceNote
 	if err := json.Unmarshal([]byte(note), &parsed); err != nil {
@@ -1562,4 +1855,18 @@ func adminReminderDayBefore(language, userLabel string, startAt time.Time) strin
 		return fmt.Sprintf("Reminder: tomorrow client %s has a booking at %s.", userLabel, startAt.Format("02.01.2006 15:04"))
 	}
 	return fmt.Sprintf("Напоминание: завтра запись у клиента %s в %s.", userLabel, startAt.Format("02.01.2006 15:04"))
+}
+
+func adminMonthMissingReminder(language, month string) string {
+	if language == bot.LangEN {
+		return fmt.Sprintf("Schedule for %s is not filled yet. Clients will not be able to book that month. Use /generate %s or /generate %s 2 to fill two months ahead.", month, month, month)
+	}
+	return fmt.Sprintf("Расписание на %s еще не заполнено. Клиенты не смогут записаться на этот месяц. Используйте /generate %s или /generate %s 2, чтобы заполнить два месяца вперед.", month, month, month)
+}
+
+func adminMonthRequestedNotice(language, clientLabel, month string) string {
+	if language == bot.LangEN {
+		return fmt.Sprintf("Client %s requested booking for %s, but that month has no schedule. Generate it with /generate %s.", clientLabel, month, month)
+	}
+	return fmt.Sprintf("Клиент %s запросил запись на %s, но на этот месяц нет расписания. Создайте его командой /generate %s.", clientLabel, month, month)
 }

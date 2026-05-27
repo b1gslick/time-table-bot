@@ -93,7 +93,8 @@ type Booking struct {
 
 type Reminder struct {
 	ID            int64
-	BookingID     int64
+	BookingID     *int64
+	DedupeKey     string
 	ChatID        int64
 	Kind          string
 	RecipientRole string
