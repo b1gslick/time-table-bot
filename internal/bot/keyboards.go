@@ -19,10 +19,8 @@ func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 		})
 	default:
 		return menuKeyboard([][]string{
-			{"/help", "/lang ru", "/lang en"},
-			{"/services", "/schedule 1"},
-			{"/my", "/book 1"},
-			{"/move 1 2", "/month 2026-08"},
+			{tr(lang, "button_start_booking")},
+			{"/help"},
 		})
 	}
 }

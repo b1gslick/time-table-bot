@@ -249,10 +249,14 @@ func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRec
 }
 
 func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecord, text string) (bool, error) {
+	action := menuButtonAction(user.Language, text)
+	if action == "start_booking" {
+		return true, b.handleStart(ctx, chatID, user)
+	}
 	if !isAdmin(user.Role) {
 		return false, nil
 	}
-	switch menuButtonAction(user.Language, text) {
+	switch action {
 	case "menu_calendar":
 		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_calendar_text"), calendarMenuKeyboard(user.Language))
 	case "menu_bookings":
@@ -322,6 +326,7 @@ func menuButtonAction(lang, text string) string {
 		key    string
 	}{
 		{"menu_calendar", "button_menu_calendar"},
+		{"start_booking", "button_start_booking"},
 		{"menu_bookings", "button_menu_bookings"},
 		{"menu_services", "button_menu_services"},
 		{"menu_schedule", "button_menu_schedule"},
@@ -383,7 +388,7 @@ func (b *Bot) sendHelp(ctx context.Context, chatID int64, user UserRecord) error
 	if user.Role == RoleSuperAdmin {
 		text += "\nSuper admin:\n" + tr(user.Language, "help_super")
 	}
-	return b.sendText(ctx, chatID, text)
+	return b.sendTextWithKeyboard(ctx, chatID, text, keyboardForRole(user.Role, user.Language))
 }
 
 func (b *Bot) handleAdminAdd(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
