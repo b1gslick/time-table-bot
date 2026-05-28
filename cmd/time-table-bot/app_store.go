@@ -486,6 +486,31 @@ func (s *appStore) ListFreeSlotsForServicesDates(ctx context.Context, telegramID
 	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, maxTime(minDate, time.Now().In(s.loc)), maxDate.AddDate(0, 0, 1), allowed)
 }
 
+func (s *appStore) ListCachedAvailability(ctx context.Context, telegramID int64) ([]bot.AvailabilitySlot, error) {
+	cache, err := s.loadAvailabilityForUser(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]bot.AvailabilitySlot, 0, len(cache))
+	for _, item := range cache {
+		start, err := time.Parse(time.RFC3339, item.Start)
+		if err != nil {
+			return nil, err
+		}
+		end, err := time.Parse(time.RFC3339, item.End)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bot.AvailabilitySlot{
+			StartAt:      start.In(s.loc),
+			EndAt:        end.In(s.loc),
+			ServiceNames: item.ServiceNames,
+			DurationMin:  item.DurationMin,
+		})
+	}
+	return out, nil
+}
+
 func (s *appStore) RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error) {
 	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
 	to := from.AddDate(0, 1, 0)

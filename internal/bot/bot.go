@@ -99,8 +99,11 @@ type ConversationState struct {
 	Category              string `json:"category,omitempty"`
 	Subcategory           string `json:"subcategory,omitempty"`
 	ServiceName           string `json:"service_name,omitempty"`
+	SlotDay               string `json:"slot_day,omitempty"`
+	SlotPeriod            string `json:"slot_period,omitempty"`
 	ServiceIndexes        []int  `json:"service_indexes,omitempty"`
 	VisibleServiceIndexes []int  `json:"visible_service_indexes,omitempty"`
+	VisibleSlotIndexes    []int  `json:"visible_slot_indexes,omitempty"`
 }
 
 type Store interface {
@@ -128,6 +131,7 @@ type Store interface {
 	ListFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, monthStart time.Time) ([]AvailabilitySlot, error)
 	ListFreeSlotsForServicesRange(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time) ([]AvailabilitySlot, error)
 	ListFreeSlotsForServicesDates(ctx context.Context, telegramID int64, serviceIndexes []int, dates []time.Time) ([]AvailabilitySlot, error)
+	ListCachedAvailability(ctx context.Context, telegramID int64) ([]AvailabilitySlot, error)
 	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
 	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)

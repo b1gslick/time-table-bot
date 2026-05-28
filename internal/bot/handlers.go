@@ -124,6 +124,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if err := b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryRequest{CallbackQueryID: cb.ID}); err != nil {
 		b.logger.Printf("answer callback failed id=%q: %v", cb.ID, err)
 	}
+	if strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") {
+		return b.handleSlotBrowseCallback(ctx, cb)
+	}
 	text, ok := callbackText(cb.Data)
 	if !ok {
 		b.logger.Printf("unknown callback data user=%d data=%q", cb.From.ID, cb.Data)
@@ -134,6 +137,44 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 		Chat: cb.Message.Chat,
 		Text: text,
 	})
+}
+
+func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	user := UserRecord{
+		TelegramID: cb.From.ID,
+		Username:   normalizeUsername(cb.From.Username),
+		FirstName:  cb.From.FirstName,
+		LastName:   cb.From.LastName,
+		Role:       RoleUser,
+		Language:   LangRU,
+	}
+	if user.Username == b.superAdminUsername {
+		user.Role = RoleSuperAdmin
+	}
+	current, err := b.store.RegisterOrUpdateUser(ctx, user)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	state, err := b.store.GetConversationState(ctx, current.TelegramID)
+	if err != nil || state.Step != conversationStepSlot {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
+	}
+	slots, err := b.store.ListCachedAvailability(ctx, current.TelegramID)
+	if err != nil {
+		b.logger.Printf("slot browse: cached availability failed user=%d: %v", current.TelegramID, err)
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
+	}
+	if strings.HasPrefix(cb.Data, "slotperiod:") {
+		state.SlotPeriod = strings.TrimPrefix(cb.Data, "slotperiod:")
+		state.SlotDay = chooseSlotDayForPeriod(slots, state.SlotDay, state.SlotPeriod)
+	} else {
+		state.SlotDay = moveSlotDay(slots, state.SlotDay, state.SlotPeriod, strings.TrimPrefix(cb.Data, "slotday:"))
+	}
+	text, kb, nextState := renderSlotBrowser(current.Language, state, slots)
+	if err := b.store.SetConversationState(ctx, current.TelegramID, nextState); err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "conversation_failed"))
+	}
+	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, text, kb)
 }
 
 func callbackText(data string) (string, bool) {

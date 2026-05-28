@@ -37,7 +37,7 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 	case conversationStepDates:
 		return true, b.conversationDates(ctx, chatID, user, state, text)
 	case conversationStepSlot:
-		return true, b.conversationSlot(ctx, chatID, user, text)
+		return true, b.conversationSlot(ctx, chatID, user, state, text)
 	case conversationStepAddSvcCat:
 		return true, b.conversationAddServiceCategory(ctx, chatID, user, state, text)
 	case conversationStepAddSvcSub:
@@ -182,10 +182,16 @@ func (b *Bot) conversationDates(ctx context.Context, chatID int64, user UserReco
 	return b.showInteractiveSlots(ctx, chatID, user, state, slots)
 }
 
-func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecord, text string) error {
+func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
 	index, err := strconv.Atoi(strings.TrimSpace(text))
 	if err != nil || index <= 0 {
 		return b.sendText(ctx, chatID, tr(user.Language, "choose_slot_number"))
+	}
+	if len(state.VisibleSlotIndexes) > 0 {
+		if index > len(state.VisibleSlotIndexes) {
+			return b.sendText(ctx, chatID, tr(user.Language, "choose_slot_number"))
+		}
+		index = state.VisibleSlotIndexes[index-1]
 	}
 	start, err := b.store.BookForUserByIndex(ctx, user.TelegramID, index)
 	if err != nil {
@@ -363,16 +369,15 @@ func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserR
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "free_empty_try_other"), timeChoiceKeyboard(user.Language))
 	}
 	state.Step = conversationStepSlot
-	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+	if state.SlotPeriod == "" {
+		state.SlotPeriod = firstSlotPeriod(slots)
+	}
+	state.SlotDay = chooseSlotDayForPeriod(slots, state.SlotDay, state.SlotPeriod)
+	text, kb, nextState := renderSlotBrowser(user.Language, state, slots)
+	if err := b.store.SetConversationState(ctx, user.TelegramID, nextState); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
-
-	var sb strings.Builder
-	sb.WriteString(tr(user.Language, "choose_slot_number"))
-	sb.WriteString("\n")
-	limit := minInt(len(slots), 20)
-	sb.WriteString(formatAvailabilitySlots(user.Language, slots, limit))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(limit, "slot"))
+	return b.sendTextWithKeyboard(ctx, chatID, text, kb)
 }
 
 func formatServices(lang string, services []ServiceView) string {
@@ -497,6 +502,182 @@ func formatAvailabilitySlots(lang string, slots []AvailabilitySlot, limit int) s
 		sb.WriteString(tr(lang, "slots_more_hint", len(slots)-limit))
 	}
 	return sb.String()
+}
+
+func renderSlotBrowser(lang string, state ConversationState, slots []AvailabilitySlot) (string, *telegram.ReplyMarkup, ConversationState) {
+	state.Step = conversationStepSlot
+	if state.SlotPeriod == "" {
+		state.SlotPeriod = firstSlotPeriod(slots)
+	}
+	if state.SlotDay == "" {
+		state.SlotDay = chooseSlotDayForPeriod(slots, "", state.SlotPeriod)
+	}
+	visible := visibleSlotsForDayPeriod(slots, state.SlotDay, state.SlotPeriod)
+	if len(visible) == 0 {
+		state.SlotDay = chooseSlotDayForPeriod(slots, state.SlotDay, state.SlotPeriod)
+		visible = visibleSlotsForDayPeriod(slots, state.SlotDay, state.SlotPeriod)
+	}
+	state.VisibleSlotIndexes = make([]int, 0, len(visible))
+
+	var sb strings.Builder
+	sb.WriteString(tr(lang, "choose_slot_number"))
+	sb.WriteString("\n")
+	if state.SlotDay != "" {
+		if day, err := time.Parse("2006-01-02", state.SlotDay); err == nil {
+			sb.WriteString(dayHeader(lang, day))
+			sb.WriteString(" - ")
+			sb.WriteString(tr(lang, "slot_period_"+state.SlotPeriod))
+			sb.WriteString("\n")
+		}
+	}
+	if len(visible) == 0 {
+		sb.WriteString(tr(lang, "slot_day_empty"))
+	} else {
+		for i, item := range visible {
+			state.VisibleSlotIndexes = append(state.VisibleSlotIndexes, item.index+1)
+			slot := slots[item.index]
+			sb.WriteString(strconv.Itoa(i + 1))
+			sb.WriteString(". ")
+			sb.WriteString(slot.StartAt.Format("15:04"))
+			sb.WriteString("-")
+			sb.WriteString(slot.EndAt.Format("15:04"))
+			if slot.AdminName != "" {
+				sb.WriteString(" @")
+				sb.WriteString(slot.AdminName)
+			}
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String(), slotBrowserKeyboard(lang, len(visible)), state
+}
+
+type indexedSlot struct {
+	index int
+}
+
+func visibleSlotsForDayPeriod(slots []AvailabilitySlot, day, period string) []indexedSlot {
+	var out []indexedSlot
+	for i, slot := range slots {
+		if slot.StartAt.Format("2006-01-02") != day {
+			continue
+		}
+		if !slotMatchesPeriod(slot.StartAt, period) {
+			continue
+		}
+		out = append(out, indexedSlot{index: i})
+	}
+	return out
+}
+
+func chooseSlotDayForPeriod(slots []AvailabilitySlot, currentDay, period string) string {
+	days := slotDaysForPeriod(slots, period)
+	if len(days) == 0 {
+		return ""
+	}
+	if currentDay == "" {
+		return days[0]
+	}
+	for _, day := range days {
+		if day >= currentDay {
+			return day
+		}
+	}
+	return days[0]
+}
+
+func moveSlotDay(slots []AvailabilitySlot, currentDay, period, direction string) string {
+	days := slotDaysForPeriod(slots, period)
+	if len(days) == 0 {
+		return ""
+	}
+	idx := 0
+	for i, day := range days {
+		if day == currentDay {
+			idx = i
+			break
+		}
+	}
+	switch direction {
+	case "prev":
+		if idx > 0 {
+			idx--
+		}
+	case "next":
+		if idx < len(days)-1 {
+			idx++
+		}
+	}
+	return days[idx]
+}
+
+func slotDaysForPeriod(slots []AvailabilitySlot, period string) []string {
+	seen := map[string]bool{}
+	var days []string
+	for _, slot := range slots {
+		if !slotMatchesPeriod(slot.StartAt, period) {
+			continue
+		}
+		day := slot.StartAt.Format("2006-01-02")
+		if !seen[day] {
+			seen[day] = true
+			days = append(days, day)
+		}
+	}
+	return days
+}
+
+func slotMatchesPeriod(value time.Time, period string) bool {
+	hour := value.Hour()
+	switch period {
+	case "morning":
+		return hour < 12
+	case "day":
+		return hour >= 12 && hour < 17
+	case "evening":
+		return hour >= 17
+	default:
+		return true
+	}
+}
+
+func firstSlotPeriod(slots []AvailabilitySlot) string {
+	if len(slots) == 0 {
+		return "all"
+	}
+	hour := slots[0].StartAt.Hour()
+	switch {
+	case hour < 12:
+		return "morning"
+	case hour < 17:
+		return "day"
+	default:
+		return "evening"
+	}
+}
+
+func slotBrowserKeyboard(lang string, count int) *telegram.ReplyMarkup {
+	var rows [][]telegram.InlineKeyboardButton
+	for i := 1; i <= count; i += 3 {
+		var row []telegram.InlineKeyboardButton
+		for j := i; j < i+3 && j <= count; j++ {
+			value := strconv.Itoa(j)
+			row = append(row, telegram.InlineKeyboardButton{Text: value, CallbackData: "slot:" + value})
+		}
+		rows = append(rows, row)
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		{Text: tr(lang, "slot_period_all"), CallbackData: "slotperiod:all"},
+		{Text: tr(lang, "slot_period_morning"), CallbackData: "slotperiod:morning"},
+	})
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		{Text: tr(lang, "slot_period_day"), CallbackData: "slotperiod:day"},
+		{Text: tr(lang, "slot_period_evening"), CallbackData: "slotperiod:evening"},
+	})
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		{Text: tr(lang, "slot_prev_day"), CallbackData: "slotday:prev"},
+		{Text: tr(lang, "slot_next_day"), CallbackData: "slotday:next"},
+	})
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
 func formatTimeSlots(lang string, slots []time.Time, limit int) string {
