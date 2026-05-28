@@ -24,6 +24,10 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 	switch state.Step {
 	case conversationStepLanguage:
 		return true, b.conversationLanguage(ctx, chatID, user, text)
+	case conversationStepCategory:
+		return true, b.conversationCategory(ctx, chatID, user, state, text)
+	case conversationStepSubcategory:
+		return true, b.conversationSubcategory(ctx, chatID, user, state, text)
 	case conversationStepService:
 		return true, b.conversationService(ctx, chatID, user, state, text)
 	case conversationStepMore:
@@ -49,24 +53,70 @@ func (b *Bot) conversationLanguage(ctx context.Context, chatID int64, user UserR
 		return b.sendText(ctx, chatID, tr(user.Language, "lang_failed"))
 	}
 	user.Language = lang
-	return b.askService(ctx, chatID, user, nil)
+	return b.askCategory(ctx, chatID, user, nil)
+}
+
+func (b *Bot) conversationCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	index, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || index <= 0 {
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	}
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		b.logger.Printf("conversation category: list services failed user=%d: %v", user.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+	}
+	categories := serviceCategories(services)
+	if index > len(categories) {
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	}
+	state.Category = categories[index-1]
+	return b.askSubcategory(ctx, chatID, user, state)
+}
+
+func (b *Bot) conversationSubcategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	index, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || index <= 0 {
+		return b.askSubcategory(ctx, chatID, user, state)
+	}
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		b.logger.Printf("conversation subcategory: list services failed user=%d category=%q: %v", user.TelegramID, state.Category, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+	}
+	subcategories := serviceSubcategories(services, state.Category)
+	if index > len(subcategories) {
+		return b.askSubcategory(ctx, chatID, user, state)
+	}
+	state.Subcategory = subcategories[index-1]
+	return b.askService(ctx, chatID, user, state)
 }
 
 func (b *Bot) conversationService(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
 	index, err := strconv.Atoi(strings.TrimSpace(text))
 	if err != nil || index <= 0 {
-		return b.askService(ctx, chatID, user, state.ServiceIndexes)
+		return b.askService(ctx, chatID, user, state)
 	}
 	services, err := b.store.ListServices(ctx, user.TelegramID)
 	if err != nil {
+		b.logger.Printf("conversation service: list services failed user=%d category=%q subcategory=%q: %v", user.TelegramID, state.Category, state.Subcategory, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
 	}
-	if index > len(services) {
-		return b.askService(ctx, chatID, user, state.ServiceIndexes)
+	visibleIndexes := state.VisibleServiceIndexes
+	if len(visibleIndexes) == 0 {
+		visibleIndexes = serviceIndexesForPath(services, state.Category, state.Subcategory)
 	}
-	state.ServiceIndexes = append(state.ServiceIndexes, index)
+	if index > len(visibleIndexes) {
+		return b.askService(ctx, chatID, user, state)
+	}
+	globalIndex := visibleIndexes[index-1]
+	state.ServiceIndexes = append(state.ServiceIndexes, globalIndex)
+	state.VisibleServiceIndexes = nil
+	state.Category = ""
+	state.Subcategory = ""
 	state.Step = conversationStepMore
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		b.logger.Printf("conversation service: save state failed user=%d: %v", user.TelegramID, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "ask_more_services"), yesNoKeyboard(user.Language))
@@ -74,11 +124,12 @@ func (b *Bot) conversationService(ctx context.Context, chatID int64, user UserRe
 
 func (b *Bot) conversationMore(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
 	if isYes(user.Language, text) {
-		return b.askService(ctx, chatID, user, state.ServiceIndexes)
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
 	}
 	if isNo(user.Language, text) {
 		state.Step = conversationStepTimeChoice
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			b.logger.Printf("conversation more: save state failed user=%d: %v", user.TelegramID, err)
 			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "ask_time_choice"), timeChoiceKeyboard(user.Language))
@@ -92,13 +143,16 @@ func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user Use
 		now := time.Now()
 		slots, err := b.store.ListFreeSlotsForServicesRange(ctx, user.TelegramID, state.ServiceIndexes, now, now.AddDate(0, 0, 7))
 		if err != nil {
+			b.logger.Printf("conversation nearest: list slots failed user=%d services=%v: %v", user.TelegramID, state.ServiceIndexes, err)
 			return b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
 		}
+		b.logger.Printf("conversation nearest: user=%d services=%v slots=%d", user.TelegramID, state.ServiceIndexes, len(slots))
 		return b.showInteractiveSlots(ctx, chatID, user, state, slots)
 	}
 	if normalized == "dates" {
 		state.Step = conversationStepDates
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			b.logger.Printf("conversation dates choice: save state failed user=%d: %v", user.TelegramID, err)
 			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, "ask_dates"))
@@ -113,8 +167,10 @@ func (b *Bot) conversationDates(ctx context.Context, chatID int64, user UserReco
 	}
 	slots, err := b.store.ListFreeSlotsForServicesDates(ctx, user.TelegramID, state.ServiceIndexes, dates)
 	if err != nil {
+		b.logger.Printf("conversation dates: list slots failed user=%d services=%v dates=%v: %v", user.TelegramID, state.ServiceIndexes, dates, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
 	}
+	b.logger.Printf("conversation dates: user=%d services=%v dates=%d slots=%d", user.TelegramID, state.ServiceIndexes, len(dates), len(slots))
 	return b.showInteractiveSlots(ctx, chatID, user, state, slots)
 }
 
@@ -129,26 +185,31 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 	}
 	start, err := b.store.BookForUserByIndex(ctx, user.TelegramID, index, travel)
 	if err != nil {
+		b.logger.Printf("conversation slot: book failed user=%d index=%d travel=%d: %v", user.TelegramID, index, travel, err)
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 			return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, "book_failed"))
 	}
+	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s travel=%d", user.TelegramID, index, start.Format(time.RFC3339), travel)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout), travel), keyboardForRole(user.Role))
 }
 
-func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, selected []int) error {
+func (b *Bot) askCategory(ctx context.Context, chatID int64, user UserRecord, selected []int) error {
 	intro, _ := b.store.MasterIntro(ctx, user.TelegramID)
 	services, err := b.store.ListServices(ctx, user.TelegramID)
 	if err != nil {
+		b.logger.Printf("ask category: list services failed user=%d: %v", user.TelegramID, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
 	}
 	if len(services) == 0 {
 		return b.sendText(ctx, chatID, tr(user.Language, "services_empty"))
 	}
-	state := ConversationState{Step: conversationStepService, ServiceIndexes: selected}
+	categories := serviceCategories(services)
+	state := ConversationState{Step: conversationStepCategory, ServiceIndexes: selected}
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		b.logger.Printf("ask category: save state failed user=%d: %v", user.TelegramID, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
 	var sb strings.Builder
@@ -160,10 +221,73 @@ func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, sel
 		sb.WriteString(tr(user.Language, "selected_services", formatIndexes(selected)))
 		sb.WriteString("\n\n")
 	}
-	sb.WriteString(formatServices(user.Language, services))
+	sb.WriteString(formatCategories(user.Language, categories))
+	sb.WriteString("\n")
+	sb.WriteString(tr(user.Language, "ask_category"))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(categories)))
+}
+
+func (b *Bot) askSubcategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		b.logger.Printf("ask subcategory: list services failed user=%d category=%q: %v", user.TelegramID, state.Category, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+	}
+	subcategories := serviceSubcategories(services, state.Category)
+	if len(subcategories) == 0 {
+		return b.askService(ctx, chatID, user, state)
+	}
+	if len(subcategories) == 1 && subcategories[0] == "" {
+		state.Subcategory = ""
+		return b.askService(ctx, chatID, user, state)
+	}
+	state.Step = conversationStepSubcategory
+	state.Subcategory = ""
+	state.VisibleServiceIndexes = nil
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		b.logger.Printf("ask subcategory: save state failed user=%d: %v", user.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	var sb strings.Builder
+	sb.WriteString(tr(user.Language, "selected_category", displayCategory(user.Language, state.Category)))
+	sb.WriteString("\n")
+	sb.WriteString(formatSubcategories(user.Language, subcategories))
+	sb.WriteString("\n")
+	sb.WriteString(tr(user.Language, "ask_subcategory"))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(subcategories)))
+}
+
+func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		b.logger.Printf("ask service: list services failed user=%d category=%q subcategory=%q: %v", user.TelegramID, state.Category, state.Subcategory, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+	}
+	visibleIndexes := serviceIndexesForPath(services, state.Category, state.Subcategory)
+	if len(visibleIndexes) == 0 {
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	}
+	state.Step = conversationStepService
+	state.VisibleServiceIndexes = visibleIndexes
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		b.logger.Printf("ask service: save state failed user=%d: %v", user.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	visibleServices := make([]ServiceView, 0, len(visibleIndexes))
+	for _, globalIndex := range visibleIndexes {
+		visibleServices = append(visibleServices, services[globalIndex-1])
+	}
+	var sb strings.Builder
+	sb.WriteString(tr(user.Language, "selected_category", displayCategory(user.Language, state.Category)))
+	if state.Subcategory != "" {
+		sb.WriteString("\n")
+		sb.WriteString(tr(user.Language, "selected_subcategory", state.Subcategory))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(formatServicesList(user.Language, visibleServices, false))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_service"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(services)))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(visibleServices)))
 }
 
 func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserRecord, state ConversationState, slots []AvailabilitySlot) error {
@@ -204,12 +328,20 @@ func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserR
 }
 
 func formatServices(lang string, services []ServiceView) string {
+	return formatServicesList(lang, services, true)
+}
+
+func formatServicesList(lang string, services []ServiceView, includePath bool) string {
 	var sb strings.Builder
 	sb.WriteString(tr(lang, "services_header"))
 	for i, service := range services {
 		sb.WriteString(strconv.Itoa(i + 1))
 		sb.WriteString(". ")
-		sb.WriteString(service.Name)
+		if includePath {
+			sb.WriteString(serviceDisplayName(service))
+		} else {
+			sb.WriteString(service.Name)
+		}
 		sb.WriteString(" - ")
 		sb.WriteString(strconv.Itoa(service.DurationMin))
 		sb.WriteString(" ")
@@ -222,6 +354,95 @@ func formatServices(lang string, services []ServiceView) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func formatCategories(lang string, categories []string) string {
+	var sb strings.Builder
+	sb.WriteString(tr(lang, "categories_header"))
+	for i, category := range categories {
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		sb.WriteString(displayCategory(lang, category))
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func formatSubcategories(lang string, subcategories []string) string {
+	var sb strings.Builder
+	sb.WriteString(tr(lang, "subcategories_header"))
+	for i, subcategory := range subcategories {
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		if subcategory == "" {
+			sb.WriteString(tr(lang, "without_subcategory"))
+		} else {
+			sb.WriteString(subcategory)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func serviceCategories(services []ServiceView) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, service := range services {
+		key := service.Category
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func serviceSubcategories(services []ServiceView, category string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, service := range services {
+		if service.Category != category {
+			continue
+		}
+		key := service.Subcategory
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func serviceIndexesForPath(services []ServiceView, category, subcategory string) []int {
+	var out []int
+	for i, service := range services {
+		if service.Category == category && service.Subcategory == subcategory {
+			out = append(out, i+1)
+		}
+	}
+	return out
+}
+
+func serviceDisplayName(service ServiceView) string {
+	var parts []string
+	if service.Category != "" {
+		parts = append(parts, service.Category)
+	}
+	if service.Subcategory != "" {
+		parts = append(parts, service.Subcategory)
+	}
+	parts = append(parts, service.Name)
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return strings.Join(parts, " > ")
+}
+
+func displayCategory(lang, category string) string {
+	if category == "" {
+		return tr(lang, "without_category")
+	}
+	return category
 }
 
 func parseLanguageChoice(text string) (string, bool) {

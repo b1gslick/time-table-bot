@@ -17,12 +17,14 @@ const (
 )
 
 const (
-	conversationStepLanguage   = "language"
-	conversationStepService    = "service"
-	conversationStepMore       = "more"
-	conversationStepTimeChoice = "time_choice"
-	conversationStepDates      = "dates"
-	conversationStepSlot       = "slot"
+	conversationStepLanguage    = "language"
+	conversationStepCategory    = "category"
+	conversationStepSubcategory = "subcategory"
+	conversationStepService     = "service"
+	conversationStepMore        = "more"
+	conversationStepTimeChoice  = "time_choice"
+	conversationStepDates       = "dates"
+	conversationStepSlot        = "slot"
 )
 
 func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
@@ -51,6 +53,7 @@ func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
 	}
 
 	cmd := strings.ToLower(parts[0])
+	b.logger.Printf("message received chat=%d user=%d username=%q role=%s cmd=%q", msg.Chat.ID, current.TelegramID, current.Username, current.Role, cmd)
 
 	switch cmd {
 	case "/start":
@@ -251,16 +254,20 @@ func (b *Bot) handleServiceAdd(ctx context.Context, chatID int64, actor UserReco
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_usage"))
 	}
 	if err := b.store.AddService(ctx, actor.TelegramID, name, duration, ""); err != nil {
+		b.logger.Printf("service add failed admin=%d duration=%d name=%q: %v", actor.TelegramID, duration, name, err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_failed"))
 	}
+	b.logger.Printf("service added admin=%d duration=%d name=%q", actor.TelegramID, duration, name)
 	return b.sendText(ctx, chatID, tr(actor.Language, "service_add_ok", name, duration))
 }
 
 func (b *Bot) handleServices(ctx context.Context, chatID int64, actor UserRecord) error {
 	services, err := b.store.ListServices(ctx, actor.TelegramID)
 	if err != nil {
+		b.logger.Printf("services list failed user=%d role=%s: %v", actor.TelegramID, actor.Role, err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
 	}
+	b.logger.Printf("services list user=%d role=%s count=%d", actor.TelegramID, actor.Role, len(services))
 	if len(services) == 0 {
 		return b.sendText(ctx, chatID, tr(actor.Language, "services_empty"))
 	}
@@ -269,7 +276,7 @@ func (b *Bot) handleServices(ctx context.Context, chatID int64, actor UserRecord
 	for i, service := range services {
 		sb.WriteString(strconv.Itoa(i + 1))
 		sb.WriteString(". ")
-		sb.WriteString(service.Name)
+		sb.WriteString(serviceDisplayName(service))
 		sb.WriteString(" - ")
 		sb.WriteString(strconv.Itoa(service.DurationMin))
 		sb.WriteString(" ")
@@ -603,11 +610,13 @@ func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, pa
 		}
 		start, err := b.store.BookForUserByIndex(ctx, actor.TelegramID, index, travel)
 		if err != nil {
+			b.logger.Printf("book by index failed user=%d index=%d travel=%d: %v", actor.TelegramID, index, travel, err)
 			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 				return b.sendText(ctx, chatID, tr(actor.Language, "book_need_schedule"))
 			}
 			return b.sendText(ctx, chatID, tr(actor.Language, "book_failed"))
 		}
+		b.logger.Printf("book by index ok user=%d index=%d start=%s travel=%d", actor.TelegramID, index, start.Format(time.RFC3339), travel)
 		return b.sendText(ctx, chatID, tr(actor.Language, "book_ok", start.Format(dateTimeLayout), travel))
 	}
 	start, err := parseDateTime(parts[1], parts[2])
@@ -621,8 +630,10 @@ func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, pa
 		}
 	}
 	if err := b.store.BookForUser(ctx, actor.TelegramID, start, travel); err != nil {
+		b.logger.Printf("book by datetime failed user=%d start=%s travel=%d: %v", actor.TelegramID, start.Format(time.RFC3339), travel, err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "book_failed"))
 	}
+	b.logger.Printf("book by datetime ok user=%d start=%s travel=%d", actor.TelegramID, start.Format(time.RFC3339), travel)
 	return b.sendText(ctx, chatID, tr(actor.Language, "book_ok", start.Format(dateTimeLayout), travel))
 }
 
@@ -689,18 +700,26 @@ func (b *Bot) handleSetTravel(ctx context.Context, chatID int64, actor UserRecor
 }
 
 func (b *Bot) sendText(ctx context.Context, chatID int64, text string) error {
-	return b.tg.SendMessage(ctx, telegram.SendMessageRequest{
+	if err := b.tg.SendMessage(ctx, telegram.SendMessageRequest{
 		ChatID: chatID,
 		Text:   text,
-	})
+	}); err != nil {
+		b.logger.Printf("send message failed chat=%d: %v", chatID, err)
+		return err
+	}
+	return nil
 }
 
 func (b *Bot) sendTextWithKeyboard(ctx context.Context, chatID int64, text string, kb *telegram.ReplyMarkup) error {
-	return b.tg.SendMessage(ctx, telegram.SendMessageRequest{
+	if err := b.tg.SendMessage(ctx, telegram.SendMessageRequest{
 		ChatID:      chatID,
 		Text:        text,
 		ReplyMarkup: kb,
-	})
+	}); err != nil {
+		b.logger.Printf("send message with keyboard failed chat=%d: %v", chatID, err)
+		return err
+	}
+	return nil
 }
 
 func normalizeUsername(value string) string {

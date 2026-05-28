@@ -129,9 +129,12 @@ func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name s
 	if err != nil {
 		return err
 	}
+	category, subcategory, serviceName := parseServicePath(name)
 	_, err = s.repo.UpsertAdminService(ctx, domain.AdminService{
 		AdminUserID: adminID,
-		Name:        strings.TrimSpace(name),
+		Category:    category,
+		Subcategory: subcategory,
+		Name:        serviceName,
 		DurationMin: durationMin,
 		IsActive:    true,
 	})
@@ -145,7 +148,7 @@ func (s *appStore) ListServices(ctx context.Context, telegramID int64) ([]bot.Se
 	}
 
 	query := `
-SELECT svc.id, COALESCE(a.username, ''), svc.name, svc.description, svc.duration_min, svc.price_cents
+SELECT svc.id, COALESCE(a.username, ''), svc.category, svc.subcategory, svc.name, svc.description, svc.duration_min, svc.price_cents
 FROM admin_services svc
 JOIN users a ON a.id = svc.admin_user_id
 WHERE svc.is_active = TRUE
@@ -167,7 +170,7 @@ WHERE svc.is_active = TRUE
 	var ids []int64
 	for rows.Next() {
 		var item bot.ServiceView
-		if err := rows.Scan(&item.ID, &item.AdminName, &item.Name, &item.Description, &item.DurationMin, &item.PriceCents); err != nil {
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.Category, &item.Subcategory, &item.Name, &item.Description, &item.DurationMin, &item.PriceCents); err != nil {
 			return nil, err
 		}
 		services = append(services, item)
@@ -1392,7 +1395,7 @@ func (s *appStore) servicesByIDs(ctx context.Context, ids []int64) ([]domain.Adm
 		args = append(args, id)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, admin_user_id, name, description, duration_min, price_cents, is_active, created_at, updated_at
+SELECT id, admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active, created_at, updated_at
 FROM admin_services
 WHERE is_active = TRUE AND id IN (`+strings.Join(placeholders, ",")+`)
 ORDER BY array_position(ARRAY[`+strings.Join(placeholders, ",")+`]::bigint[], id);
@@ -1404,7 +1407,7 @@ ORDER BY array_position(ARRAY[`+strings.Join(placeholders, ",")+`]::bigint[], id
 	var out []domain.AdminService
 	for rows.Next() {
 		var service domain.AdminService
-		if err := rows.Scan(&service.ID, &service.AdminUserID, &service.Name, &service.Description, &service.DurationMin, &service.PriceCents, &service.IsActive, &service.CreatedAt, &service.UpdatedAt); err != nil {
+		if err := rows.Scan(&service.ID, &service.AdminUserID, &service.Category, &service.Subcategory, &service.Name, &service.Description, &service.DurationMin, &service.PriceCents, &service.IsActive, &service.CreatedAt, &service.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, service)
@@ -1834,6 +1837,45 @@ func parseClockSetting(raw string) (time.Duration, error) {
 func formatClockDuration(value time.Duration) string {
 	totalMinutes := int(value / time.Minute)
 	return fmt.Sprintf("%02d:%02d", totalMinutes/60, totalMinutes%60)
+}
+
+func parseServicePath(raw string) (string, string, string) {
+	parts := splitServicePath(raw)
+	switch len(parts) {
+	case 0:
+		return "", "", ""
+	case 1:
+		return "", "", parts[0]
+	case 2:
+		return parts[0], "", parts[1]
+	default:
+		return parts[0], parts[1], strings.Join(parts[2:], " > ")
+	}
+}
+
+func splitServicePath(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var sep string
+	switch {
+	case strings.Contains(raw, ">"):
+		sep = ">"
+	case strings.Contains(raw, "|"):
+		sep = "|"
+	default:
+		return []string{raw}
+	}
+	parts := strings.Split(raw, sep)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func userReminderDayBefore(language string, startAt time.Time) string {

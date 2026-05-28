@@ -22,18 +22,30 @@ CREATE TABLE IF NOT EXISTS admin_profiles (
 CREATE TABLE IF NOT EXISTS admin_services (
     id BIGSERIAL PRIMARY KEY,
     admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    category TEXT NOT NULL DEFAULT '',
+    subcategory TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     duration_min INTEGER NOT NULL CHECK (duration_min > 0),
     price_cents BIGINT NOT NULL DEFAULT 0 CHECK (price_cents >= 0),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (admin_user_id, name)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE admin_services
+    ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE admin_services
+    ADD COLUMN IF NOT EXISTS subcategory TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE admin_services
+    DROP CONSTRAINT IF EXISTS admin_services_admin_user_id_name_key;
 
 CREATE INDEX IF NOT EXISTS idx_admin_services_admin_active
     ON admin_services(admin_user_id, is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_services_admin_path_unique
+    ON admin_services(admin_user_id, category, subcategory, name);
 
 CREATE TABLE IF NOT EXISTS admin_settings (
     admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

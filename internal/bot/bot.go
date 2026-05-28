@@ -57,6 +57,8 @@ type BookingView struct {
 type ServiceView struct {
 	ID          int64
 	AdminName   string
+	Category    string
+	Subcategory string
 	Name        string
 	Description string
 	DurationMin int
@@ -86,8 +88,11 @@ type GenerateScheduleResult struct {
 }
 
 type ConversationState struct {
-	Step           string `json:"step"`
-	ServiceIndexes []int  `json:"service_indexes,omitempty"`
+	Step                  string `json:"step"`
+	Category              string `json:"category,omitempty"`
+	Subcategory           string `json:"subcategory,omitempty"`
+	ServiceIndexes        []int  `json:"service_indexes,omitempty"`
+	VisibleServiceIndexes []int  `json:"visible_service_indexes,omitempty"`
 }
 
 type Store interface {
@@ -153,6 +158,8 @@ func New(tg *telegram.Client, store Store, logger *log.Logger, superAdminUsernam
 
 func (b *Bot) Run(ctx context.Context) error {
 	var offset int64 = 0
+	var lastIdleLog time.Time
+	b.logger.Printf("telegram polling started")
 	for {
 		select {
 		case <-ctx.Done():
@@ -168,6 +175,12 @@ func (b *Bot) Run(ctx context.Context) error {
 			b.logger.Printf("getUpdates error: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
+		}
+		if len(updates) > 0 {
+			b.logger.Printf("telegram updates received count=%d first_update_id=%d last_update_id=%d", len(updates), updates[0].UpdateID, updates[len(updates)-1].UpdateID)
+		} else if time.Since(lastIdleLog) >= 5*time.Minute {
+			b.logger.Printf("telegram poll ok updates=0")
+			lastIdleLog = time.Now()
 		}
 
 		for _, upd := range updates {

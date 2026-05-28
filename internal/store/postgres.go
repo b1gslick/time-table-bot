@@ -162,21 +162,23 @@ func (s *PostgresStore) UpsertAdminService(ctx context.Context, service domain.A
 		return domain.AdminService{}, ErrInvalidArgument
 	}
 	const q = `
-INSERT INTO admin_services (admin_user_id, name, description, duration_min, price_cents, is_active)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT(admin_user_id, name) DO UPDATE SET
+INSERT INTO admin_services (admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT(admin_user_id, category, subcategory, name) DO UPDATE SET
 	description = EXCLUDED.description,
 	duration_min = EXCLUDED.duration_min,
 	price_cents = EXCLUDED.price_cents,
 	is_active = EXCLUDED.is_active,
 	updated_at = NOW()
-RETURNING id, admin_user_id, name, description, duration_min, price_cents, is_active, created_at, updated_at;
+RETURNING id, admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active, created_at, updated_at;
 `
 	var out domain.AdminService
 	if err := s.db.QueryRowContext(
 		ctx,
 		q,
 		service.AdminUserID,
+		strings.TrimSpace(service.Category),
+		strings.TrimSpace(service.Subcategory),
 		strings.TrimSpace(service.Name),
 		service.Description,
 		service.DurationMin,
@@ -185,6 +187,8 @@ RETURNING id, admin_user_id, name, description, duration_min, price_cents, is_ac
 	).Scan(
 		&out.ID,
 		&out.AdminUserID,
+		&out.Category,
+		&out.Subcategory,
 		&out.Name,
 		&out.Description,
 		&out.DurationMin,
@@ -203,7 +207,7 @@ func (s *PostgresStore) ListAdminServices(ctx context.Context, adminUserID int64
 		return nil, ErrInvalidArgument
 	}
 	q := `
-SELECT id, admin_user_id, name, description, duration_min, price_cents, is_active, created_at, updated_at
+SELECT id, admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active, created_at, updated_at
 FROM admin_services
 WHERE admin_user_id = $1
 `
@@ -223,7 +227,7 @@ WHERE admin_user_id = $1
 	for rows.Next() {
 		var svc domain.AdminService
 		if err := rows.Scan(
-			&svc.ID, &svc.AdminUserID, &svc.Name, &svc.Description,
+			&svc.ID, &svc.AdminUserID, &svc.Category, &svc.Subcategory, &svc.Name, &svc.Description,
 			&svc.DurationMin, &svc.PriceCents, &svc.IsActive, &svc.CreatedAt, &svc.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan admin service: %w", err)

@@ -47,6 +47,8 @@ type AdminProfile struct {
 type AdminService struct {
 	ID          int64
 	AdminUserID int64
+	Category    string
+	Subcategory string
 	Name        string
 	Description string
 	DurationMin int

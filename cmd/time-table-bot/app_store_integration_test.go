@@ -40,10 +40,10 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 		t.Fatalf("Register client: %v", err)
 	}
 
-	if err := app.AddService(ctx, 2001, "service 1", 30, ""); err != nil {
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > service 1", 30, ""); err != nil {
 		t.Fatalf("AddService 1: %v", err)
 	}
-	if err := app.AddService(ctx, 2001, "service 4", 45, ""); err != nil {
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > service 4", 45, ""); err != nil {
 		t.Fatalf("AddService 4: %v", err)
 	}
 
@@ -67,6 +67,9 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 	}
 	if len(services) != 2 {
 		t.Fatalf("services = %d, want 2", len(services))
+	}
+	if services[0].Category != "Nails" || services[0].Subcategory != "Manicure" || services[0].Name != "service 1" {
+		t.Fatalf("service path = %q > %q > %q, want Nails > Manicure > service 1", services[0].Category, services[0].Subcategory, services[0].Name)
 	}
 
 	free, err := app.ListFreeSlotsForServices(ctx, 3001, []int{1, 2}, start)
