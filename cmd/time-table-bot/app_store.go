@@ -129,6 +129,42 @@ func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name s
 	return err
 }
 
+func (s *appStore) DeleteServiceByIndex(ctx context.Context, adminTelegramID int64, index int) error {
+	if index <= 0 {
+		return store.ErrInvalidArgument
+	}
+	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	services, err := s.ListServices(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	if index > len(services) {
+		return store.ErrInvalidArgument
+	}
+	serviceID := services[index-1].ID
+	result, err := s.db.ExecContext(ctx, `
+UPDATE admin_services
+SET is_active = FALSE, updated_at = NOW()
+WHERE id = $1 AND admin_user_id = $2 AND is_active = TRUE;
+`, serviceID, adminID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return store.ErrNotFound
+	}
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_services")
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	return nil
+}
+
 func (s *appStore) ListServices(ctx context.Context, telegramID int64) ([]bot.ServiceView, error) {
 	actor, err := s.GetUserByTelegramID(ctx, telegramID)
 	if err != nil {
@@ -338,6 +374,32 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 		}
 	}
 	return result, nil
+}
+
+func (s *appStore) DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (bot.DeleteScheduleResult, error) {
+	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return bot.DeleteScheduleResult{}, err
+	}
+	if monthStart.IsZero() {
+		return bot.DeleteScheduleResult{}, store.ErrInvalidArgument
+	}
+	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
+	to := from.AddDate(0, 1, 0)
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM schedule_slots
+WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3;
+`, adminID, from, to)
+	if err != nil {
+		return bot.DeleteScheduleResult{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return bot.DeleteScheduleResult{}, err
+	}
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_free_slots")
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	return bot.DeleteScheduleResult{Deleted: int(affected)}, nil
 }
 
 func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error {

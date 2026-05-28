@@ -29,12 +29,14 @@ const (
 	conversationStepAddSvcSub   = "admin_service_subcategory"
 	conversationStepAddSvcName  = "admin_service_name"
 	conversationStepAddSvcDur   = "admin_service_duration"
+	conversationStepDeleteSvc   = "admin_service_delete"
 	conversationStepSetProfile  = "admin_set_profile"
 	conversationStepSetServices = "admin_set_services"
 	conversationStepSetHours    = "admin_set_hours"
 	conversationStepSetDuration = "admin_set_duration"
 	conversationStepGenMonth    = "admin_generate_month"
 	conversationStepGenMonths   = "admin_generate_months"
+	conversationStepDeleteMonth = "admin_delete_month"
 	conversationStepAdminAdd    = "super_admin_add"
 	conversationStepAdminRemove = "super_admin_remove"
 	conversationStepRoleUser    = "super_admin_role_user"
@@ -103,6 +105,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleSetServices(ctx, msg.Chat.ID, current, text)
 	case "/service_add", "/addservice":
 		return b.handleServiceAdd(ctx, msg.Chat.ID, current, parts)
+	case "/service_delete", "/service_remove", "/delservice":
+		return b.handleServiceDelete(ctx, msg.Chat.ID, current, parts)
 	case "/services":
 		return b.handleServices(ctx, msg.Chat.ID, current)
 	case "/sethours":
@@ -111,6 +115,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleSetDuration(ctx, msg.Chat.ID, current, parts)
 	case "/generate", "/gen":
 		return b.handleGenerate(ctx, msg.Chat.ID, current, parts)
+	case "/calendar_delete", "/schedule_delete", "/delete_calendar":
+		return b.handleScheduleDelete(ctx, msg.Chat.ID, current, parts)
 	case "/appoint":
 		return b.handleAppoint(ctx, msg.Chat.ID, current, parts)
 	case "/cancel":
@@ -285,6 +291,8 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleMy(ctx, chatID, user)
 	case "action_service_add":
 		return true, b.handleServiceAdd(ctx, chatID, user, []string{"/service_add"})
+	case "action_service_delete":
+		return true, b.handleServiceDelete(ctx, chatID, user, []string{"/service_delete"})
 	case "action_service_list":
 		return true, b.handleServices(ctx, chatID, user)
 	case "action_services_text":
@@ -295,6 +303,8 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleSetDuration(ctx, chatID, user, []string{"/setduration"})
 	case "action_generate":
 		return true, b.handleGenerate(ctx, chatID, user, []string{"/generate"})
+	case "action_delete_month":
+		return true, b.handleScheduleDelete(ctx, chatID, user, []string{"/calendar_delete"})
 	case "action_set_profile":
 		return true, b.handleSetProfile(ctx, chatID, user, "/setprofile")
 	case "action_lang_ru":
@@ -339,11 +349,13 @@ func menuButtonAction(lang, text string) string {
 		{"action_book", "button_action_book"},
 		{"action_my", "button_action_my"},
 		{"action_service_add", "button_action_service_add"},
+		{"action_service_delete", "button_action_service_delete"},
 		{"action_service_list", "button_action_service_list"},
 		{"action_services_text", "button_action_services_text"},
 		{"action_set_hours", "button_action_set_hours"},
 		{"action_set_duration", "button_action_set_duration"},
 		{"action_generate", "button_action_generate"},
+		{"action_delete_month", "button_action_delete_month"},
 		{"action_set_profile", "button_action_set_profile"},
 		{"action_lang_ru", "button_action_lang_ru"},
 		{"action_lang_en", "button_action_lang_en"},
@@ -541,6 +553,46 @@ func (b *Bot) handleServices(ctx context.Context, chatID int64, actor UserRecord
 	return b.sendText(ctx, chatID, sb.String())
 }
 
+func (b *Bot) handleServiceDelete(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 2 {
+		return b.askServiceDelete(ctx, chatID, actor)
+	}
+	index, err := strconv.Atoi(parts[1])
+	if err != nil || index <= 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_delete_usage"))
+	}
+	if err := b.store.DeleteServiceByIndex(ctx, actor.TelegramID, index); err != nil {
+		b.logger.Printf("service delete failed admin=%d index=%d: %v", actor.TelegramID, index, err)
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+			return b.sendText(ctx, chatID, tr(actor.Language, "service_delete_bad_index"))
+		}
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_delete_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "service_delete_ok", index))
+}
+
+func (b *Bot) askServiceDelete(ctx context.Context, chatID int64, actor UserRecord) error {
+	services, err := b.store.ListServices(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("service delete list failed admin=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
+	}
+	if len(services) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_empty"))
+	}
+	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepDeleteSvc}); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
+	}
+	var sb strings.Builder
+	sb.WriteString(formatServices(actor.Language, services))
+	sb.WriteString("\n")
+	sb.WriteString(tr(actor.Language, "service_delete_ask_index"))
+	return b.sendText(ctx, chatID, sb.String())
+}
+
 func (b *Bot) handleSetHours(ctx context.Context, chatID int64, actor UserRecord, text string) error {
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
@@ -618,6 +670,25 @@ func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord
 		return b.sendText(ctx, chatID, tr(actor.Language, "generate_failed"))
 	}
 	return b.sendText(ctx, chatID, tr(actor.Language, "generate_ok", result.Created, result.Skipped))
+}
+
+func (b *Bot) handleScheduleDelete(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) < 2 {
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepDeleteMonth}, "schedule_delete_ask_month", nil)
+	}
+	monthStart, err := time.Parse(monthLayout, parts[1])
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "schedule_delete_usage"))
+	}
+	result, err := b.store.DeleteScheduleMonth(ctx, actor.TelegramID, monthStart)
+	if err != nil {
+		b.logger.Printf("schedule delete failed admin=%d month=%s: %v", actor.TelegramID, monthStart.Format(monthLayout), err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "schedule_delete_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "schedule_delete_ok", monthStart.Format(monthLayout), result.Deleted))
 }
 
 func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {

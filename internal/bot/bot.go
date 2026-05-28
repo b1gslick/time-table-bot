@@ -94,6 +94,10 @@ type GenerateScheduleResult struct {
 	Skipped int
 }
 
+type DeleteScheduleResult struct {
+	Deleted int
+}
+
 type ConversationState struct {
 	Step                  string `json:"step"`
 	Category              string `json:"category,omitempty"`
@@ -118,11 +122,13 @@ type Store interface {
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
 	AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error
+	DeleteServiceByIndex(ctx context.Context, adminTelegramID int64, index int) error
 	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
 	MasterIntro(ctx context.Context, telegramID int64) (string, error)
 	SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error
 	SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error
 	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
+	DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (DeleteScheduleResult, error)
 
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error

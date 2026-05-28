@@ -202,6 +202,69 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
 	}
 }
 
+func TestAppStore_DeleteServiceAndScheduleMonth(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Classic", 30, ""); err != nil {
+		t.Fatalf("AddService 1: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Color", 45, ""); err != nil {
+		t.Fatalf("AddService 2: %v", err)
+	}
+	if err := app.DeleteServiceByIndex(ctx, 2001, 2); err != nil {
+		t.Fatalf("DeleteServiceByIndex: %v", err)
+	}
+	services, err := app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	if len(services) != 1 || services[0].Name != "Classic" {
+		t.Fatalf("services after delete = %#v, want only Classic", services)
+	}
+
+	juneStart := time.Date(2026, 6, 1, 10, 0, 0, 0, loc)
+	julyStart := time.Date(2026, 7, 1, 10, 0, 0, 0, loc)
+	for _, slotStart := range []time.Time{juneStart, juneStart.Add(30 * time.Minute), julyStart} {
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(30 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %s: %v", slotStart, err)
+		}
+	}
+	result, err := app.DeleteScheduleMonth(ctx, 2001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("DeleteScheduleMonth: %v", err)
+	}
+	if result.Deleted != 2 {
+		t.Fatalf("deleted slots = %d, want 2", result.Deleted)
+	}
+	var remaining int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schedule_slots").Scan(&remaining); err != nil {
+		t.Fatalf("count remaining slots: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining slots = %d, want 1", remaining)
+	}
+}
+
 func TestAppStore_AdminScheduleReminderAndMissingMonthNotice(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

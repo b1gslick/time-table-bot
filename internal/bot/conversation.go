@@ -46,6 +46,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationAddServiceName(ctx, chatID, user, state, text)
 	case conversationStepAddSvcDur:
 		return true, b.conversationAddServiceDuration(ctx, chatID, user, state, text)
+	case conversationStepDeleteSvc:
+		return true, b.conversationDeleteService(ctx, chatID, user, text)
 	case conversationStepSetProfile:
 		return true, b.conversationSetProfile(ctx, chatID, user, text)
 	case conversationStepSetServices:
@@ -58,6 +60,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationGenerateMonth(ctx, chatID, user, state, text)
 	case conversationStepGenMonths:
 		return true, b.conversationGenerateMonths(ctx, chatID, user, state, text)
+	case conversationStepDeleteMonth:
+		return true, b.conversationDeleteScheduleMonth(ctx, chatID, user, text)
 	case conversationStepAdminAdd:
 		return true, b.conversationAdminAdd(ctx, chatID, user, text)
 	case conversationStepAdminRemove:
@@ -315,6 +319,26 @@ func (b *Bot) conversationAddServiceDuration(ctx context.Context, chatID int64, 
 	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ok", path, duration))
 }
 
+func (b *Bot) conversationDeleteService(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	index, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || index <= 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_delete_ask_index"))
+	}
+	if err := b.store.DeleteServiceByIndex(ctx, user.TelegramID, index); err != nil {
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+			return b.sendText(ctx, chatID, tr(user.Language, "service_delete_bad_index"))
+		}
+		b.logger.Printf("interactive service delete failed admin=%d index=%d: %v", user.TelegramID, index, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "service_delete_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_delete_ok", index), keyboardForRole(user.Role, user.Language))
+}
+
 func (b *Bot) conversationSetProfile(ctx context.Context, chatID int64, user UserRecord, text string) error {
 	if !isAdmin(user.Role) {
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
@@ -421,6 +445,24 @@ func (b *Bot) conversationGenerateMonths(ctx context.Context, chatID int64, user
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "generate_ok", result.Created, result.Skipped), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationDeleteScheduleMonth(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	monthStart, err := time.Parse(monthLayout, strings.TrimSpace(text))
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "schedule_delete_usage"))
+	}
+	result, err := b.store.DeleteScheduleMonth(ctx, user.TelegramID, monthStart)
+	if err != nil {
+		b.logger.Printf("interactive schedule delete failed admin=%d month=%s: %v", user.TelegramID, monthStart.Format(monthLayout), err)
+		return b.sendText(ctx, chatID, tr(user.Language, "schedule_delete_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_delete_ok", monthStart.Format(monthLayout), result.Deleted), keyboardForRole(user.Role, user.Language))
 }
 
 func (b *Bot) conversationAdminAdd(ctx context.Context, chatID int64, user UserRecord, text string) error {
