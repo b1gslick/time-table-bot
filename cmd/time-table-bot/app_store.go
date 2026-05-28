@@ -17,7 +17,6 @@ import (
 
 const (
 	defaultSessionDuration = 60
-	defaultTravelMinutes   = 30
 )
 
 type appStore struct {
@@ -86,17 +85,6 @@ func (s *appStore) SetUserLanguage(ctx context.Context, telegramID int64, langua
 		return err
 	}
 	return s.repo.SetAdminSetting(ctx, userID, "language", language)
-}
-
-func (s *appStore) SetUserTravelDefault(ctx context.Context, telegramID int64, travelMin int) error {
-	if travelMin < 0 {
-		return store.ErrInvalidArgument
-	}
-	userID, err := s.userIDByTelegram(ctx, telegramID)
-	if err != nil {
-		return err
-	}
-	return s.repo.SetAdminSetting(ctx, userID, "travel_default", fmt.Sprintf("%d", travelMin))
 }
 
 func (s *appStore) SetProfileText(ctx context.Context, adminTelegramID int64, text string) error {
@@ -352,7 +340,7 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 	return result, nil
 }
 
-func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time, travelMin int) error {
+func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error {
 	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
@@ -369,7 +357,7 @@ func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int
 		SlotID:        slotID,
 		UserID:        &clientID,
 		Status:        domain.BookingStatusBooked,
-		TravelMinutes: normalizeTravel(travelMin),
+		TravelMinutes: 0,
 		Note:          "created_by_admin",
 	})
 	return err
@@ -423,6 +411,14 @@ func (s *appStore) BlockSlot(ctx context.Context, adminTelegramID int64, start t
 func (s *appStore) ListFreeSlotsForMonth(ctx context.Context, telegramID int64, monthStart time.Time) ([]time.Time, error) {
 	from := time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, s.loc)
 	to := from.AddDate(0, 1, 0)
+	from = maxTime(from, time.Now().In(s.loc))
+	if !from.Before(to) {
+		if telegramID > 0 {
+			_ = s.saveTimesForUser(ctx, telegramID, "last_free_slots", nil)
+			_ = s.clearSettingForUser(ctx, telegramID, "last_availability_slots")
+		}
+		return []time.Time{}, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.start_at
 FROM schedule_slots s
@@ -462,11 +458,12 @@ ORDER BY s.start_at ASC;
 
 func (s *appStore) ListFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, monthStart time.Time) ([]bot.AvailabilitySlot, error) {
 	from := time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, s.loc)
-	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, from, from.AddDate(0, 1, 0), nil)
+	to := from.AddDate(0, 1, 0)
+	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, maxTime(from, time.Now().In(s.loc)), to, nil)
 }
 
 func (s *appStore) ListFreeSlotsForServicesRange(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time) ([]bot.AvailabilitySlot, error) {
-	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, from.In(s.loc), to.In(s.loc), nil)
+	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, maxTime(from.In(s.loc), time.Now().In(s.loc)), to.In(s.loc), nil)
 }
 
 func (s *appStore) ListFreeSlotsForServicesDates(ctx context.Context, telegramID int64, serviceIndexes []int, dates []time.Time) ([]bot.AvailabilitySlot, error) {
@@ -486,7 +483,7 @@ func (s *appStore) ListFreeSlotsForServicesDates(ctx context.Context, telegramID
 			maxDate = day
 		}
 	}
-	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, minDate, maxDate.AddDate(0, 0, 1), allowed)
+	return s.listFreeSlotsForServices(ctx, telegramID, serviceIndexes, maxTime(minDate, time.Now().In(s.loc)), maxDate.AddDate(0, 0, 1), allowed)
 }
 
 func (s *appStore) RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error) {
@@ -583,6 +580,12 @@ func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int6
 	if len(serviceIndexes) == 0 {
 		return nil, store.ErrInvalidArgument
 	}
+	if !from.Before(to) {
+		if telegramID > 0 {
+			_ = s.saveAvailabilityForUser(ctx, telegramID, nil)
+		}
+		return []bot.AvailabilitySlot{}, nil
+	}
 	serviceIDs, err := s.loadInt64sForUser(ctx, telegramID, "last_services")
 	if err != nil {
 		return nil, err
@@ -672,7 +675,7 @@ func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from ti
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT b.id, COALESCE(a.username, ''), s.start_at, s.end_at, b.status, b.travel_minutes, b.note
+SELECT b.id, COALESCE(a.username, ''), s.start_at, s.end_at, b.status, b.note
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 JOIN users a ON a.id = s.admin_user_id
@@ -691,7 +694,7 @@ LIMIT 20;
 	for rows.Next() {
 		var item bot.BookingView
 		var note string
-		if err := rows.Scan(&item.ID, &item.AdminName, &item.StartAt, &item.EndAt, &item.Status, &item.TravelMin, &note); err != nil {
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.StartAt, &item.EndAt, &item.Status, &note); err != nil {
 			return nil, err
 		}
 		item.StartAt = item.StartAt.In(s.loc)
@@ -709,7 +712,7 @@ LIMIT 20;
 	return items, nil
 }
 
-func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error {
+func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time.Time) error {
 	userID, err := s.userIDByTelegram(ctx, telegramID)
 	if err != nil {
 		return err
@@ -722,19 +725,19 @@ func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time
 		SlotID:        slotID,
 		UserID:        &userID,
 		Status:        domain.BookingStatusBooked,
-		TravelMinutes: normalizeTravel(travelMin),
+		TravelMinutes: 0,
 		Note:          "created_by_user",
 	})
 	return err
 }
 
-func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error) {
+func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, index int) (time.Time, error) {
 	availability, err := s.loadAvailabilityForUser(ctx, telegramID)
 	if err == nil && len(availability) > 0 {
 		if index <= 0 || index > len(availability) {
 			return time.Time{}, store.ErrInvalidArgument
 		}
-		return s.bookAvailability(ctx, telegramID, availability[index-1], travelMin)
+		return s.bookAvailability(ctx, telegramID, availability[index-1])
 	}
 
 	slots, err := s.loadTimesForUser(ctx, telegramID, "last_free_slots")
@@ -745,7 +748,7 @@ func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, ind
 		return time.Time{}, store.ErrInvalidArgument
 	}
 	start := slots[index-1]
-	return start, s.BookForUser(ctx, telegramID, start, travelMin)
+	return start, s.BookForUser(ctx, telegramID, start)
 }
 
 func (s *appStore) MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (bot.MoveResult, error) {
@@ -825,7 +828,7 @@ func (s *appStore) MoveBookingForUserByIndex(ctx context.Context, telegramID int
 
 func (s *appStore) PrepareUpcomingReminders(ctx context.Context, now time.Time) error {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT b.id, b.travel_minutes, s.start_at, u.telegram_id, u.username, a.telegram_id,
+SELECT b.id, s.start_at, u.telegram_id, u.username, a.telegram_id,
        COALESCE(ul.value, 'ru') AS user_language,
        COALESCE(al.value, 'ru') AS admin_language
 FROM bookings b
@@ -846,7 +849,6 @@ WHERE b.status = 'booked'
 	for rows.Next() {
 		var (
 			bookingID     int64
-			travelMinutes int
 			startAt       time.Time
 			userChatID    sql.NullInt64
 			username      sql.NullString
@@ -854,7 +856,7 @@ WHERE b.status = 'booked'
 			userLanguage  string
 			adminLanguage string
 		)
-		if err := rows.Scan(&bookingID, &travelMinutes, &startAt, &userChatID, &username, &adminChatID, &userLanguage, &adminLanguage); err != nil {
+		if err := rows.Scan(&bookingID, &startAt, &userChatID, &username, &adminChatID, &userLanguage, &adminLanguage); err != nil {
 			return err
 		}
 		startAt = startAt.In(s.loc)
@@ -867,7 +869,7 @@ WHERE b.status = 'booked'
 			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_before", "user", startAt.Add(-24*time.Hour), userReminderDayBefore(userLanguage, startAt)); err != nil {
 				return err
 			}
-			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_of_user", "user", startAt.Add(-time.Duration(normalizeTravel(travelMinutes)+10)*time.Minute), userReminderTravel(userLanguage, startAt)); err != nil {
+			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "hour_before", "user", startAt.Add(-time.Hour), userReminderHourBefore(userLanguage, startAt)); err != nil {
 				return err
 			}
 		}
@@ -1100,17 +1102,16 @@ func (s *appStore) userRecordFromDomain(ctx context.Context, u domain.User) (bot
 		FirstName: firstName,
 		LastName:  lastName,
 		Role:      bot.Role(u.Role),
-		TravelMin: defaultTravelMinutes,
 	}
 	if u.TelegramID != nil {
 		rec.TelegramID = *u.TelegramID
 	}
-	if lang, err := s.stringSetting(ctx, u.ID, "language", bot.LangRU); err == nil {
+	if lang, err := s.stringSetting(ctx, u.ID, "language", ""); err == nil && lang != "" {
 		rec.Language = lang
+		rec.LanguageSet = true
 	}
-	travel, err := s.intSetting(ctx, u.ID, "travel_default", defaultTravelMinutes)
-	if err == nil {
-		rec.TravelMin = travel
+	if rec.Language == "" {
+		rec.Language = bot.LangRU
 	}
 	return rec, nil
 }
@@ -1525,7 +1526,7 @@ func (s *appStore) usernameByID(ctx context.Context, userID int64) (string, erro
 	return username, err
 }
 
-func (s *appStore) bookAvailability(ctx context.Context, telegramID int64, entry availabilityCacheEntry, travelMin int) (time.Time, error) {
+func (s *appStore) bookAvailability(ctx context.Context, telegramID int64, entry availabilityCacheEntry) (time.Time, error) {
 	if len(entry.SlotIDs) == 0 {
 		return time.Time{}, store.ErrInvalidArgument
 	}
@@ -1589,14 +1590,14 @@ WHERE slot_id = $1 AND status IN ('booked', 'blocked');
 INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
 VALUES ($1, $2, $3, 'booked', $4, $5)
 RETURNING id;
-`, entry.SlotIDs[0], userID, serviceID, normalizeTravel(travelMin), string(note)).Scan(&bookingID); err != nil {
+`, entry.SlotIDs[0], userID, serviceID, 0, string(note)).Scan(&bookingID); err != nil {
 		return time.Time{}, err
 	}
 	for _, slotID := range entry.SlotIDs[1:] {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
 VALUES ($1, NULL, NULL, 'blocked', $2, $3);
-`, slotID, normalizeTravel(travelMin), coveredByBookingNote(bookingID)); err != nil {
+`, slotID, 0, coveredByBookingNote(bookingID)); err != nil {
 			return time.Time{}, err
 		}
 	}
@@ -1708,14 +1709,14 @@ WHERE status = 'blocked' AND note = $1;
 INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
 VALUES ($1, $2, $3, 'booked', $4, $5)
 RETURNING id;
-`, entry.SlotIDs[0], userID, serviceID, defaultTravelMinutes, string(note)).Scan(&newBookingID); err != nil {
+`, entry.SlotIDs[0], userID, serviceID, 0, string(note)).Scan(&newBookingID); err != nil {
 		return bot.MoveResult{}, err
 	}
 	for _, slotID := range entry.SlotIDs[1:] {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
 VALUES ($1, NULL, NULL, 'blocked', $2, $3);
-`, slotID, defaultTravelMinutes, coveredByBookingNote(newBookingID)); err != nil {
+`, slotID, 0, coveredByBookingNote(newBookingID)); err != nil {
 			return bot.MoveResult{}, err
 		}
 	}
@@ -1747,6 +1748,13 @@ func dateOnlyLocal(value time.Time, loc *time.Location) time.Time {
 	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, loc)
 }
 
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
 func bookingDurationFromNote(note string) int {
 	var parsed bookingServiceNote
 	if err := json.Unmarshal([]byte(note), &parsed); err != nil {
@@ -1759,13 +1767,6 @@ func normalizeUsername(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "@")
 	return strings.ToLower(value)
-}
-
-func normalizeTravel(minutes int) int {
-	if minutes <= 0 {
-		return defaultTravelMinutes
-	}
-	return minutes
 }
 
 func validBotRole(role bot.Role) bool {
@@ -1959,11 +1960,11 @@ func userReminderDayBefore(language string, startAt time.Time) string {
 	return fmt.Sprintf("Напоминание: у вас запись %s.", startAt.Format("02.01.2006 15:04"))
 }
 
-func userReminderTravel(language string, startAt time.Time) string {
+func userReminderHourBefore(language string, startAt time.Time) string {
 	if language == bot.LangEN {
-		return fmt.Sprintf("Your booking starts at %s. Consider your travel time.", startAt.Format("15:04"))
+		return fmt.Sprintf("Reminder: your booking starts in 1 hour, at %s.", startAt.Format("15:04"))
 	}
-	return fmt.Sprintf("Скоро запись в %s. Учтите время в пути.", startAt.Format("15:04"))
+	return fmt.Sprintf("Напоминание: запись начнется через 1 час, в %s.", startAt.Format("15:04"))
 }
 
 func adminReminderDayBefore(language, userLabel string, startAt time.Time) string {

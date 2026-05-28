@@ -34,7 +34,7 @@ DATABASE_URL='postgres://timetable:timetable@localhost:5432/timetable?sslmode=di
 
 - Подробная инструкция для админа: [docs/admin-guide.md](docs/admin-guide.md).
 
-- Для клиента: после `/start` бот интерактивно ведет по шагам: выбор языка, описание мастера, выбор одной или нескольких услуг, ближайшее время или конкретные даты, выбор свободного слота. Команды `/services`, `/schedule 1 4`, `/book 3`, `/my`, `/move 1 3`, `/lang ru|en`, `/settravel 30` остаются как быстрый ручной режим.
+- Для клиента: после `/start` бот интерактивно ведет по шагам: выбор языка, описание мастера, выбор одной или нескольких услуг, ближайшее время или конкретные даты, выбор свободного слота. Команды `/services`, `/schedule 1 4`, `/book 3`, `/my`, `/move 1 3`, `/lang ru|en` остаются как быстрый ручной режим.
 - Для админа: `/service_add 30 Название` добавляет услугу с длительностью, `/services` показывает свои услуги, `/sethours пн-пт 10:00-18:00`, `/setduration 15`, `/generate 2026-06`, `/appoint @username YYYY-MM-DD HH:MM`, `/cancel @username YYYY-MM-DD HH:MM`, `/reschedule @username from_date from_time to_date to_time`, `/block YYYY-MM-DD HH:MM`.
 - Super admin: `/admin_add @username`, `/admin_remove @username`, `/role @username [user|admin|super_admin]`.
 
@@ -47,8 +47,7 @@ DATABASE_URL='postgres://timetable:timetable@localhost:5432/timetable?sslmode=di
 Scheduler раз в минуту готовит и отправляет напоминания:
 
 - за день до записи пользователю и админу;
-- в день записи пользователю за `travel_minutes + 10` минут до начала;
-- если время в пути не задано, используется 30 минут.
+- за 1 час до записи пользователю.
 
 Сообщения bot и reminder отправляются на выбранном языке пользователя или админа: `ru` или `en`.
 

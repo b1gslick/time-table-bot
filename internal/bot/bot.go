@@ -21,20 +21,19 @@ const (
 )
 
 type UserRecord struct {
-	TelegramID int64
-	Username   string
-	FirstName  string
-	LastName   string
-	Role       Role
-	TravelMin  int
-	Language   string
+	TelegramID  int64
+	Username    string
+	FirstName   string
+	LastName    string
+	Role        Role
+	Language    string
+	LanguageSet bool
 }
 
 type Booking struct {
-	Username      string
-	StartTime     time.Time
-	DurationMin   int
-	TravelTimeMin int
+	Username    string
+	StartTime   time.Time
+	DurationMin int
 }
 
 type MoveResult struct {
@@ -51,7 +50,6 @@ type BookingView struct {
 	StartAt   time.Time
 	EndAt     time.Time
 	Status    string
-	TravelMin int
 }
 
 type ServiceView struct {
@@ -100,6 +98,7 @@ type ConversationState struct {
 	Step                  string `json:"step"`
 	Category              string `json:"category,omitempty"`
 	Subcategory           string `json:"subcategory,omitempty"`
+	ServiceName           string `json:"service_name,omitempty"`
 	ServiceIndexes        []int  `json:"service_indexes,omitempty"`
 	VisibleServiceIndexes []int  `json:"visible_service_indexes,omitempty"`
 }
@@ -110,7 +109,6 @@ type Store interface {
 	GetUserByUsername(ctx context.Context, username string) (UserRecord, error)
 	SetUserRole(ctx context.Context, username string, role Role) error
 	SetUserLanguage(ctx context.Context, telegramID int64, language string) error
-	SetUserTravelDefault(ctx context.Context, telegramID int64, travelMin int) error
 
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
@@ -121,7 +119,7 @@ type Store interface {
 	SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error
 	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
 
-	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time, travelMin int) error
+	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
 	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error
 	BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error
@@ -133,8 +131,8 @@ type Store interface {
 	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
 	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
-	BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error
-	BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error)
+	BookForUser(ctx context.Context, telegramID int64, start time.Time) error
+	BookForUserByIndex(ctx context.Context, telegramID int64, index int) (time.Time, error)
 	MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (MoveResult, error)
 	MoveBookingForUserByIndex(ctx context.Context, telegramID int64, bookingIndex, slotIndex int) (MoveResult, error)
 
@@ -146,6 +144,7 @@ type Store interface {
 type TelegramClient interface {
 	GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]telegram.Update, error)
 	SendMessage(ctx context.Context, reqBody telegram.SendMessageRequest) error
+	AnswerCallbackQuery(ctx context.Context, reqBody telegram.AnswerCallbackQueryRequest) error
 }
 
 type Bot struct {
@@ -200,11 +199,16 @@ func (b *Bot) Run(ctx context.Context) error {
 
 		for _, upd := range updates {
 			offset = upd.UpdateID + 1
-			if upd.Message == nil || strings.TrimSpace(upd.Message.Text) == "" {
+			if upd.CallbackQuery != nil {
+				if err := b.HandleCallback(ctx, upd.CallbackQuery); err != nil {
+					b.logger.Printf("handleCallback error: %v", err)
+				}
 				continue
 			}
-			if err := b.HandleMessage(ctx, upd.Message); err != nil {
-				b.logger.Printf("handleMessage error: %v", err)
+			if upd.Message != nil && strings.TrimSpace(upd.Message.Text) != "" {
+				if err := b.HandleMessage(ctx, upd.Message); err != nil {
+					b.logger.Printf("handleMessage error: %v", err)
+				}
 			}
 		}
 	}

@@ -38,6 +38,14 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationDates(ctx, chatID, user, state, text)
 	case conversationStepSlot:
 		return true, b.conversationSlot(ctx, chatID, user, text)
+	case conversationStepAddSvcCat:
+		return true, b.conversationAddServiceCategory(ctx, chatID, user, state, text)
+	case conversationStepAddSvcSub:
+		return true, b.conversationAddServiceSubcategory(ctx, chatID, user, state, text)
+	case conversationStepAddSvcName:
+		return true, b.conversationAddServiceName(ctx, chatID, user, state, text)
+	case conversationStepAddSvcDur:
+		return true, b.conversationAddServiceDuration(ctx, chatID, user, state, text)
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil
@@ -179,21 +187,79 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 	if err != nil || index <= 0 {
 		return b.sendText(ctx, chatID, tr(user.Language, "choose_slot_number"))
 	}
-	travel := user.TravelMin
-	if travel <= 0 {
-		travel = 30
-	}
-	start, err := b.store.BookForUserByIndex(ctx, user.TelegramID, index, travel)
+	start, err := b.store.BookForUserByIndex(ctx, user.TelegramID, index)
 	if err != nil {
-		b.logger.Printf("conversation slot: book failed user=%d index=%d travel=%d: %v", user.TelegramID, index, travel, err)
+		b.logger.Printf("conversation slot: book failed user=%d index=%d: %v", user.TelegramID, index, err)
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 			return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, "book_failed"))
 	}
-	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s travel=%d", user.TelegramID, index, start.Format(time.RFC3339), travel)
+	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s", user.TelegramID, index, start.Format(time.RFC3339))
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout), travel), keyboardForRole(user.Role))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout)), keyboardForRole(user.Role))
+}
+
+func (b *Bot) conversationAddServiceCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	state.Category = normalizeOptionalText(text)
+	state.Step = conversationStepAddSvcSub
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_subcategory"))
+}
+
+func (b *Bot) conversationAddServiceSubcategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	state.Subcategory = normalizeOptionalText(text)
+	state.Step = conversationStepAddSvcName
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_name"))
+}
+
+func (b *Bot) conversationAddServiceName(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	name := strings.TrimSpace(text)
+	if name == "" || name == "-" {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_name"))
+	}
+	state.ServiceName = name
+	state.Step = conversationStepAddSvcDur
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_duration"))
+}
+
+func (b *Bot) conversationAddServiceDuration(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	duration, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || duration <= 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "duration_bad"))
+	}
+	path := servicePathFromState(state)
+	if err := b.store.AddService(ctx, user.TelegramID, path, duration, ""); err != nil {
+		b.logger.Printf("interactive service add failed admin=%d path=%q duration=%d: %v", user.TelegramID, path, duration, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "service_add_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	b.logger.Printf("interactive service added admin=%d path=%q duration=%d", user.TelegramID, path, duration)
+	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ok", path, duration))
 }
 
 func (b *Bot) askCategory(ctx context.Context, chatID int64, user UserRecord, selected []int) error {
@@ -224,7 +290,7 @@ func (b *Bot) askCategory(ctx context.Context, chatID int64, user UserRecord, se
 	sb.WriteString(formatCategories(user.Language, categories))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_category"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(categories)))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(len(categories), "cat"))
 }
 
 func (b *Bot) askSubcategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -254,7 +320,7 @@ func (b *Bot) askSubcategory(ctx context.Context, chatID int64, user UserRecord,
 	sb.WriteString(formatSubcategories(user.Language, subcategories))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_subcategory"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(subcategories)))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(len(subcategories), "sub"))
 }
 
 func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -287,7 +353,7 @@ func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, sta
 	sb.WriteString(formatServicesList(user.Language, visibleServices, false))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_service"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(len(visibleServices)))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(len(visibleServices), "svc"))
 }
 
 func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserRecord, state ConversationState, slots []AvailabilitySlot) error {
@@ -304,27 +370,9 @@ func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserR
 	var sb strings.Builder
 	sb.WriteString(tr(user.Language, "choose_slot_number"))
 	sb.WriteString("\n")
-	limit := len(slots)
-	if limit > 20 {
-		limit = 20
-	}
-	for i := 0; i < limit; i++ {
-		sb.WriteString(strconv.Itoa(i + 1))
-		sb.WriteString(". ")
-		sb.WriteString(slots[i].StartAt.Format(dateTimeLayout))
-		sb.WriteString(" - ")
-		sb.WriteString(slots[i].EndAt.Format("15:04"))
-		if slots[i].AdminName != "" {
-			sb.WriteString(" (@")
-			sb.WriteString(slots[i].AdminName)
-			sb.WriteString(")")
-		}
-		sb.WriteString("\n")
-	}
-	if len(slots) > limit {
-		sb.WriteString(tr(user.Language, "free_more", len(slots)-limit))
-	}
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboard(limit))
+	limit := minInt(len(slots), 20)
+	sb.WriteString(formatAvailabilitySlots(user.Language, slots, limit))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(limit, "slot"))
 }
 
 func formatServices(lang string, services []ServiceView) string {
@@ -334,14 +382,29 @@ func formatServices(lang string, services []ServiceView) string {
 func formatServicesList(lang string, services []ServiceView, includePath bool) string {
 	var sb strings.Builder
 	sb.WriteString(tr(lang, "services_header"))
+	lastCategory := "\x00"
+	lastSubcategory := "\x00"
 	for i, service := range services {
+		if includePath {
+			if service.Category != lastCategory {
+				lastCategory = service.Category
+				lastSubcategory = "\x00"
+				sb.WriteString("\n")
+				sb.WriteString(displayCategory(lang, service.Category))
+				sb.WriteString("\n")
+			}
+			if service.Subcategory != lastSubcategory {
+				lastSubcategory = service.Subcategory
+				if service.Subcategory != "" {
+					sb.WriteString("  ")
+					sb.WriteString(service.Subcategory)
+					sb.WriteString("\n")
+				}
+			}
+		}
 		sb.WriteString(strconv.Itoa(i + 1))
 		sb.WriteString(". ")
-		if includePath {
-			sb.WriteString(serviceDisplayName(service))
-		} else {
-			sb.WriteString(service.Name)
-		}
+		sb.WriteString(service.Name)
 		sb.WriteString(" - ")
 		sb.WriteString(strconv.Itoa(service.DurationMin))
 		sb.WriteString(" ")
@@ -354,6 +417,26 @@ func formatServicesList(lang string, services []ServiceView, includePath bool) s
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func normalizeOptionalText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "-" || strings.EqualFold(text, "нет") || strings.EqualFold(text, "no") {
+		return ""
+	}
+	return text
+}
+
+func servicePathFromState(state ConversationState) string {
+	var parts []string
+	if state.Category != "" {
+		parts = append(parts, state.Category)
+	}
+	if state.Subcategory != "" {
+		parts = append(parts, state.Subcategory)
+	}
+	parts = append(parts, state.ServiceName)
+	return strings.Join(parts, " > ")
 }
 
 func formatCategories(lang string, categories []string) string {
@@ -382,6 +465,112 @@ func formatSubcategories(lang string, subcategories []string) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func formatAvailabilitySlots(lang string, slots []AvailabilitySlot, limit int) string {
+	limit = minInt(limit, len(slots))
+	var sb strings.Builder
+	currentDay := ""
+	for i := 0; i < limit; i++ {
+		day := dayHeader(lang, slots[i].StartAt)
+		if day != currentDay {
+			currentDay = day
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(day)
+			sb.WriteString("\n")
+		}
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		sb.WriteString(slots[i].StartAt.Format("15:04"))
+		sb.WriteString("-")
+		sb.WriteString(slots[i].EndAt.Format("15:04"))
+		if slots[i].AdminName != "" {
+			sb.WriteString(" @")
+			sb.WriteString(slots[i].AdminName)
+		}
+		sb.WriteString("\n")
+	}
+	if len(slots) > limit {
+		sb.WriteString("\n")
+		sb.WriteString(tr(lang, "slots_more_hint", len(slots)-limit))
+	}
+	return sb.String()
+}
+
+func formatTimeSlots(lang string, slots []time.Time, limit int) string {
+	limit = minInt(limit, len(slots))
+	var sb strings.Builder
+	currentDay := ""
+	for i := 0; i < limit; i++ {
+		day := dayHeader(lang, slots[i])
+		if day != currentDay {
+			currentDay = day
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(day)
+			sb.WriteString("\n")
+		}
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		sb.WriteString(slots[i].Format("15:04"))
+		sb.WriteString("\n")
+	}
+	if len(slots) > limit {
+		sb.WriteString("\n")
+		sb.WriteString(tr(lang, "slots_more_hint", len(slots)-limit))
+	}
+	return sb.String()
+}
+
+func dayHeader(lang string, value time.Time) string {
+	return value.Format("02.01") + " " + weekdayShort(lang, value.Weekday())
+}
+
+func weekdayShort(lang string, weekday time.Weekday) string {
+	if lang == LangEN {
+		switch weekday {
+		case time.Monday:
+			return "Mon"
+		case time.Tuesday:
+			return "Tue"
+		case time.Wednesday:
+			return "Wed"
+		case time.Thursday:
+			return "Thu"
+		case time.Friday:
+			return "Fri"
+		case time.Saturday:
+			return "Sat"
+		default:
+			return "Sun"
+		}
+	}
+	switch weekday {
+	case time.Monday:
+		return "Пн"
+	case time.Tuesday:
+		return "Вт"
+	case time.Wednesday:
+		return "Ср"
+	case time.Thursday:
+		return "Чт"
+	case time.Friday:
+		return "Пт"
+	case time.Saturday:
+		return "Сб"
+	default:
+		return "Вс"
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func serviceCategories(services []ServiceView) []string {
@@ -598,45 +787,56 @@ func formatIndexes(values []int) string {
 
 func languageKeyboard() *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{
-		ResizeKeyboard: true,
-		Keyboard: [][]telegram.KeyboardButton{
-			{{Text: "Русский"}, {Text: "English"}},
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: "Русский", CallbackData: "lang:ru"},
+				{Text: "English", CallbackData: "lang:en"},
+			},
 		},
 	}
 }
 
 func yesNoKeyboard(lang string) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{
-		ResizeKeyboard: true,
-		Keyboard: [][]telegram.KeyboardButton{
-			{{Text: tr(lang, "yes")}, {Text: tr(lang, "no")}},
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: tr(lang, "yes"), CallbackData: "more:yes"},
+				{Text: tr(lang, "no"), CallbackData: "more:no"},
+			},
 		},
 	}
 }
 
 func timeChoiceKeyboard(lang string) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{
-		ResizeKeyboard: true,
-		Keyboard: [][]telegram.KeyboardButton{
-			{{Text: tr(lang, "nearest_time")}, {Text: tr(lang, "specific_dates")}},
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: tr(lang, "nearest_time"), CallbackData: "time:nearest"},
+				{Text: tr(lang, "specific_dates"), CallbackData: "time:dates"},
+			},
 		},
 	}
 }
 
 func numberKeyboard(count int) *telegram.ReplyMarkup {
+	return numberKeyboardWithPrefix(count, "slot")
+}
+
+func numberKeyboardWithPrefix(count int, prefix string) *telegram.ReplyMarkup {
 	if count <= 0 {
 		return nil
 	}
 	if count > 12 {
 		count = 12
 	}
-	rows := make([][]telegram.KeyboardButton, 0, (count+2)/3)
+	rows := make([][]telegram.InlineKeyboardButton, 0, (count+2)/3)
 	for i := 1; i <= count; i += 3 {
-		var row []telegram.KeyboardButton
+		var row []telegram.InlineKeyboardButton
 		for j := i; j < i+3 && j <= count; j++ {
-			row = append(row, telegram.KeyboardButton{Text: strconv.Itoa(j)})
+			value := strconv.Itoa(j)
+			row = append(row, telegram.InlineKeyboardButton{Text: value, CallbackData: prefix + ":" + value})
 		}
 		rows = append(rows, row)
 	}
-	return &telegram.ReplyMarkup{ResizeKeyboard: true, Keyboard: rows}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }

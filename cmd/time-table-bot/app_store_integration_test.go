@@ -88,7 +88,7 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 		t.Fatalf("first free slot = %#v, want 75 minute interval", free[0])
 	}
 
-	bookedStart, err := app.BookForUserByIndex(ctx, 3001, 1, 30)
+	bookedStart, err := app.BookForUserByIndex(ctx, 3001, 1)
 	if err != nil {
 		t.Fatalf("BookForUserByIndex: %v", err)
 	}
@@ -313,23 +313,32 @@ func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
 	client := telegram.User{ID: 3001, Username: "client", FirstName: "Client"}
 	chat := telegram.Chat{ID: 3001}
 
-	steps := []string{
-		"/start",
-		"Русский",
-		"1",
-		"1",
-		"1",
-		"Нет",
-		"Ближайшее время",
-		"1",
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: client,
+		Chat: chat,
+		Text: "/start",
+	}); err != nil {
+		t.Fatalf("HandleMessage(/start): %v", err)
 	}
-	for _, text := range steps {
-		if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+	callbacks := []string{
+		"lang:ru",
+		"cat:1",
+		"sub:1",
+		"svc:1",
+		"more:no",
+		"time:nearest",
+		"slot:1",
+	}
+	for _, data := range callbacks {
+		if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+			ID:   "callback-" + data,
 			From: client,
-			Chat: chat,
-			Text: text,
+			Message: &telegram.Message{
+				Chat: chat,
+			},
+			Data: data,
 		}); err != nil {
-			t.Fatalf("HandleMessage(%q): %v", text, err)
+			t.Fatalf("HandleCallback(%q): %v", data, err)
 		}
 	}
 
@@ -374,6 +383,10 @@ func (f *fakeTelegramClient) SendMessage(ctx context.Context, reqBody telegram.S
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.messages = append(f.messages, reqBody)
+	return nil
+}
+
+func (f *fakeTelegramClient) AnswerCallbackQuery(ctx context.Context, reqBody telegram.AnswerCallbackQueryRequest) error {
 	return nil
 }
 

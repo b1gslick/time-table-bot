@@ -427,8 +427,8 @@ RETURNING id, slot_id, user_id, service_id, status, travel_minutes, note, booked
 		cancelledAt sql.NullTime
 	)
 	travelMinutes := booking.TravelMinutes
-	if travelMinutes <= 0 {
-		travelMinutes = 30
+	if travelMinutes < 0 {
+		travelMinutes = 0
 	}
 	if err := tx.QueryRowContext(ctx, q, booking.SlotID, booking.UserID, booking.ServiceID, booking.Status, travelMinutes, booking.Note).Scan(
 		&out.ID, &out.SlotID, &userID, &serviceID, &out.Status, &out.TravelMinutes, &out.Note, &out.BookedAt, &out.UpdatedAt, &cancelledAt,

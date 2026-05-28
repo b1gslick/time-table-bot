@@ -36,7 +36,7 @@ func keyboardForRole(role Role) *telegram.ReplyMarkup {
 				{{Text: "/help"}, {Text: "/lang ru"}, {Text: "/lang en"}},
 				{{Text: "/services"}, {Text: "/schedule 1"}},
 				{{Text: "/my"}, {Text: "/book 1"}},
-				{{Text: "/move 1 2"}, {Text: "/settravel 30"}},
+				{{Text: "/move 1 2"}, {Text: "/month 2026-08"}},
 			},
 		}
 	}
