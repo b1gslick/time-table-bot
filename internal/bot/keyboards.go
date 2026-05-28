@@ -9,7 +9,8 @@ func keyboardForRole(role Role) *telegram.ReplyMarkup {
 			ResizeKeyboard: true,
 			Keyboard: [][]telegram.KeyboardButton{
 				{{Text: "/help"}, {Text: "/lang ru"}, {Text: "/lang en"}},
-				{{Text: "/schedule"}, {Text: "/free"}},
+				{{Text: "/calendar"}, {Text: "/schedule"}},
+				{{Text: "/booking"}, {Text: "/free"}},
 				{{Text: "/admin_add @username"}, {Text: "/admin_remove @username"}},
 				{{Text: "/role @username"}, {Text: "/role @username admin"}},
 				{{Text: "/services"}, {Text: "/service_add 30 Услуга"}},
@@ -21,7 +22,8 @@ func keyboardForRole(role Role) *telegram.ReplyMarkup {
 			ResizeKeyboard: true,
 			Keyboard: [][]telegram.KeyboardButton{
 				{{Text: "/help"}, {Text: "/lang ru"}, {Text: "/lang en"}},
-				{{Text: "/schedule"}, {Text: "/free"}},
+				{{Text: "/calendar"}, {Text: "/schedule"}},
+				{{Text: "/booking"}, {Text: "/free"}},
 				{{Text: "/services"}, {Text: "/service_add 30 Услуга"}},
 				{{Text: "/sethours Пн-Пт 10:00-19:00"}, {Text: "/setduration 60"}},
 				{{Text: "/generate 2026-06"}, {Text: "/appoint @username 2026-06-01 14:00"}},

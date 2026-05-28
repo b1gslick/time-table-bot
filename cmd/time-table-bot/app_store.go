@@ -505,6 +505,80 @@ func (s *appStore) RequestMissingMonth(ctx context.Context, telegramID int64, mo
 	return true, nil
 }
 
+func (s *appStore) AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]bot.CalendarDay, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	if !isBotAdmin(actor.Role) {
+		return nil, store.ErrInvalidArgument
+	}
+	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
+	to := from.AddDate(0, 1, 0)
+
+	query := `
+SELECT date_trunc('day', s.start_at AT TIME ZONE $1)::date AS day,
+       COUNT(*) AS total_slots,
+       COUNT(*) FILTER (
+           WHERE s.status = 'open'
+             AND NOT EXISTS (
+                 SELECT 1 FROM bookings b
+                 WHERE b.slot_id = s.id AND b.status IN ('booked', 'blocked')
+             )
+       ) AS open_slots,
+       COUNT(*) FILTER (
+           WHERE EXISTS (
+               SELECT 1 FROM bookings b
+               WHERE b.slot_id = s.id AND b.status = 'booked'
+           )
+       ) AS booked_slots,
+       COUNT(*) FILTER (
+           WHERE EXISTS (
+               SELECT 1 FROM bookings b
+               WHERE b.slot_id = s.id AND b.status = 'blocked'
+           )
+       ) AS blocked_slots,
+       COUNT(*) FILTER (WHERE s.status = 'closed') AS closed_slots
+FROM schedule_slots s
+JOIN users a ON a.id = s.admin_user_id
+WHERE s.start_at >= $2
+  AND s.start_at < $3
+`
+	args := []any{s.loc.String(), from, to}
+	if actor.Role == bot.RoleAdmin {
+		query += "  AND a.telegram_id = $4\n"
+		args = append(args, telegramID)
+	}
+	query += "GROUP BY day ORDER BY day ASC;"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("admin calendar: %w", err)
+	}
+	defer rows.Close()
+
+	var out []bot.CalendarDay
+	for rows.Next() {
+		var (
+			day                 time.Time
+			total, open, booked int
+			blocked, closed     int
+		)
+		if err := rows.Scan(&day, &total, &open, &booked, &blocked, &closed); err != nil {
+			return nil, err
+		}
+		out = append(out, bot.CalendarDay{
+			Date:       time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, s.loc),
+			OpenSlots:  open,
+			Booked:     booked,
+			Blocked:    blocked,
+			Closed:     closed,
+			TotalSlots: total,
+		})
+	}
+	return out, rows.Err()
+}
+
 func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time, allowedDates map[string]bool) ([]bot.AvailabilitySlot, error) {
 	if len(serviceIndexes) == 0 {
 		return nil, store.ErrInvalidArgument

@@ -445,6 +445,75 @@ func displayCategory(lang, category string) string {
 	return category
 }
 
+func formatCalendar(lang string, monthStart time.Time, items []CalendarDay) string {
+	monthStart = time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, monthStart.Location())
+	byDay := make(map[int]CalendarDay, len(items))
+	for _, item := range items {
+		byDay[item.Date.Day()] = item
+	}
+
+	var sb strings.Builder
+	sb.WriteString(tr(lang, "calendar_title", monthStart.Format(monthLayout)))
+	sb.WriteString("\n")
+	sb.WriteString(tr(lang, "calendar_weekdays"))
+	sb.WriteString("\n")
+
+	firstWeekday := int(monthStart.Weekday())
+	if firstWeekday == 0 {
+		firstWeekday = 7
+	}
+	for i := 1; i < firstWeekday; i++ {
+		sb.WriteString("    ")
+	}
+	monthEnd := monthStart.AddDate(0, 1, 0)
+	for day := monthStart; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
+		item := byDay[day.Day()]
+		sb.WriteString(fmt.Sprintf("%2d%s ", day.Day(), calendarMarker(item)))
+		if day.Weekday() == time.Sunday {
+			sb.WriteString("\n")
+		}
+	}
+	if !strings.HasSuffix(sb.String(), "\n") {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(tr(lang, "calendar_legend"))
+	sb.WriteString("\n")
+
+	detailCount := 0
+	for day := monthStart; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
+		item := byDay[day.Day()]
+		if item.TotalSlots == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("%02d: %s\n", day.Day(), tr(lang, "calendar_day_summary", item.OpenSlots, item.Booked, item.Blocked, item.Closed)))
+		detailCount++
+		if detailCount >= 20 {
+			sb.WriteString(tr(lang, "calendar_more_days"))
+			sb.WriteString("\n")
+			break
+		}
+	}
+	if detailCount == 0 {
+		sb.WriteString(tr(lang, "calendar_empty"))
+	}
+	return sb.String()
+}
+
+func calendarMarker(item CalendarDay) string {
+	switch {
+	case item.TotalSlots == 0:
+		return "."
+	case item.OpenSlots > 0:
+		if item.OpenSlots > 9 {
+			return "+"
+		}
+		return strconv.Itoa(item.OpenSlots)
+	default:
+		return "x"
+	}
+}
+
 func parseLanguageChoice(text string) (string, bool) {
 	switch normalizeChoice(text) {
 	case "ru", "russian":

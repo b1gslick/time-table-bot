@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,5 +45,25 @@ func TestParseDateList(t *testing.T) {
 func TestParseDateListRejectsBadDate(t *testing.T) {
 	if _, err := parseDateList("not-a-date", time.Now()); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestFormatCalendar(t *testing.T) {
+	month := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	got := formatCalendar(LangRU, month, []CalendarDay{
+		{Date: month, OpenSlots: 3, TotalSlots: 4},
+		{Date: month.AddDate(0, 0, 1), Booked: 2, TotalSlots: 2},
+	})
+	if !strings.Contains(got, "Календарь 2026-06") {
+		t.Fatalf("calendar title missing: %s", got)
+	}
+	if !strings.Contains(got, " 13 ") {
+		t.Fatalf("open marker missing: %s", got)
+	}
+	if !strings.Contains(got, " 2x ") {
+		t.Fatalf("busy marker missing: %s", got)
+	}
+	if !strings.Contains(got, "01: свободно 3") {
+		t.Fatalf("day summary missing: %s", got)
 	}
 }

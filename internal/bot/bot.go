@@ -73,6 +73,15 @@ type AvailabilitySlot struct {
 	DurationMin  int
 }
 
+type CalendarDay struct {
+	Date       time.Time
+	OpenSlots  int
+	Booked     int
+	Blocked    int
+	Closed     int
+	TotalSlots int
+}
+
 type GenerateScheduleRequest struct {
 	Month       time.Time
 	Months      int
@@ -122,6 +131,7 @@ type Store interface {
 	ListFreeSlotsForServicesRange(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time) ([]AvailabilitySlot, error)
 	ListFreeSlotsForServicesDates(ctx context.Context, telegramID int64, serviceIndexes []int, dates []time.Time) ([]AvailabilitySlot, error)
 	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
+	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	BookForUser(ctx context.Context, telegramID int64, start time.Time, travelMin int) error
 	BookForUserByIndex(ctx context.Context, telegramID int64, index int, travelMin int) (time.Time, error)

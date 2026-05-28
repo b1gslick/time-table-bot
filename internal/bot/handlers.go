@@ -58,6 +58,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 	switch cmd {
 	case "/start":
 		return b.handleStart(ctx, msg.Chat.ID, current)
+	case "/booking", "/start_booking", "/book_start":
+		return b.handleBookingStart(ctx, msg.Chat.ID, current)
 	case "/help":
 		return b.sendHelp(ctx, msg.Chat.ID, current)
 	case "/lang", "/language":
@@ -92,6 +94,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleBlock(ctx, msg.Chat.ID, current, parts)
 	case "/free", "/schedule":
 		return b.handleFree(ctx, msg.Chat.ID, current, parts)
+	case "/calendar", "/cal":
+		return b.handleCalendar(ctx, msg.Chat.ID, current, parts)
 	case "/month", "/request_month":
 		return b.handleRequestMonth(ctx, msg.Chat.ID, current, parts)
 	case "/my":
@@ -121,6 +125,13 @@ func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) er
 	}
 	txt := tr(user.Language, "start", user.Username, roleLabel(user.Language, user.Role), user.Language)
 	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForRole(user.Role))
+}
+
+func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRecord) error {
+	if err := b.store.ClearConversationState(ctx, user.TelegramID); err != nil {
+		b.logger.Printf("booking start: clear state failed user=%d: %v", user.TelegramID, err)
+	}
+	return b.askCategory(ctx, chatID, user, nil)
 }
 
 func (b *Bot) sendHelp(ctx context.Context, chatID int64, user UserRecord) error {
@@ -489,11 +500,13 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	if len(serviceIndexes) > 0 {
 		slots, err := b.store.ListFreeSlotsForServices(ctx, actor.TelegramID, serviceIndexes, monthStart)
 		if err != nil {
+			b.logger.Printf("schedule services failed user=%d role=%s month=%s services=%v: %v", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), serviceIndexes, err)
 			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 				return b.sendText(ctx, chatID, tr(actor.Language, "free_services_need_list"))
 			}
 			return b.sendText(ctx, chatID, tr(actor.Language, "free_failed"))
 		}
+		b.logger.Printf("schedule services user=%d role=%s month=%s services=%v slots=%d", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), serviceIndexes, len(slots))
 		if len(slots) == 0 {
 			return b.sendText(ctx, chatID, tr(actor.Language, "free_empty"))
 		}
@@ -524,8 +537,10 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 
 	slots, err := b.store.ListFreeSlotsForMonth(ctx, actor.TelegramID, monthStart)
 	if err != nil {
+		b.logger.Printf("schedule month failed user=%d role=%s month=%s: %v", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "free_failed"))
 	}
+	b.logger.Printf("schedule month user=%d role=%s month=%s slots=%d", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), len(slots))
 	if len(slots) == 0 {
 		return b.sendText(ctx, chatID, tr(actor.Language, "free_empty"))
 	}
@@ -547,6 +562,30 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	}
 
 	return b.sendText(ctx, chatID, sb.String())
+}
+
+func (b *Bot) handleCalendar(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	var monthStart time.Time
+	if len(parts) >= 2 {
+		parsed, err := time.Parse(monthLayout, parts[1])
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "calendar_usage"))
+		}
+		monthStart = parsed
+	} else {
+		now := time.Now()
+		monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	}
+	days, err := b.store.AdminCalendar(ctx, actor.TelegramID, monthStart)
+	if err != nil {
+		b.logger.Printf("calendar failed user=%d role=%s month=%s: %v", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "calendar_failed"))
+	}
+	b.logger.Printf("calendar user=%d role=%s month=%s days=%d", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), len(days))
+	return b.sendText(ctx, chatID, formatCalendar(actor.Language, monthStart, days))
 }
 
 func (b *Bot) handleRequestMonth(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
