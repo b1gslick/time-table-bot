@@ -29,6 +29,24 @@ const (
 	conversationStepAddSvcSub   = "admin_service_subcategory"
 	conversationStepAddSvcName  = "admin_service_name"
 	conversationStepAddSvcDur   = "admin_service_duration"
+	conversationStepSetProfile  = "admin_set_profile"
+	conversationStepSetServices = "admin_set_services"
+	conversationStepSetHours    = "admin_set_hours"
+	conversationStepSetDuration = "admin_set_duration"
+	conversationStepGenMonth    = "admin_generate_month"
+	conversationStepGenMonths   = "admin_generate_months"
+	conversationStepAdminAdd    = "super_admin_add"
+	conversationStepAdminRemove = "super_admin_remove"
+	conversationStepRoleUser    = "super_admin_role_user"
+	conversationStepRoleValue   = "super_admin_role_value"
+	conversationStepAppointUser = "admin_appoint_user"
+	conversationStepAppointTime = "admin_appoint_time"
+	conversationStepCancelUser  = "admin_cancel_user"
+	conversationStepCancelTime  = "admin_cancel_time"
+	conversationStepReschUser   = "admin_reschedule_user"
+	conversationStepReschFrom   = "admin_reschedule_from"
+	conversationStepReschTo     = "admin_reschedule_to"
+	conversationStepBlock       = "admin_block"
 )
 
 func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
@@ -57,6 +75,12 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 
 	cmd := strings.ToLower(parts[0])
 	b.logger.Printf("message received chat=%d user=%d username=%q role=%s cmd=%q", msg.Chat.ID, current.TelegramID, current.Username, current.Role, cmd)
+
+	if !strings.HasPrefix(cmd, "/") {
+		if handled, err := b.handleMenuButton(ctx, msg.Chat.ID, current, text); handled {
+			return err
+		}
+	}
 
 	switch cmd {
 	case "/start":
@@ -214,7 +238,7 @@ func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) er
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "choose_language"), languageKeyboard())
 	}
 	txt := tr(user.Language, "start", user.Username, roleLabel(user.Language, user.Role), user.Language)
-	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForRole(user.Role))
+	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForRole(user.Role, user.Language))
 }
 
 func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRecord) error {
@@ -222,6 +246,133 @@ func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRec
 		b.logger.Printf("booking start: clear state failed user=%d: %v", user.TelegramID, err)
 	}
 	return b.askCategory(ctx, chatID, user, nil)
+}
+
+func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecord, text string) (bool, error) {
+	if !isAdmin(user.Role) {
+		return false, nil
+	}
+	switch menuButtonAction(user.Language, text) {
+	case "menu_calendar":
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_calendar_text"), calendarMenuKeyboard(user.Language))
+	case "menu_bookings":
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_bookings_text"), bookingMenuKeyboard(user.Language))
+	case "menu_services":
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_services_text"), servicesMenuKeyboard(user.Language))
+	case "menu_schedule":
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_schedule_text"), scheduleMenuKeyboard(user.Language))
+	case "menu_settings":
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_settings_text"), settingsMenuKeyboard(user.Language))
+	case "menu_admins":
+		if user.Role != RoleSuperAdmin {
+			return true, b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
+		}
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_admins_text"), adminsMenuKeyboard(user.Language))
+	case "back", "main":
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_main_text"), keyboardForRole(user.Role, user.Language))
+	case "action_calendar":
+		return true, b.handleCalendar(ctx, chatID, user, []string{"/calendar"})
+	case "action_free":
+		return true, b.handleFree(ctx, chatID, user, []string{"/schedule"})
+	case "action_book":
+		return true, b.handleBookingStart(ctx, chatID, user)
+	case "action_my":
+		return true, b.handleMy(ctx, chatID, user)
+	case "action_service_add":
+		return true, b.handleServiceAdd(ctx, chatID, user, []string{"/service_add"})
+	case "action_service_list":
+		return true, b.handleServices(ctx, chatID, user)
+	case "action_services_text":
+		return true, b.handleSetServices(ctx, chatID, user, "/setservices")
+	case "action_set_hours":
+		return true, b.handleSetHours(ctx, chatID, user, "/sethours")
+	case "action_set_duration":
+		return true, b.handleSetDuration(ctx, chatID, user, []string{"/setduration"})
+	case "action_generate":
+		return true, b.handleGenerate(ctx, chatID, user, []string{"/generate"})
+	case "action_set_profile":
+		return true, b.handleSetProfile(ctx, chatID, user, "/setprofile")
+	case "action_lang_ru":
+		return true, b.handleLanguage(ctx, chatID, user, []string{"/lang", LangRU})
+	case "action_lang_en":
+		return true, b.handleLanguage(ctx, chatID, user, []string{"/lang", LangEN})
+	case "action_admin_add":
+		return true, b.handleAdminAdd(ctx, chatID, user, []string{"/admin_add"})
+	case "action_admin_remove":
+		return true, b.handleAdminRemove(ctx, chatID, user, []string{"/admin_remove"})
+	case "action_role":
+		return true, b.handleRole(ctx, chatID, user, []string{"/role"})
+	case "action_appoint":
+		return true, b.handleAppoint(ctx, chatID, user, []string{"/appoint"})
+	case "action_cancel":
+		return true, b.handleCancel(ctx, chatID, user, []string{"/cancel"})
+	case "action_reschedule":
+		return true, b.handleReschedule(ctx, chatID, user, []string{"/reschedule"})
+	case "action_block":
+		return true, b.handleBlock(ctx, chatID, user, []string{"/block"})
+	default:
+		return false, nil
+	}
+}
+
+func menuButtonAction(lang, text string) string {
+	buttons := []struct {
+		action string
+		key    string
+	}{
+		{"menu_calendar", "button_menu_calendar"},
+		{"menu_bookings", "button_menu_bookings"},
+		{"menu_services", "button_menu_services"},
+		{"menu_schedule", "button_menu_schedule"},
+		{"menu_settings", "button_menu_settings"},
+		{"menu_admins", "button_menu_admins"},
+		{"back", "button_back"},
+		{"main", "button_main"},
+		{"action_calendar", "button_action_calendar"},
+		{"action_free", "button_action_free"},
+		{"action_book", "button_action_book"},
+		{"action_my", "button_action_my"},
+		{"action_service_add", "button_action_service_add"},
+		{"action_service_list", "button_action_service_list"},
+		{"action_services_text", "button_action_services_text"},
+		{"action_set_hours", "button_action_set_hours"},
+		{"action_set_duration", "button_action_set_duration"},
+		{"action_generate", "button_action_generate"},
+		{"action_set_profile", "button_action_set_profile"},
+		{"action_lang_ru", "button_action_lang_ru"},
+		{"action_lang_en", "button_action_lang_en"},
+		{"action_admin_add", "button_action_admin_add"},
+		{"action_admin_remove", "button_action_admin_remove"},
+		{"action_role", "button_action_role"},
+		{"action_appoint", "button_action_appoint"},
+		{"action_cancel", "button_action_cancel"},
+		{"action_reschedule", "button_action_reschedule"},
+		{"action_block", "button_action_block"},
+	}
+	normalized := normalizeMenuButton(text)
+	for _, button := range buttons {
+		if normalized == normalizeMenuButton(tr(lang, button.key)) ||
+			normalized == normalizeMenuButton(tr(LangRU, button.key)) ||
+			normalized == normalizeMenuButton(tr(LangEN, button.key)) {
+			return button.action
+		}
+	}
+	return ""
+}
+
+func normalizeMenuButton(text string) string {
+	return strings.ToLower(strings.TrimSpace(text))
+}
+
+func (b *Bot) beginConversation(ctx context.Context, chatID int64, user UserRecord, state ConversationState, messageKey string, kb *telegram.ReplyMarkup) error {
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	if kb != nil {
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, messageKey), kb)
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, messageKey))
 }
 
 func (b *Bot) sendHelp(ctx context.Context, chatID int64, user UserRecord) error {
@@ -240,7 +391,7 @@ func (b *Bot) handleAdminAdd(ctx context.Context, chatID int64, actor UserRecord
 		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_add"))
 	}
 	if len(parts) < 2 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "admin_add_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepAdminAdd}, "admin_add_ask_username", nil)
 	}
 	username := normalizeUsername(parts[1])
 	if username == "" {
@@ -257,7 +408,7 @@ func (b *Bot) handleAdminRemove(ctx context.Context, chatID int64, actor UserRec
 		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_remove"))
 	}
 	if len(parts) < 2 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "admin_remove_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepAdminRemove}, "admin_remove_ask_username", nil)
 	}
 	username := normalizeUsername(parts[1])
 	if username == "" {
@@ -274,7 +425,7 @@ func (b *Bot) handleRole(ctx context.Context, chatID int64, actor UserRecord, pa
 		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_role"))
 	}
 	if len(parts) < 2 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "role_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepRoleUser}, "role_ask_username", nil)
 	}
 	username := normalizeUsername(parts[1])
 	if username == "" {
@@ -317,7 +468,7 @@ func (b *Bot) handleSetProfile(ctx context.Context, chatID int64, actor UserReco
 	}
 	value := strings.TrimSpace(strings.TrimPrefix(text, "/setprofile"))
 	if value == "" {
-		return b.sendText(ctx, chatID, tr(actor.Language, "profile_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepSetProfile}, "profile_ask_text", nil)
 	}
 	if err := b.store.SetProfileText(ctx, actor.TelegramID, value); err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "profile_failed"))
@@ -331,7 +482,7 @@ func (b *Bot) handleSetServices(ctx context.Context, chatID int64, actor UserRec
 	}
 	value := strings.TrimSpace(strings.TrimPrefix(text, "/setservices"))
 	if value == "" {
-		return b.sendText(ctx, chatID, tr(actor.Language, "services_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepSetServices}, "services_ask_text", nil)
 	}
 	if err := b.store.SetServicesText(ctx, actor.TelegramID, value); err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "services_failed"))
@@ -391,7 +542,7 @@ func (b *Bot) handleSetHours(ctx context.Context, chatID int64, actor UserRecord
 	}
 	value := strings.TrimSpace(strings.TrimPrefix(text, "/sethours"))
 	if value == "" {
-		return b.sendText(ctx, chatID, tr(actor.Language, "hours_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepSetHours}, "hours_ask_text", nil)
 	}
 	if err := b.store.SetWorkHoursText(ctx, actor.TelegramID, value); err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "hours_failed"))
@@ -404,7 +555,7 @@ func (b *Bot) handleSetDuration(ctx context.Context, chatID int64, actor UserRec
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 2 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "duration_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepSetDuration}, "duration_ask_value", nil)
 	}
 	duration, err := strconv.Atoi(parts[1])
 	if err != nil || duration <= 0 {
@@ -421,7 +572,7 @@ func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 2 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMonth}, "generate_ask_month", nil)
 	}
 	monthStart, err := time.Parse(monthLayout, parts[1])
 	if err != nil {
@@ -469,7 +620,7 @@ func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord,
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 4 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepAppointUser}, "appoint_ask_username", nil)
 	}
 	username := normalizeUsername(parts[1])
 	start, err := parseDateTime(parts[2], parts[3])
@@ -487,7 +638,7 @@ func (b *Bot) handleCancel(ctx context.Context, chatID int64, actor UserRecord, 
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 4 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "cancel_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepCancelUser}, "cancel_ask_username", nil)
 	}
 	username := normalizeUsername(parts[1])
 	start, err := parseDateTime(parts[2], parts[3])
@@ -505,7 +656,7 @@ func (b *Bot) handleReschedule(ctx context.Context, chatID int64, actor UserReco
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 6 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "reschedule_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepReschUser}, "reschedule_ask_username", nil)
 	}
 	username := normalizeUsername(parts[1])
 	fromStart, err := parseDateTime(parts[2], parts[3])
@@ -527,7 +678,7 @@ func (b *Bot) handleBlock(ctx context.Context, chatID int64, actor UserRecord, p
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 3 {
-		return b.sendText(ctx, chatID, tr(actor.Language, "block_usage"))
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepBlock}, "block_ask_datetime", nil)
 	}
 	start, err := parseDateTime(parts[1], parts[2])
 	if err != nil {

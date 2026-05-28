@@ -21,6 +21,23 @@ func TestParseLanguageChoice(t *testing.T) {
 	}
 }
 
+func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
+	ruKeyboard := keyboardForRole(RoleSuperAdmin, LangRU)
+	if got := ruKeyboard.Keyboard[0][0].Text; got != "Календарь" {
+		t.Fatalf("ru first button = %q", got)
+	}
+	enKeyboard := keyboardForRole(RoleSuperAdmin, LangEN)
+	if got := enKeyboard.Keyboard[0][0].Text; got != "Calendar" {
+		t.Fatalf("en first button = %q", got)
+	}
+	if got := menuButtonAction(LangRU, "Calendar"); got != "menu_calendar" {
+		t.Fatalf("english label in ru mode action = %q", got)
+	}
+	if got := menuButtonAction(LangEN, "Календарь"); got != "menu_calendar" {
+		t.Fatalf("russian label in en mode action = %q", got)
+	}
+}
+
 func TestParseDateList(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.Local)
 	got, err := parseDateList("2026-06-01, 03.06.2026, 04.06", now)

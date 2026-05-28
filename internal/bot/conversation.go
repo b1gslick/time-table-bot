@@ -46,6 +46,42 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationAddServiceName(ctx, chatID, user, state, text)
 	case conversationStepAddSvcDur:
 		return true, b.conversationAddServiceDuration(ctx, chatID, user, state, text)
+	case conversationStepSetProfile:
+		return true, b.conversationSetProfile(ctx, chatID, user, text)
+	case conversationStepSetServices:
+		return true, b.conversationSetServices(ctx, chatID, user, text)
+	case conversationStepSetHours:
+		return true, b.conversationSetHours(ctx, chatID, user, text)
+	case conversationStepSetDuration:
+		return true, b.conversationSetDuration(ctx, chatID, user, text)
+	case conversationStepGenMonth:
+		return true, b.conversationGenerateMonth(ctx, chatID, user, state, text)
+	case conversationStepGenMonths:
+		return true, b.conversationGenerateMonths(ctx, chatID, user, state, text)
+	case conversationStepAdminAdd:
+		return true, b.conversationAdminAdd(ctx, chatID, user, text)
+	case conversationStepAdminRemove:
+		return true, b.conversationAdminRemove(ctx, chatID, user, text)
+	case conversationStepRoleUser:
+		return true, b.conversationRoleUser(ctx, chatID, user, state, text)
+	case conversationStepRoleValue:
+		return true, b.conversationRoleValue(ctx, chatID, user, state, text)
+	case conversationStepAppointUser:
+		return true, b.conversationAppointUser(ctx, chatID, user, state, text)
+	case conversationStepAppointTime:
+		return true, b.conversationAppointTime(ctx, chatID, user, state, text)
+	case conversationStepCancelUser:
+		return true, b.conversationCancelUser(ctx, chatID, user, state, text)
+	case conversationStepCancelTime:
+		return true, b.conversationCancelTime(ctx, chatID, user, state, text)
+	case conversationStepReschUser:
+		return true, b.conversationRescheduleUser(ctx, chatID, user, state, text)
+	case conversationStepReschFrom:
+		return true, b.conversationRescheduleFrom(ctx, chatID, user, state, text)
+	case conversationStepReschTo:
+		return true, b.conversationRescheduleTo(ctx, chatID, user, state, text)
+	case conversationStepBlock:
+		return true, b.conversationBlock(ctx, chatID, user, text)
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil
@@ -203,7 +239,7 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 	}
 	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s", user.TelegramID, index, start.Format(time.RFC3339))
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout)), keyboardForRole(user.Role))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout)), keyboardForRole(user.Role, user.Language))
 }
 
 func (b *Bot) conversationAddServiceCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -266,6 +302,287 @@ func (b *Bot) conversationAddServiceDuration(ctx context.Context, chatID int64, 
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	b.logger.Printf("interactive service added admin=%d path=%q duration=%d", user.TelegramID, path, duration)
 	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ok", path, duration))
+}
+
+func (b *Bot) conversationSetProfile(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	value := strings.TrimSpace(text)
+	if value == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "profile_ask_text"))
+	}
+	if err := b.store.SetProfileText(ctx, user.TelegramID, value); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "profile_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "profile_ok"), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationSetServices(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	value := strings.TrimSpace(text)
+	if value == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "services_ask_text"))
+	}
+	if err := b.store.SetServicesText(ctx, user.TelegramID, value); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "services_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "services_ok"), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationSetHours(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	value := strings.TrimSpace(text)
+	if value == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "hours_ask_text"))
+	}
+	if err := b.store.SetWorkHoursText(ctx, user.TelegramID, value); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "hours_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "hours_ok"), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationSetDuration(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	duration, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || duration <= 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "duration_bad"))
+	}
+	if err := b.store.SetSessionDuration(ctx, user.TelegramID, duration); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "duration_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "duration_ok"), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationGenerateMonth(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	monthStart, err := time.Parse(monthLayout, strings.TrimSpace(text))
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_month"))
+	}
+	state.ServiceName = monthStart.Format(monthLayout)
+	state.Step = conversationStepGenMonths
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_months"))
+}
+
+func (b *Bot) conversationGenerateMonths(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	months := 1
+	value := strings.TrimSpace(text)
+	if value != "" && value != "-" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_months"))
+		}
+		months = parsed
+	}
+	monthStart, err := time.Parse(monthLayout, state.ServiceName)
+	if err != nil {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_month"))
+	}
+	result, err := b.store.GenerateSchedule(ctx, user.TelegramID, GenerateScheduleRequest{Month: monthStart, Months: months})
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "generate_ok", result.Created, result.Skipped), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationAdminAdd(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if user.Role != RoleSuperAdmin {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "super_only_add"))
+	}
+	username := normalizeUsername(text)
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "bad_username"))
+	}
+	if err := b.store.SetUserRole(ctx, username, RoleAdmin); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_add_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_added", username), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationAdminRemove(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if user.Role != RoleSuperAdmin {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "super_only_remove"))
+	}
+	username := normalizeUsername(text)
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "bad_username"))
+	}
+	if err := b.store.SetUserRole(ctx, username, RoleUser); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_remove_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_removed", username), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationRoleUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if user.Role != RoleSuperAdmin {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
+	}
+	username := normalizeUsername(text)
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "bad_username"))
+	}
+	state.Username = username
+	state.Step = conversationStepRoleValue
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_ask_value"), roleChoiceKeyboard())
+}
+
+func (b *Bot) conversationRoleValue(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if user.Role != RoleSuperAdmin {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
+	}
+	value := strings.ToLower(strings.TrimSpace(text))
+	if value == "show" || value == "показать" {
+		target, err := b.store.GetUserByUsername(ctx, state.Username)
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "role_show_failed"))
+		}
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_current", state.Username, target.Role), keyboardForRole(user.Role, user.Language))
+	}
+	role := Role(value)
+	if role != RoleUser && role != RoleAdmin && role != RoleSuperAdmin {
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_bad"), roleChoiceKeyboard())
+	}
+	if err := b.store.SetUserRole(ctx, state.Username, role); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "role_set_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_set", state.Username, role), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationAppointUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	return b.askAdminTargetUsername(ctx, chatID, user, state, text, conversationStepAppointTime, "appoint_ask_datetime")
+}
+
+func (b *Bot) conversationAppointTime(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	start, err := parseDateTimeInput(text)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "datetime_bad_example"))
+	}
+	if err := b.store.AddBookingByUsername(ctx, user.TelegramID, state.Username, start); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "appoint_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationCancelUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	return b.askAdminTargetUsername(ctx, chatID, user, state, text, conversationStepCancelTime, "cancel_ask_datetime")
+}
+
+func (b *Bot) conversationCancelTime(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	start, err := parseDateTimeInput(text)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "datetime_bad"))
+	}
+	if err := b.store.DeleteBookingByUsername(ctx, user.TelegramID, state.Username, start); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "cancel_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "cancel_ok", state.Username), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationRescheduleUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	return b.askAdminTargetUsername(ctx, chatID, user, state, text, conversationStepReschFrom, "reschedule_ask_from")
+}
+
+func (b *Bot) conversationRescheduleFrom(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	fromStart, err := parseDateTimeInput(text)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "from_datetime_bad"))
+	}
+	state.FromDateTime = fromStart.Format(dateTimeLayout)
+	state.Step = conversationStepReschTo
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, "reschedule_ask_to"))
+}
+
+func (b *Bot) conversationRescheduleTo(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	fromStart, err := parseDateTimeInput(state.FromDateTime)
+	if err != nil {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "from_datetime_bad"))
+	}
+	toStart, err := parseDateTimeInput(text)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "to_datetime_bad"))
+	}
+	if err := b.store.RescheduleBookingByUsername(ctx, user.TelegramID, state.Username, fromStart, toStart); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "reschedule_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "reschedule_ok", state.Username), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) conversationBlock(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	start, err := parseDateTimeInput(text)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "datetime_bad"))
+	}
+	if err := b.store.BlockSlot(ctx, user.TelegramID, start); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "block_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "block_ok"), keyboardForRole(user.Role, user.Language))
+}
+
+func (b *Bot) askAdminTargetUsername(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text, nextStep, promptKey string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	username := normalizeUsername(text)
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "bad_username"))
+	}
+	state.Username = username
+	state.Step = nextStep
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, promptKey))
 }
 
 func (b *Bot) askCategory(ctx context.Context, chatID int64, user UserRecord, selected []int) error {
@@ -921,6 +1238,14 @@ func isYes(lang, text string) bool {
 
 func isNo(lang, text string) bool {
 	return normalizeChoice(text) == "no"
+}
+
+func parseDateTimeInput(text string) (time.Time, error) {
+	parts := strings.Fields(text)
+	if len(parts) < 2 {
+		return time.Time{}, fmt.Errorf("datetime must contain date and time")
+	}
+	return parseDateTime(parts[0], parts[1])
 }
 
 func parseDateList(text string, now time.Time) ([]time.Time, error) {

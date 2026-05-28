@@ -99,6 +99,8 @@ type ConversationState struct {
 	Category              string `json:"category,omitempty"`
 	Subcategory           string `json:"subcategory,omitempty"`
 	ServiceName           string `json:"service_name,omitempty"`
+	Username              string `json:"username,omitempty"`
+	FromDateTime          string `json:"from_datetime,omitempty"`
 	SlotDay               string `json:"slot_day,omitempty"`
 	SlotPeriod            string `json:"slot_period,omitempty"`
 	ServiceIndexes        []int  `json:"service_indexes,omitempty"`
