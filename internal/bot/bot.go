@@ -133,14 +133,19 @@ type Store interface {
 	ClearConversationState(ctx context.Context, telegramID int64) error
 }
 
+type TelegramClient interface {
+	GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]telegram.Update, error)
+	SendMessage(ctx context.Context, reqBody telegram.SendMessageRequest) error
+}
+
 type Bot struct {
-	tg                 *telegram.Client
+	tg                 TelegramClient
 	store              Store
 	logger             *log.Logger
 	superAdminUsername string
 }
 
-func New(tg *telegram.Client, store Store, logger *log.Logger, superAdminUsername ...string) *Bot {
+func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername ...string) *Bot {
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -188,7 +193,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			if upd.Message == nil || strings.TrimSpace(upd.Message.Text) == "" {
 				continue
 			}
-			if err := b.handleMessage(ctx, upd.Message); err != nil {
+			if err := b.HandleMessage(ctx, upd.Message); err != nil {
 				b.logger.Printf("handleMessage error: %v", err)
 			}
 		}

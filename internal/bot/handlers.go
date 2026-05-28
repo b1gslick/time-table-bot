@@ -27,7 +27,7 @@ const (
 	conversationStepSlot        = "slot"
 )
 
-func (b *Bot) handleMessage(ctx context.Context, msg *telegram.Message) error {
+func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 	user := UserRecord{
 		TelegramID: msg.From.ID,
 		Username:   normalizeUsername(msg.From.Username),

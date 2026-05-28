@@ -6,6 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"log"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"time-table-bot/internal/bot"
 	"time-table-bot/internal/domain"
 	"time-table-bot/internal/store"
+	"time-table-bot/internal/telegram"
 )
 
 func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
@@ -260,6 +265,126 @@ func TestAppStore_RequestMissingMonth(t *testing.T) {
 	if requested {
 		t.Fatal("requested = true, want false for existing schedule month")
 	}
+}
+
+func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetProfileText(ctx, 2001, "Мастер тестовой записи"); err != nil {
+		t.Fatalf("SetProfileText: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Ногти > Маникюр > Классический", 30, ""); err != nil {
+		t.Fatalf("AddService 1: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Ногти > Маникюр > Покрытие", 45, ""); err != nil {
+		t.Fatalf("AddService 2: %v", err)
+	}
+
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Hour)
+	for i := 0; i < 8; i++ {
+		slotStart := start.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
+
+	tg := &fakeTelegramClient{}
+	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	client := telegram.User{ID: 3001, Username: "client", FirstName: "Client"}
+	chat := telegram.Chat{ID: 3001}
+
+	steps := []string{
+		"/start",
+		"Русский",
+		"1",
+		"1",
+		"1",
+		"Нет",
+		"Ближайшее время",
+		"1",
+	}
+	for _, text := range steps {
+		if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+			From: client,
+			Chat: chat,
+			Text: text,
+		}); err != nil {
+			t.Fatalf("HandleMessage(%q): %v", text, err)
+		}
+	}
+
+	messages := tg.texts()
+	if len(messages) == 0 {
+		t.Fatal("bot sent no messages")
+	}
+	if !strings.Contains(messages[len(messages)-1], "Вы записаны") {
+		t.Fatalf("last bot message = %q, want booking confirmation; all messages: %#v", messages[len(messages)-1], messages)
+	}
+
+	var booked, blocked int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings WHERE status = 'booked'").Scan(&booked); err != nil {
+		t.Fatalf("count booked: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings WHERE status = 'blocked'").Scan(&blocked); err != nil {
+		t.Fatalf("count blocked: %v", err)
+	}
+	if booked != 1 || blocked != 1 {
+		t.Fatalf("booked=%d blocked=%d, want one 30-minute booking over two 15-minute slots", booked, blocked)
+	}
+
+	bookings, err := app.ListMyBookings(ctx, 3001, time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("ListMyBookings: %v", err)
+	}
+	if len(bookings) != 1 || !bookings[0].StartAt.Equal(start) || !bookings[0].EndAt.Equal(start.Add(30*time.Minute)) {
+		t.Fatalf("bookings = %#v, want one booking from %s to %s", bookings, start, start.Add(30*time.Minute))
+	}
+}
+
+type fakeTelegramClient struct {
+	mu       sync.Mutex
+	messages []telegram.SendMessageRequest
+}
+
+func (f *fakeTelegramClient) GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]telegram.Update, error) {
+	return nil, nil
+}
+
+func (f *fakeTelegramClient) SendMessage(ctx context.Context, reqBody telegram.SendMessageRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages = append(f.messages, reqBody)
+	return nil
+}
+
+func (f *fakeTelegramClient) texts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.messages))
+	for _, message := range f.messages {
+		out = append(out, message.Text)
+	}
+	return out
 }
 
 func openAppStorePostgresContainer(t *testing.T, ctx context.Context) *sql.DB {
