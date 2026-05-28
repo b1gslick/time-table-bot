@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,30 @@ import (
 	"time-table-bot/internal/store"
 	"time-table-bot/internal/telegram"
 )
+
+var appStoreIntegrationDB *sql.DB
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+	container, db, err := startAppStorePostgresContainer(ctx)
+	if err != nil {
+		log.Printf("start postgres container: %v", err)
+		os.Exit(1)
+	}
+	appStoreIntegrationDB = db
+
+	if err := store.NewPostgresStore(db).ApplySchema(ctx); err != nil {
+		log.Printf("apply schema: %v", err)
+		_ = db.Close()
+		_ = container.Terminate(context.Background())
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	_ = db.Close()
+	_ = container.Terminate(context.Background())
+	os.Exit(code)
+}
 
 func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 	ctx := context.Background()
@@ -413,6 +438,14 @@ func (f *fakeTelegramClient) texts() []string {
 
 func openAppStorePostgresContainer(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
+	if appStoreIntegrationDB == nil {
+		t.Fatal("postgres integration db is not initialized")
+	}
+	resetAppStorePostgresDB(t, ctx, appStoreIntegrationDB)
+	return appStoreIntegrationDB
+}
+
+func startAppStorePostgresContainer(ctx context.Context) (testcontainers.Container, *sql.DB, error) {
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},
@@ -428,30 +461,54 @@ func openAppStorePostgresContainer(t *testing.T, ctx context.Context) *sql.DB {
 		Started:          true,
 	})
 	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+		return nil, nil, fmt.Errorf("create container: %w", err)
 	}
-	t.Cleanup(func() {
-		_ = container.Terminate(context.Background())
-	})
 
 	host, err := container.Host(ctx)
 	if err != nil {
-		t.Fatalf("container host: %v", err)
+		_ = container.Terminate(context.Background())
+		return nil, nil, fmt.Errorf("container host: %w", err)
 	}
 	port, err := container.MappedPort(ctx, "5432/tcp")
 	if err != nil {
-		t.Fatalf("container port: %v", err)
+		_ = container.Terminate(context.Background())
+		return nil, nil, fmt.Errorf("container port: %w", err)
 	}
 	dsn := fmt.Sprintf("postgres://timetable:timetable@%s:%s/timetable?sslmode=disable", host, port.Port())
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		t.Fatalf("open db: %v", err)
+		_ = container.Terminate(context.Background())
+		return nil, nil, fmt.Errorf("open db: %w", err)
 	}
-	t.Cleanup(func() {
+	if err := pingAppStorePostgres(ctx, db); err != nil {
 		_ = db.Close()
-	})
-	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("ping db: %v", err)
+		_ = container.Terminate(context.Background())
+		return nil, nil, err
 	}
-	return db
+	return container, db, nil
+}
+
+func pingAppStorePostgres(ctx context.Context, db *sql.DB) error {
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := db.PingContext(ctx); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("ping db: %w", lastErr)
+}
+
+func resetAppStorePostgresDB(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	_, err := db.ExecContext(ctx, `
+TRUNCATE TABLE reminders, bookings, schedule_slots, admin_settings, admin_services, admin_profiles, users
+RESTART IDENTITY CASCADE;
+`)
+	if err != nil {
+		t.Fatalf("reset postgres db: %v", err)
+	}
 }

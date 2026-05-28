@@ -22,11 +22,11 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run tests
-        run: go test ./...
+        run: go test -count=1 ./...
       - name: Run Postgres integration tests
-        run: go test -tags=integration ./internal/store
+        run: go test -count=1 -tags=integration -v ./internal/store
       - name: Run bot app integration tests
-        run: go test -tags=integration ./cmd/time-table-bot
+        run: go test -count=1 -tags=integration -v ./cmd/time-table-bot
 
   push_to_registry:
     name: Push Docker image to Docker Hub
