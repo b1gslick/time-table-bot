@@ -154,6 +154,17 @@ func (b *Bot) conversationService(ctx context.Context, chatID int64, user UserRe
 		return b.askService(ctx, chatID, user, state)
 	}
 	globalIndex := visibleIndexes[index-1]
+	if intInSlice(state.ServiceIndexes, globalIndex) {
+		state.VisibleServiceIndexes = nil
+		state.Category = ""
+		state.Subcategory = ""
+		state.Step = conversationStepMore
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			b.logger.Printf("conversation service duplicate: save state failed user=%d: %v", user.TelegramID, err)
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_already_selected")+"\n"+tr(user.Language, "ask_more_services"), yesNoKeyboard(user.Language))
+	}
 	state.ServiceIndexes = append(state.ServiceIndexes, globalIndex)
 	state.VisibleServiceIndexes = nil
 	state.Category = ""
@@ -1069,6 +1080,15 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func intInSlice(values []int, needle int) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func serviceCategories(services []ServiceView) []string {

@@ -602,6 +602,7 @@ WHERE s.start_at >= $2
 }
 
 func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time, allowedDates map[string]bool) ([]bot.AvailabilitySlot, error) {
+	serviceIndexes = uniquePositiveInts(serviceIndexes)
 	if len(serviceIndexes) == 0 {
 		return nil, store.ErrInvalidArgument
 	}
@@ -692,6 +693,19 @@ func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int6
 		_ = s.notifyAdminsAboutMissingRequestedMonth(ctx, telegramID, from)
 	}
 	return out, nil
+}
+
+func uniquePositiveInts(values []int) []int {
+	seen := map[int]bool{}
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {

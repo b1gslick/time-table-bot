@@ -77,6 +77,17 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 		t.Fatalf("service path = %q > %q > %q, want Nails > Manicure > service 1", services[0].Category, services[0].Subcategory, services[0].Name)
 	}
 
+	freeForDuplicate, err := app.ListFreeSlotsForServicesDates(ctx, 3001, []int{1, 1}, []time.Time{start})
+	if err != nil {
+		t.Fatalf("ListFreeSlotsForServicesDates duplicate service: %v", err)
+	}
+	if len(freeForDuplicate) == 0 {
+		t.Fatal("duplicate service selection should still return slots for a single selected service")
+	}
+	if freeForDuplicate[0].DurationMin != 30 {
+		t.Fatalf("duplicate service duration = %d, want 30", freeForDuplicate[0].DurationMin)
+	}
+
 	free, err := app.ListFreeSlotsForServices(ctx, 3001, []int{1, 2}, start)
 	if err != nil {
 		t.Fatalf("ListFreeSlotsForServices: %v", err)
