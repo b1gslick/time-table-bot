@@ -65,6 +65,20 @@ func TestParseDateListRejectsBadDate(t *testing.T) {
 	}
 }
 
+func TestNormalizePhone(t *testing.T) {
+	tests := map[string]string{
+		"+357 99 999999": "+35799999999",
+		"(999) 12-34":    "9991234",
+		"abc":            "",
+		"1234":           "",
+	}
+	for input, want := range tests {
+		if got := normalizePhone(input); got != want {
+			t.Fatalf("normalizePhone(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestFormatCalendar(t *testing.T) {
 	month := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	got := formatCalendar(LangRU, month, []CalendarDay{
@@ -82,5 +96,25 @@ func TestFormatCalendar(t *testing.T) {
 	}
 	if !strings.Contains(got, "01: свободно 3") {
 		t.Fatalf("day summary missing: %s", got)
+	}
+}
+
+func TestFormatCalendarGroupsSuperAdminViewByAdmin(t *testing.T) {
+	month := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	got := formatCalendar(LangRU, month, []CalendarDay{
+		{AdminName: "master", Date: month, OpenSlots: 2, TotalSlots: 2},
+		{AdminName: "second", Date: month, Booked: 1, TotalSlots: 1},
+	})
+	if !strings.Contains(got, "@master\nКалендарь 2026-06") {
+		t.Fatalf("master calendar section missing: %s", got)
+	}
+	if !strings.Contains(got, "@second\nКалендарь 2026-06") {
+		t.Fatalf("second calendar section missing: %s", got)
+	}
+	if !strings.Contains(got, "01: свободно 2") {
+		t.Fatalf("master day summary missing: %s", got)
+	}
+	if !strings.Contains(got, "01: свободно 0, записей 1") {
+		t.Fatalf("second day summary missing: %s", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationSetServices(ctx, chatID, user, text)
 	case conversationStepSetHours:
 		return true, b.conversationSetHours(ctx, chatID, user, text)
+	case conversationStepSetHoursDay:
+		return true, b.conversationSetHoursDay(ctx, chatID, user, state, text)
 	case conversationStepSetDuration:
 		return true, b.conversationSetDuration(ctx, chatID, user, text)
 	case conversationStepGenMonth:
@@ -66,10 +69,14 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationAdminAdd(ctx, chatID, user, text)
 	case conversationStepAdminRemove:
 		return true, b.conversationAdminRemove(ctx, chatID, user, text)
+	case conversationStepViewAdmin:
+		return true, b.conversationViewAdmin(ctx, chatID, user, text)
 	case conversationStepRoleUser:
 		return true, b.conversationRoleUser(ctx, chatID, user, state, text)
 	case conversationStepRoleValue:
 		return true, b.conversationRoleValue(ctx, chatID, user, state, text)
+	case conversationStepAppointKind:
+		return true, b.conversationAppointKind(ctx, chatID, user, state, text)
 	case conversationStepAppointUser:
 		return true, b.conversationAppointUser(ctx, chatID, user, state, text)
 	case conversationStepAppointTime:
@@ -86,6 +93,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationRescheduleTo(ctx, chatID, user, state, text)
 	case conversationStepBlock:
 		return true, b.conversationBlock(ctx, chatID, user, text)
+	case conversationStepBlockDate:
+		return true, b.conversationBlockDate(ctx, chatID, user, text)
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil
@@ -254,7 +263,66 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 	}
 	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s", user.TelegramID, index, start.Format(time.RFC3339))
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout)), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout)), keyboardForUser(user))
+}
+
+func (b *Bot) conversationBack(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	switch state.Step {
+	case conversationStepCategory:
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_main_text"), keyboardForUser(user))
+	case conversationStepSubcategory:
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	case conversationStepService:
+		services, err := b.store.ListServices(ctx, user.TelegramID)
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+		}
+		subcategories := serviceSubcategories(services, state.Category)
+		if len(subcategories) > 1 || len(subcategories) == 1 && subcategories[0] != "" {
+			state.Step = conversationStepSubcategory
+			state.Subcategory = ""
+			state.VisibleServiceIndexes = nil
+			return b.askSubcategory(ctx, chatID, user, state)
+		}
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	case conversationStepMore:
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	case conversationStepTimeChoice:
+		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
+	case conversationStepDates, conversationStepSlot:
+		state.Step = conversationStepTimeChoice
+		state.VisibleSlotIndexes = nil
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "ask_time_choice"), timeChoiceKeyboard(user.Language))
+	case conversationStepSetHoursDay:
+		return b.conversationSetHoursDay(ctx, chatID, user, state, "back")
+	case conversationStepAppointKind:
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_bookings_text"), bookingMenuKeyboard(user.Language))
+	case conversationStepAppointUser:
+		state.Step = conversationStepAppointKind
+		state.ContactType = ""
+		state.Username = ""
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ask_contact_type"), contactTypeKeyboard(user.Language))
+	case conversationStepAppointTime:
+		state.Step = conversationStepAppointUser
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		if state.ContactType == "phone" {
+			return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_phone"))
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_username"))
+	default:
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.handleStart(ctx, chatID, user)
+	}
 }
 
 func (b *Bot) conversationAddServiceCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -336,7 +404,7 @@ func (b *Bot) conversationDeleteService(ctx context.Context, chatID int64, user 
 		return b.sendText(ctx, chatID, tr(user.Language, "service_delete_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_delete_ok", index), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_delete_ok", index), keyboardForUser(user))
 }
 
 func (b *Bot) conversationSetProfile(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -352,7 +420,7 @@ func (b *Bot) conversationSetProfile(ctx context.Context, chatID int64, user Use
 		return b.sendText(ctx, chatID, tr(user.Language, "profile_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "profile_ok"), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "profile_ok"), keyboardForUser(user))
 }
 
 func (b *Bot) conversationSetServices(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -368,7 +436,7 @@ func (b *Bot) conversationSetServices(ctx context.Context, chatID int64, user Us
 		return b.sendText(ctx, chatID, tr(user.Language, "services_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "services_ok"), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "services_ok"), keyboardForUser(user))
 }
 
 func (b *Bot) conversationSetHours(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -384,7 +452,66 @@ func (b *Bot) conversationSetHours(ctx context.Context, chatID int64, user UserR
 		return b.sendText(ctx, chatID, tr(user.Language, "hours_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "hours_ok"), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "hours_ok"), keyboardForUser(user))
+}
+
+func (b *Bot) askWeeklyHoursDay(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	if state.WeekdayIndex < 0 {
+		state.WeekdayIndex = 0
+	}
+	if state.WeekdayIndex >= len(weeklyWizardDays) {
+		if err := b.store.SetWeeklyHours(ctx, user.TelegramID, state.WeeklyHours); err != nil {
+			b.logger.Printf("weekly hours save failed admin=%d: %v", user.TelegramID, err)
+			return b.sendText(ctx, chatID, tr(user.Language, "hours_failed"))
+		}
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "hours_ok"), keyboardForUser(user))
+	}
+	state.Step = conversationStepSetHoursDay
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "hours_ask_day", weekdayLabel(user.Language, weeklyWizardDays[state.WeekdayIndex])), weeklyHoursKeyboard(user.Language, state.WeekdayIndex > 0))
+}
+
+func (b *Bot) conversationSetHoursDay(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	choice := normalizeChoice(text)
+	if choice == "back" || strings.EqualFold(strings.TrimSpace(text), tr(user.Language, "button_back")) {
+		if state.WeekdayIndex <= 0 {
+			_ = b.store.ClearConversationState(ctx, user.TelegramID)
+			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_main_text"), keyboardForUser(user))
+		}
+		state.WeekdayIndex--
+		if len(state.WeeklyHours) > state.WeekdayIndex {
+			state.WeeklyHours = state.WeeklyHours[:state.WeekdayIndex]
+		}
+		return b.askWeeklyHoursDay(ctx, chatID, user, state)
+	}
+	if state.WeekdayIndex < 0 || state.WeekdayIndex >= len(weeklyWizardDays) {
+		state.WeekdayIndex = 0
+	}
+	day := weeklyWizardDays[state.WeekdayIndex]
+	entry := WeekdayHours{Weekday: day, Working: false}
+	if choice != "off" && choice != "not_working" && !strings.EqualFold(strings.TrimSpace(text), tr(user.Language, "button_not_working")) {
+		start, end, err := parseDayRange(strings.TrimSpace(text))
+		if err != nil || end <= start {
+			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "hours_day_bad"), weeklyHoursKeyboard(user.Language, state.WeekdayIndex > 0))
+		}
+		entry.Working = true
+		entry.Start = formatClockDuration(start)
+		entry.End = formatClockDuration(end)
+	}
+	if len(state.WeeklyHours) > state.WeekdayIndex {
+		state.WeeklyHours[state.WeekdayIndex] = entry
+	} else {
+		state.WeeklyHours = append(state.WeeklyHours, entry)
+	}
+	state.WeekdayIndex++
+	return b.askWeeklyHoursDay(ctx, chatID, user, state)
 }
 
 func (b *Bot) conversationSetDuration(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -400,7 +527,7 @@ func (b *Bot) conversationSetDuration(ctx context.Context, chatID int64, user Us
 		return b.sendText(ctx, chatID, tr(user.Language, "duration_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "duration_ok"), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "duration_ok"), keyboardForUser(user))
 }
 
 func (b *Bot) conversationGenerateMonth(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -444,7 +571,7 @@ func (b *Bot) conversationGenerateMonths(ctx context.Context, chatID int64, user
 		return b.sendText(ctx, chatID, tr(user.Language, "generate_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "generate_ok", result.Created, result.Skipped), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "generate_ok", result.Created, result.Skipped), keyboardForUser(user))
 }
 
 func (b *Bot) conversationDeleteScheduleMonth(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -462,11 +589,11 @@ func (b *Bot) conversationDeleteScheduleMonth(ctx context.Context, chatID int64,
 		return b.sendText(ctx, chatID, tr(user.Language, "schedule_delete_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_delete_ok", monthStart.Format(monthLayout), result.Deleted), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_delete_ok", monthStart.Format(monthLayout), result.Deleted), keyboardForUser(user))
 }
 
 func (b *Bot) conversationAdminAdd(ctx context.Context, chatID int64, user UserRecord, text string) error {
-	if user.Role != RoleSuperAdmin {
+	if user.ActualRole != RoleSuperAdmin {
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "super_only_add"))
 	}
@@ -478,11 +605,11 @@ func (b *Bot) conversationAdminAdd(ctx context.Context, chatID int64, user UserR
 		return b.sendText(ctx, chatID, tr(user.Language, "admin_add_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_added", username), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_added", username), keyboardForUser(user))
 }
 
 func (b *Bot) conversationAdminRemove(ctx context.Context, chatID int64, user UserRecord, text string) error {
-	if user.Role != RoleSuperAdmin {
+	if user.ActualRole != RoleSuperAdmin {
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "super_only_remove"))
 	}
@@ -494,11 +621,31 @@ func (b *Bot) conversationAdminRemove(ctx context.Context, chatID int64, user Us
 		return b.sendText(ctx, chatID, tr(user.Language, "admin_remove_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_removed", username), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_removed", username), keyboardForUser(user))
+}
+
+func (b *Bot) conversationViewAdmin(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if user.ActualRole != RoleSuperAdmin {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
+	}
+	username := normalizeUsername(text)
+	if username == "" {
+		return b.sendText(ctx, chatID, tr(user.Language, "bad_username"))
+	}
+	if err := b.store.SetSuperAdminView(ctx, user.TelegramID, SuperAdminView{Role: RoleAdmin, AdminUsername: username}); err != nil {
+		b.logger.Printf("interactive set view admin failed user=%d target=%q: %v", user.TelegramID, username, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "view_admin_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	user.Role = RoleAdmin
+	user.ViewRole = RoleAdmin
+	user.ViewAdminName = username
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "view_admin_ok", username), keyboardForUser(user))
 }
 
 func (b *Bot) conversationRoleUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
-	if user.Role != RoleSuperAdmin {
+	if user.ActualRole != RoleSuperAdmin {
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
 	}
@@ -515,7 +662,7 @@ func (b *Bot) conversationRoleUser(ctx context.Context, chatID int64, user UserR
 }
 
 func (b *Bot) conversationRoleValue(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
-	if user.Role != RoleSuperAdmin {
+	if user.ActualRole != RoleSuperAdmin {
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
 	}
@@ -526,7 +673,7 @@ func (b *Bot) conversationRoleValue(ctx context.Context, chatID int64, user User
 			return b.sendText(ctx, chatID, tr(user.Language, "role_show_failed"))
 		}
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
-		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_current", state.Username, target.Role), keyboardForRole(user.Role, user.Language))
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_current", state.Username, target.Role), keyboardForUser(user))
 	}
 	role := Role(value)
 	if role != RoleUser && role != RoleAdmin && role != RoleSuperAdmin {
@@ -536,10 +683,48 @@ func (b *Bot) conversationRoleValue(ctx context.Context, chatID int64, user User
 		return b.sendText(ctx, chatID, tr(user.Language, "role_set_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_set", state.Username, role), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "role_set", state.Username, role), keyboardForUser(user))
+}
+
+func (b *Bot) conversationAppointKind(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	switch normalizeChoice(text) {
+	case "telegram":
+		state.ContactType = "telegram"
+		state.Step = conversationStepAppointUser
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_username"))
+	case "phone":
+		state.ContactType = "phone"
+		state.Step = conversationStepAppointUser
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_phone"))
+	default:
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ask_contact_type"), contactTypeKeyboard(user.Language))
+	}
 }
 
 func (b *Bot) conversationAppointUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if state.ContactType == "phone" {
+		phone := normalizePhone(text)
+		if phone == "" {
+			return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_phone"))
+		}
+		state.Username = phone
+		state.Step = conversationStepAppointTime
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_datetime"))
+	}
+	state.ContactType = "telegram"
 	return b.askAdminTargetUsername(ctx, chatID, user, state, text, conversationStepAppointTime, "appoint_ask_datetime")
 }
 
@@ -548,11 +733,18 @@ func (b *Bot) conversationAppointTime(ctx context.Context, chatID int64, user Us
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "datetime_bad_example"))
 	}
+	if state.ContactType == "phone" {
+		if err := b.store.AddBookingByPhone(ctx, user.TelegramID, state.Username, start); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "appoint_failed"))
+		}
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", state.Username), keyboardForUser(user))
+	}
 	if err := b.store.AddBookingByUsername(ctx, user.TelegramID, state.Username, start); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "appoint_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForUser(user))
 }
 
 func (b *Bot) conversationCancelUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -568,7 +760,7 @@ func (b *Bot) conversationCancelTime(ctx context.Context, chatID int64, user Use
 		return b.sendText(ctx, chatID, tr(user.Language, "cancel_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "cancel_ok", state.Username), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "cancel_ok", state.Username), keyboardForUser(user))
 }
 
 func (b *Bot) conversationRescheduleUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -602,7 +794,7 @@ func (b *Bot) conversationRescheduleTo(ctx context.Context, chatID int64, user U
 		return b.sendText(ctx, chatID, tr(user.Language, "reschedule_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "reschedule_ok", state.Username), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "reschedule_ok", state.Username), keyboardForUser(user))
 }
 
 func (b *Bot) conversationBlock(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -618,7 +810,25 @@ func (b *Bot) conversationBlock(ctx context.Context, chatID int64, user UserReco
 		return b.sendText(ctx, chatID, tr(user.Language, "block_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "block_ok"), keyboardForRole(user.Role, user.Language))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "block_ok"), keyboardForUser(user))
+}
+
+func (b *Bot) conversationBlockDate(ctx context.Context, chatID int64, user UserRecord, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	date, err := parseSingleDate(text)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "block_date_bad"))
+	}
+	result, err := b.store.BlockScheduleDate(ctx, user.TelegramID, date)
+	if err != nil {
+		b.logger.Printf("interactive block date failed admin=%d date=%s: %v", user.TelegramID, date.Format("2006-01-02"), err)
+		return b.sendText(ctx, chatID, tr(user.Language, "block_date_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "block_date_ok", result.Date.Format("2006-01-02"), result.ClosedSlots), keyboardForUser(user))
 }
 
 func (b *Bot) askAdminTargetUsername(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text, nextStep, promptKey string) error {
@@ -666,7 +876,7 @@ func (b *Bot) askCategory(ctx context.Context, chatID int64, user UserRecord, se
 	sb.WriteString(formatCategories(user.Language, categories))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_category"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(len(categories), "cat"))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefixLang(len(categories), "cat", user.Language))
 }
 
 func (b *Bot) askSubcategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -696,7 +906,7 @@ func (b *Bot) askSubcategory(ctx context.Context, chatID int64, user UserRecord,
 	sb.WriteString(formatSubcategories(user.Language, subcategories))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_subcategory"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(len(subcategories), "sub"))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefixLang(len(subcategories), "sub", user.Language))
 }
 
 func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -729,7 +939,7 @@ func (b *Bot) askService(ctx context.Context, chatID int64, user UserRecord, sta
 	sb.WriteString(formatServicesList(user.Language, visibleServices, false))
 	sb.WriteString("\n")
 	sb.WriteString(tr(user.Language, "ask_service"))
-	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefix(len(visibleServices), "svc"))
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), numberKeyboardWithPrefixLang(len(visibleServices), "svc", user.Language))
 }
 
 func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserRecord, state ConversationState, slots []AvailabilitySlot) error {
@@ -1195,6 +1405,51 @@ func displayCategory(lang, category string) string {
 }
 
 func formatCalendar(lang string, monthStart time.Time, items []CalendarDay) string {
+	if hasAdminCalendarNames(items) {
+		return formatCalendarByAdmin(lang, monthStart, items)
+	}
+	return formatCalendarSingle(lang, monthStart, items)
+}
+
+func formatCalendarByAdmin(lang string, monthStart time.Time, items []CalendarDay) string {
+	grouped := make(map[string][]CalendarDay)
+	var names []string
+	for _, item := range items {
+		name := strings.TrimSpace(item.AdminName)
+		if name == "" {
+			name = "admin"
+		}
+		if _, ok := grouped[name]; !ok {
+			names = append(names, name)
+		}
+		item.AdminName = ""
+		grouped[name] = append(grouped[name], item)
+	}
+	sort.Strings(names)
+
+	var sb strings.Builder
+	for i, name := range names {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("@")
+		sb.WriteString(name)
+		sb.WriteString("\n")
+		sb.WriteString(formatCalendarSingle(lang, monthStart, grouped[name]))
+	}
+	return sb.String()
+}
+
+func hasAdminCalendarNames(items []CalendarDay) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item.AdminName) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func formatCalendarSingle(lang string, monthStart time.Time, items []CalendarDay) string {
 	monthStart = time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, monthStart.Location())
 	byDay := make(map[int]CalendarDay, len(items))
 	for _, item := range items {
@@ -1289,6 +1544,14 @@ func normalizeChoice(text string) string {
 		return "nearest"
 	case "конкретные даты", "даты", "dates", "date":
 		return "dates"
+	case "не работаю", "выходной", "off", "not working", "not_working":
+		return "off"
+	case "назад", "back":
+		return "back"
+	case "telegram", "tg", "тг", "телеграм":
+		return "telegram"
+	case "phone", "телефон", "номер", "номер телефона":
+		return "phone"
 	default:
 		return text
 	}
@@ -1308,6 +1571,43 @@ func parseDateTimeInput(text string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("datetime must contain date and time")
 	}
 	return parseDateTime(parts[0], parts[1])
+}
+
+func parseSingleDate(text string) (time.Time, error) {
+	parts := strings.Fields(strings.TrimSpace(text))
+	if len(parts) == 0 {
+		return time.Time{}, fmt.Errorf("date is required")
+	}
+	return parseUserDate(parts[0], time.Now())
+}
+
+func normalizePhone(text string) string {
+	value := strings.TrimSpace(text)
+	if value == "" {
+		return ""
+	}
+	digits := strings.Builder{}
+	for i, r := range value {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+			continue
+		}
+		if r == '+' && i == 0 {
+			continue
+		}
+		if r == ' ' || r == '-' || r == '(' || r == ')' {
+			continue
+		}
+		return ""
+	}
+	rawDigits := digits.String()
+	if len(rawDigits) < 5 {
+		return ""
+	}
+	if strings.HasPrefix(value, "+") {
+		return "+" + rawDigits
+	}
+	return rawDigits
 }
 
 func parseDateList(text string, now time.Time) ([]time.Time, error) {
@@ -1353,6 +1653,60 @@ func formatIndexes(values []int) string {
 	return strings.Join(out, ", ")
 }
 
+func formatClockDuration(value time.Duration) string {
+	totalMinutes := int(value / time.Minute)
+	return fmt.Sprintf("%02d:%02d", totalMinutes/60, totalMinutes%60)
+}
+
+var weeklyWizardDays = []time.Weekday{
+	time.Monday,
+	time.Tuesday,
+	time.Wednesday,
+	time.Thursday,
+	time.Friday,
+	time.Saturday,
+	time.Sunday,
+}
+
+func weekdayLabel(lang string, day time.Weekday) string {
+	if lang == LangEN {
+		switch day {
+		case time.Monday:
+			return "Monday"
+		case time.Tuesday:
+			return "Tuesday"
+		case time.Wednesday:
+			return "Wednesday"
+		case time.Thursday:
+			return "Thursday"
+		case time.Friday:
+			return "Friday"
+		case time.Saturday:
+			return "Saturday"
+		case time.Sunday:
+			return "Sunday"
+		}
+	}
+	switch day {
+	case time.Monday:
+		return "понедельник"
+	case time.Tuesday:
+		return "вторник"
+	case time.Wednesday:
+		return "среда"
+	case time.Thursday:
+		return "четверг"
+	case time.Friday:
+		return "пятница"
+	case time.Saturday:
+		return "суббота"
+	case time.Sunday:
+		return "воскресенье"
+	default:
+		return ""
+	}
+}
+
 func languageKeyboard() *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
@@ -1371,6 +1725,9 @@ func yesNoKeyboard(lang string) *telegram.ReplyMarkup {
 				{Text: tr(lang, "yes"), CallbackData: "more:yes"},
 				{Text: tr(lang, "no"), CallbackData: "more:no"},
 			},
+			{
+				{Text: tr(lang, "button_back"), CallbackData: "back:more"},
+			},
 		},
 	}
 }
@@ -1382,6 +1739,33 @@ func timeChoiceKeyboard(lang string) *telegram.ReplyMarkup {
 				{Text: tr(lang, "nearest_time"), CallbackData: "time:nearest"},
 				{Text: tr(lang, "specific_dates"), CallbackData: "time:dates"},
 			},
+			{
+				{Text: tr(lang, "button_back"), CallbackData: "back:time"},
+			},
+		},
+	}
+}
+
+func weeklyHoursKeyboard(lang string, canGoBack bool) *telegram.ReplyMarkup {
+	rows := [][]telegram.InlineKeyboardButton{
+		{{Text: tr(lang, "button_not_working"), CallbackData: "hours:off"}},
+	}
+	if canGoBack {
+		rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "button_back"), CallbackData: "back:hours"}})
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func contactTypeKeyboard(lang string) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: tr(lang, "button_contact_telegram"), CallbackData: "contact:telegram"},
+				{Text: tr(lang, "button_contact_phone"), CallbackData: "contact:phone"},
+			},
+			{
+				{Text: tr(lang, "button_back"), CallbackData: "back:appoint"},
+			},
 		},
 	}
 }
@@ -1391,6 +1775,10 @@ func numberKeyboard(count int) *telegram.ReplyMarkup {
 }
 
 func numberKeyboardWithPrefix(count int, prefix string) *telegram.ReplyMarkup {
+	return numberKeyboardWithPrefixLang(count, prefix, LangRU)
+}
+
+func numberKeyboardWithPrefixLang(count int, prefix, lang string) *telegram.ReplyMarkup {
 	if count <= 0 {
 		return nil
 	}
@@ -1406,5 +1794,6 @@ func numberKeyboardWithPrefix(count int, prefix string) *telegram.ReplyMarkup {
 		}
 		rows = append(rows, row)
 	}
+	rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "button_back"), CallbackData: "back:" + prefix}})
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }

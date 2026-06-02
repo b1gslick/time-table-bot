@@ -25,6 +25,18 @@ func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 	}
 }
 
+func keyboardForUser(user UserRecord) *telegram.ReplyMarkup {
+	if user.ActualRole != RoleSuperAdmin || user.Role == RoleSuperAdmin {
+		return keyboardForRole(user.Role, user.Language)
+	}
+	base := keyboardForRole(user.Role, user.Language)
+	if base == nil {
+		return base
+	}
+	base.Keyboard = append(base.Keyboard, []telegram.KeyboardButton{{Text: tr(user.Language, "button_action_view_super")}})
+	return base
+}
+
 func menuKeyboard(rows [][]string) *telegram.ReplyMarkup {
 	keyboard := make([][]telegram.KeyboardButton, 0, len(rows))
 	for _, row := range rows {
@@ -46,6 +58,7 @@ func calendarMenuKeyboard(lang string) *telegram.ReplyMarkup {
 
 func bookingMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
+		{tr(lang, "button_action_client_bookings")},
 		{tr(lang, "button_action_book"), tr(lang, "button_action_my")},
 		{tr(lang, "button_action_appoint"), tr(lang, "button_action_cancel")},
 		{tr(lang, "button_action_reschedule"), tr(lang, "button_action_block")},
@@ -65,7 +78,7 @@ func scheduleMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
 		{tr(lang, "button_action_set_hours"), tr(lang, "button_action_set_duration")},
 		{tr(lang, "button_action_generate"), tr(lang, "button_action_calendar")},
-		{tr(lang, "button_action_delete_month")},
+		{tr(lang, "button_action_block_date"), tr(lang, "button_action_delete_month")},
 		{tr(lang, "button_back")},
 	})
 }
@@ -80,6 +93,9 @@ func settingsMenuKeyboard(lang string) *telegram.ReplyMarkup {
 
 func adminsMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
+		{tr(lang, "button_action_admin_list")},
+		{tr(lang, "button_action_view_admin"), tr(lang, "button_action_view_user")},
+		{tr(lang, "button_action_view_super")},
 		{tr(lang, "button_action_admin_add"), tr(lang, "button_action_admin_remove")},
 		{tr(lang, "button_action_role")},
 		{tr(lang, "button_back")},

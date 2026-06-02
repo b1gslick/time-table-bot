@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,6 +86,102 @@ func (s *appStore) SetUserLanguage(ctx context.Context, telegramID int64, langua
 		return err
 	}
 	return s.repo.SetAdminSetting(ctx, userID, "language", language)
+}
+
+func (s *appStore) ListAdmins(ctx context.Context) ([]bot.AdminView, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT u.username,
+       u.role,
+       COUNT(DISTINCT svc.id) FILTER (WHERE svc.is_active = TRUE) AS active_services,
+       COUNT(DISTINCT sl.id) FILTER (
+           WHERE sl.status = 'open'
+             AND NOT EXISTS (
+                 SELECT 1 FROM bookings b
+                 WHERE b.slot_id = sl.id AND b.status IN ('booked', 'blocked')
+             )
+       ) AS open_slots,
+       COUNT(DISTINCT b.id) FILTER (WHERE b.status = 'booked') AS booked_slots
+FROM users u
+LEFT JOIN admin_services svc ON svc.admin_user_id = u.id
+LEFT JOIN schedule_slots sl ON sl.admin_user_id = u.id
+LEFT JOIN bookings b ON b.slot_id = sl.id
+WHERE u.role IN ('admin', 'super_admin')
+GROUP BY u.username, u.role
+ORDER BY u.role = 'super_admin' DESC, u.username ASC;
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list admins: %w", err)
+	}
+	defer rows.Close()
+
+	var out []bot.AdminView
+	for rows.Next() {
+		var item bot.AdminView
+		if err := rows.Scan(&item.Username, &item.Role, &item.ActiveServices, &item.OpenSlots, &item.BookedSlots); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *appStore) GetSuperAdminView(ctx context.Context, telegramID int64) (bot.SuperAdminView, error) {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return bot.SuperAdminView{}, err
+	}
+	raw, err := s.stringSetting(ctx, userID, "super_admin_view", "")
+	if err != nil {
+		return bot.SuperAdminView{}, err
+	}
+	if raw == "" {
+		return bot.SuperAdminView{}, store.ErrNotFound
+	}
+	var view bot.SuperAdminView
+	if err := json.Unmarshal([]byte(raw), &view); err != nil {
+		return bot.SuperAdminView{}, err
+	}
+	if view.Role == "" {
+		return bot.SuperAdminView{}, store.ErrNotFound
+	}
+	return view, nil
+}
+
+func (s *appStore) SetSuperAdminView(ctx context.Context, telegramID int64, view bot.SuperAdminView) error {
+	userID, err := s.userIDByTelegram(ctx, telegramID)
+	if err != nil {
+		return err
+	}
+	if view.Role == "" || view.Role == bot.RoleSuperAdmin {
+		_, err := s.db.ExecContext(ctx, `
+DELETE FROM admin_settings
+WHERE admin_user_id = $1 AND key = 'super_admin_view';
+`, userID)
+		return err
+	}
+	if view.Role != bot.RoleAdmin && view.Role != bot.RoleUser {
+		return store.ErrInvalidArgument
+	}
+	view.AdminUsername = normalizeUsername(view.AdminUsername)
+	if view.Role == bot.RoleAdmin {
+		if view.AdminUsername == "" {
+			return store.ErrInvalidArgument
+		}
+		target, err := s.lookupUser(ctx, "username = $1", view.AdminUsername)
+		if err != nil {
+			return err
+		}
+		if target.Role != domain.RoleAdmin && target.Role != domain.RoleSuperAdmin {
+			return store.ErrInvalidArgument
+		}
+	} else {
+		view.AdminUsername = ""
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, userID, "super_admin_view", string(data))
 }
 
 func (s *appStore) SetProfileText(ctx context.Context, adminTelegramID int64, text string) error {
@@ -178,9 +275,14 @@ JOIN users a ON a.id = svc.admin_user_id
 WHERE svc.is_active = TRUE
 `
 	args := []any{}
-	if isBotAdmin(actor.Role) {
+	if actor.Role == bot.RoleAdmin {
 		query += " AND a.telegram_id = $1"
 		args = append(args, telegramID)
+	} else if actor.Role == bot.RoleSuperAdmin {
+		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+			query += " AND a.username = $1"
+			args = append(args, normalizeUsername(view.AdminUsername))
+		}
 	}
 	query += " ORDER BY a.username ASC, svc.created_at ASC;"
 
@@ -263,6 +365,10 @@ func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, 
 	if err := s.repo.SetAdminSetting(ctx, adminID, "work_hours_text", text); err != nil {
 		return err
 	}
+	_, _ = s.db.ExecContext(ctx, `
+DELETE FROM admin_settings
+WHERE admin_user_id = $1 AND key = 'weekly_hours';
+`, adminID)
 	parts := strings.Fields(text)
 	if len(parts) >= 2 {
 		if days, err := parseWeekdaysSetting(parts[0]); err == nil {
@@ -272,6 +378,56 @@ func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, 
 			_ = s.repo.SetAdminSetting(ctx, adminID, "work_start", formatClockDuration(start))
 			_ = s.repo.SetAdminSetting(ctx, adminID, "work_end", formatClockDuration(end))
 		}
+	}
+	return nil
+}
+
+func (s *appStore) SetWeeklyHours(ctx context.Context, adminTelegramID int64, hours []bot.WeekdayHours) error {
+	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	normalized := make([]bot.WeekdayHours, 0, len(hours))
+	var workDays []string
+	var summary []string
+	var firstStart, firstEnd string
+	for _, item := range hours {
+		if item.Weekday < time.Sunday || item.Weekday > time.Saturday {
+			return store.ErrInvalidArgument
+		}
+		entry := bot.WeekdayHours{Weekday: item.Weekday, Working: item.Working}
+		if item.Working {
+			start, err := parseClockSetting(item.Start)
+			if err != nil {
+				return err
+			}
+			end, err := parseClockSetting(item.End)
+			if err != nil || end <= start {
+				return store.ErrInvalidArgument
+			}
+			entry.Start = formatClockDuration(start)
+			entry.End = formatClockDuration(end)
+			workDays = append(workDays, weekdayString(item.Weekday))
+			summary = append(summary, fmt.Sprintf("%s %s-%s", weekdayString(item.Weekday), entry.Start, entry.End))
+			if firstStart == "" {
+				firstStart = entry.Start
+				firstEnd = entry.End
+			}
+		}
+		normalized = append(normalized, entry)
+	}
+	data, err := json.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SetAdminSetting(ctx, adminID, "weekly_hours", string(data)); err != nil {
+		return err
+	}
+	_ = s.repo.SetAdminSetting(ctx, adminID, "work_hours_text", strings.Join(summary, "; "))
+	_ = s.repo.SetAdminSetting(ctx, adminID, "work_days", strings.Join(workDays, ","))
+	if firstStart != "" {
+		_ = s.repo.SetAdminSetting(ctx, adminID, "work_start", firstStart)
+		_ = s.repo.SetAdminSetting(ctx, adminID, "work_end", firstEnd)
 	}
 	return nil
 }
@@ -295,39 +451,13 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 	if req.Month.IsZero() {
 		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
 	}
-	if len(req.Weekdays) == 0 {
-		raw, err := s.stringSetting(ctx, adminID, "work_days", "")
-		if err != nil || raw == "" {
-			return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
-		}
-		days, err := parseStoredWeekdays(raw)
-		if err != nil {
-			return bot.GenerateScheduleResult{}, err
-		}
-		req.Weekdays = days
-	}
-	if req.DayStart == 0 && req.DayEnd == 0 {
-		startRaw, err1 := s.stringSetting(ctx, adminID, "work_start", "")
-		endRaw, err2 := s.stringSetting(ctx, adminID, "work_end", "")
-		if err1 != nil || err2 != nil || startRaw == "" || endRaw == "" {
-			return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
-		}
-		req.DayStart, err = parseClockSetting(startRaw)
-		if err != nil {
-			return bot.GenerateScheduleResult{}, err
-		}
-		req.DayEnd, err = parseClockSetting(endRaw)
-		if err != nil {
-			return bot.GenerateScheduleResult{}, err
-		}
-	}
 	if req.DurationMin <= 0 {
 		req.DurationMin, err = s.intSetting(ctx, adminID, "session_duration", defaultSessionDuration)
 		if err != nil || req.DurationMin <= 0 {
 			req.DurationMin = defaultSessionDuration
 		}
 	}
-	if req.DayEnd <= req.DayStart || req.DurationMin <= 0 {
+	if req.DurationMin <= 0 {
 		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
 	}
 	if req.Months <= 0 {
@@ -337,21 +467,29 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
 	}
 
-	monthStart := time.Date(req.Month.Year(), req.Month.Month(), 1, 0, 0, 0, 0, s.loc)
-	daySet := map[time.Weekday]bool{}
-	for _, day := range req.Weekdays {
-		daySet[day] = true
+	rules, err := s.scheduleRules(ctx, adminID, req)
+	if err != nil {
+		return bot.GenerateScheduleResult{}, err
+	}
+	blocked, err := s.blockedDateSet(ctx, adminID)
+	if err != nil {
+		return bot.GenerateScheduleResult{}, err
 	}
 
+	monthStart := time.Date(req.Month.Year(), req.Month.Month(), 1, 0, 0, 0, 0, s.loc)
 	var result bot.GenerateScheduleResult
 	for monthOffset := 0; monthOffset < req.Months; monthOffset++ {
 		currentMonthStart := monthStart.AddDate(0, monthOffset, 0)
 		currentMonthEnd := currentMonthStart.AddDate(0, 1, 0)
 		for day := currentMonthStart; day.Before(currentMonthEnd); day = day.AddDate(0, 0, 1) {
-			if !daySet[day.Weekday()] {
+			if blocked[day.Format("2006-01-02")] {
 				continue
 			}
-			for offset := req.DayStart; offset+time.Duration(req.DurationMin)*time.Minute <= req.DayEnd; offset += time.Duration(req.DurationMin) * time.Minute {
+			rule, ok := rules[day.Weekday()]
+			if !ok {
+				continue
+			}
+			for offset := rule.Start; offset+time.Duration(req.DurationMin)*time.Minute <= rule.End; offset += time.Duration(req.DurationMin) * time.Minute {
 				start := day.Add(offset)
 				if _, err := s.slotIDByAdminStart(ctx, adminID, start); err == nil {
 					result.Skipped++
@@ -374,6 +512,82 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 		}
 	}
 	return result, nil
+}
+
+type scheduleRule struct {
+	Start time.Duration
+	End   time.Duration
+}
+
+func (s *appStore) scheduleRules(ctx context.Context, adminID int64, req bot.GenerateScheduleRequest) (map[time.Weekday]scheduleRule, error) {
+	if len(req.Weekdays) > 0 {
+		if req.DayEnd <= req.DayStart {
+			return nil, store.ErrInvalidArgument
+		}
+		out := make(map[time.Weekday]scheduleRule, len(req.Weekdays))
+		for _, day := range req.Weekdays {
+			out[day] = scheduleRule{Start: req.DayStart, End: req.DayEnd}
+		}
+		return out, nil
+	}
+
+	if rules, err := s.weeklyScheduleRules(ctx, adminID); err == nil && len(rules) > 0 {
+		return rules, nil
+	}
+
+	raw, err := s.stringSetting(ctx, adminID, "work_days", "")
+	if err != nil || raw == "" {
+		return nil, store.ErrInvalidArgument
+	}
+	days, err := parseStoredWeekdays(raw)
+	if err != nil {
+		return nil, err
+	}
+	startRaw, err1 := s.stringSetting(ctx, adminID, "work_start", "")
+	endRaw, err2 := s.stringSetting(ctx, adminID, "work_end", "")
+	if err1 != nil || err2 != nil || startRaw == "" || endRaw == "" {
+		return nil, store.ErrInvalidArgument
+	}
+	start, err := parseClockSetting(startRaw)
+	if err != nil {
+		return nil, err
+	}
+	end, err := parseClockSetting(endRaw)
+	if err != nil || end <= start {
+		return nil, store.ErrInvalidArgument
+	}
+	out := make(map[time.Weekday]scheduleRule, len(days))
+	for _, day := range days {
+		out[day] = scheduleRule{Start: start, End: end}
+	}
+	return out, nil
+}
+
+func (s *appStore) weeklyScheduleRules(ctx context.Context, adminID int64) (map[time.Weekday]scheduleRule, error) {
+	raw, err := s.stringSetting(ctx, adminID, "weekly_hours", "")
+	if err != nil || raw == "" {
+		return nil, store.ErrNotFound
+	}
+	var hours []bot.WeekdayHours
+	if err := json.Unmarshal([]byte(raw), &hours); err != nil {
+		return nil, err
+	}
+	out := make(map[time.Weekday]scheduleRule)
+	for _, item := range hours {
+		if !item.Working {
+			continue
+		}
+		start, err := parseClockSetting(item.Start)
+		if err != nil {
+			return nil, err
+		}
+		end, err := parseClockSetting(item.End)
+		if err != nil || end <= start {
+			return nil, store.ErrInvalidArgument
+		}
+		out[item.Weekday] = scheduleRule{Start: start, End: end}
+	}
+	return out, nil
 }
 
 func (s *appStore) DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (bot.DeleteScheduleResult, error) {
@@ -402,8 +616,83 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3;
 	return bot.DeleteScheduleResult{Deleted: int(affected)}, nil
 }
 
+func (s *appStore) BlockScheduleDate(ctx context.Context, adminTelegramID int64, date time.Time) (bot.BlockDateResult, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return bot.BlockDateResult{}, err
+	}
+	day := dateOnlyLocal(date, s.loc)
+	blocked, err := s.blockedDateSet(ctx, adminID)
+	if err != nil {
+		return bot.BlockDateResult{}, err
+	}
+	blocked[day.Format("2006-01-02")] = true
+	if err := s.saveBlockedDateSet(ctx, adminID, blocked); err != nil {
+		return bot.BlockDateResult{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE schedule_slots s
+SET status = 'closed', updated_at = NOW()
+WHERE s.admin_user_id = $1
+  AND s.start_at >= $2
+  AND s.start_at < $3
+  AND s.status = 'open'
+  AND NOT EXISTS (
+      SELECT 1 FROM bookings b
+      WHERE b.slot_id = s.id AND b.status = 'booked'
+  );
+`, adminID, day, day.AddDate(0, 0, 1))
+	if err != nil {
+		return bot.BlockDateResult{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return bot.BlockDateResult{}, err
+	}
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_free_slots")
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	return bot.BlockDateResult{Date: day, ClosedSlots: int(affected)}, nil
+}
+
+func (s *appStore) blockedDateSet(ctx context.Context, adminID int64) (map[string]bool, error) {
+	raw, err := s.stringSetting(ctx, adminID, "blocked_dates", "")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	if raw == "" {
+		return out, nil
+	}
+	var dates []string
+	if err := json.Unmarshal([]byte(raw), &dates); err != nil {
+		return nil, err
+	}
+	for _, date := range dates {
+		date = strings.TrimSpace(date)
+		if date != "" {
+			out[date] = true
+		}
+	}
+	return out, nil
+}
+
+func (s *appStore) saveBlockedDateSet(ctx context.Context, adminID int64, dates map[string]bool) error {
+	values := make([]string, 0, len(dates))
+	for date, blocked := range dates {
+		if blocked {
+			values = append(values, date)
+		}
+	}
+	sort.Strings(values)
+	data, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, adminID, "blocked_dates", string(data))
+}
+
 func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
 	}
@@ -425,6 +714,29 @@ func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int
 	return err
 }
 
+func (s *appStore) AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) error {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	clientID, err := s.ensureUserByPhone(ctx, phone)
+	if err != nil {
+		return err
+	}
+	slotID, err := s.ensureSlot(ctx, adminID, start)
+	if err != nil {
+		return err
+	}
+	_, err = s.repo.CreateBooking(ctx, domain.Booking{
+		SlotID:        slotID,
+		UserID:        &clientID,
+		Status:        domain.BookingStatusBooked,
+		TravelMinutes: 0,
+		Note:          "created_by_admin_phone",
+	})
+	return err
+}
+
 func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error {
 	bookingID, err := s.bookingIDByAdminUserStart(ctx, adminTelegramID, username, start)
 	if err != nil {
@@ -442,7 +754,7 @@ WHERE status = 'blocked' AND note = $1;
 }
 
 func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
 	}
@@ -458,7 +770,7 @@ func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegra
 }
 
 func (s *appStore) BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
 	}
@@ -481,17 +793,33 @@ func (s *appStore) ListFreeSlotsForMonth(ctx context.Context, telegramID int64, 
 		}
 		return []time.Time{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 SELECT s.start_at
 FROM schedule_slots s
+JOIN users a ON a.id = s.admin_user_id
 LEFT JOIN bookings b ON b.slot_id = s.id AND b.status IN ('booked', 'blocked')
 WHERE s.status = 'open'
   AND s.start_at >= $1
   AND s.start_at < $2
+`
+	args := []any{from, to}
+	if actor, err := s.GetUserByTelegramID(ctx, telegramID); err == nil {
+		if actor.Role == bot.RoleAdmin {
+			query += "  AND a.telegram_id = $3\n"
+			args = append(args, telegramID)
+		} else if actor.Role == bot.RoleSuperAdmin {
+			if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+				query += "  AND a.username = $3\n"
+				args = append(args, normalizeUsername(view.AdminUsername))
+			}
+		}
+	}
+	query += `
 GROUP BY s.id
 HAVING COUNT(b.id) < s.capacity
 ORDER BY s.start_at ASC;
-`, from, to)
+`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list free slots: %w", err)
 	}
@@ -600,8 +928,10 @@ func (s *appStore) AdminCalendar(ctx context.Context, telegramID int64, monthSta
 	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
 	to := from.AddDate(0, 1, 0)
 
+	showAdminNames := actor.Role == bot.RoleSuperAdmin && !isSuperAdminViewingAdmin(ctx, s, telegramID)
 	query := `
-SELECT date_trunc('day', s.start_at AT TIME ZONE $1)::date AS day,
+SELECT ` + calendarAdminSelect(showAdminNames) + ` AS admin_name,
+       date_trunc('day', s.start_at AT TIME ZONE $1)::date AS day,
        COUNT(*) AS total_slots,
        COUNT(*) FILTER (
            WHERE s.status = 'open'
@@ -632,8 +962,13 @@ WHERE s.start_at >= $2
 	if actor.Role == bot.RoleAdmin {
 		query += "  AND a.telegram_id = $4\n"
 		args = append(args, telegramID)
+	} else if actor.Role == bot.RoleSuperAdmin {
+		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+			query += "  AND a.username = $4\n"
+			args = append(args, normalizeUsername(view.AdminUsername))
+		}
 	}
-	query += "GROUP BY day ORDER BY day ASC;"
+	query += "GROUP BY admin_name, day ORDER BY admin_name ASC, day ASC;"
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -644,14 +979,16 @@ WHERE s.start_at >= $2
 	var out []bot.CalendarDay
 	for rows.Next() {
 		var (
+			adminName           string
 			day                 time.Time
 			total, open, booked int
 			blocked, closed     int
 		)
-		if err := rows.Scan(&day, &total, &open, &booked, &blocked, &closed); err != nil {
+		if err := rows.Scan(&adminName, &day, &total, &open, &booked, &blocked, &closed); err != nil {
 			return nil, err
 		}
 		out = append(out, bot.CalendarDay{
+			AdminName:  adminName,
 			Date:       time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, s.loc),
 			OpenSlots:  open,
 			Booked:     booked,
@@ -661,6 +998,13 @@ WHERE s.start_at >= $2
 		})
 	}
 	return out, rows.Err()
+}
+
+func calendarAdminSelect(showAdminNames bool) string {
+	if showAdminNames {
+		return "COALESCE(a.username, '')"
+	}
+	return "''"
 }
 
 func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time, allowedDates map[string]bool) ([]bot.AvailabilitySlot, error) {
@@ -768,6 +1112,75 @@ func uniquePositiveInts(values []int) []int {
 		out = append(out, value)
 	}
 	return out
+}
+
+func (s *appStore) ListAdminBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	if !isBotAdmin(actor.Role) {
+		return nil, store.ErrInvalidArgument
+	}
+
+	query := `
+SELECT b.id,
+       COALESCE(a.username, '') AS admin_name,
+       CASE
+           WHEN u.username LIKE 'phone_%' AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           ELSE COALESCE(u.username, '')
+       END AS client_name,
+       s.start_at,
+       s.end_at,
+       b.status,
+       b.note,
+       COALESCE(svc.name, '') AS service_name
+FROM bookings b
+JOIN schedule_slots s ON s.id = b.slot_id
+JOIN users a ON a.id = s.admin_user_id
+LEFT JOIN users u ON u.id = b.user_id
+LEFT JOIN admin_services svc ON svc.id = b.service_id
+WHERE b.status = 'booked'
+  AND b.user_id IS NOT NULL
+  AND s.start_at >= $1
+`
+	args := []any{from.In(s.loc)}
+	if actor.Role == bot.RoleAdmin {
+		query += "  AND a.telegram_id = $2\n"
+		args = append(args, telegramID)
+	} else if actor.Role == bot.RoleSuperAdmin {
+		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+			query += "  AND a.username = $2\n"
+			args = append(args, normalizeUsername(view.AdminUsername))
+		}
+	}
+	query += "ORDER BY s.start_at ASC, a.username ASC LIMIT 50;"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list admin bookings: %w", err)
+	}
+	defer rows.Close()
+
+	var items []bot.BookingView
+	for rows.Next() {
+		var item bot.BookingView
+		var note, serviceName string
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.Username, &item.StartAt, &item.EndAt, &item.Status, &note, &serviceName); err != nil {
+			return nil, err
+		}
+		if actor.Role != bot.RoleSuperAdmin || isSuperAdminViewingAdmin(ctx, s, telegramID) {
+			item.AdminName = ""
+		}
+		item.StartAt = item.StartAt.In(s.loc)
+		item.EndAt = item.EndAt.In(s.loc)
+		if duration := bookingDurationFromNote(note); duration > 0 {
+			item.EndAt = item.StartAt.Add(time.Duration(duration) * time.Minute)
+		}
+		item.ServiceNames = bookingServiceNames(note, serviceName)
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {
@@ -1199,10 +1612,11 @@ LIMIT 1;
 func (s *appStore) userRecordFromDomain(ctx context.Context, u domain.User) (bot.UserRecord, error) {
 	firstName, lastName := splitName(u.FullName)
 	rec := bot.UserRecord{
-		Username:  u.Username,
-		FirstName: firstName,
-		LastName:  lastName,
-		Role:      bot.Role(u.Role),
+		Username:   u.Username,
+		FirstName:  firstName,
+		LastName:   lastName,
+		Role:       bot.Role(u.Role),
+		ActualRole: bot.Role(u.Role),
 	}
 	if u.TelegramID != nil {
 		rec.TelegramID = *u.TelegramID
@@ -1215,6 +1629,26 @@ func (s *appStore) userRecordFromDomain(ctx context.Context, u domain.User) (bot
 		rec.Language = bot.LangRU
 	}
 	return rec, nil
+}
+
+func (s *appStore) effectiveAdminIDByTelegram(ctx context.Context, telegramID int64) (int64, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return 0, err
+	}
+	if actor.ActualRole == bot.RoleSuperAdmin {
+		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+			target, err := s.lookupUser(ctx, "username = $1", normalizeUsername(view.AdminUsername))
+			if err != nil {
+				return 0, err
+			}
+			if target.Role != domain.RoleAdmin && target.Role != domain.RoleSuperAdmin {
+				return 0, store.ErrInvalidArgument
+			}
+			return target.ID, nil
+		}
+	}
+	return s.userIDByTelegram(ctx, telegramID)
 }
 
 func (s *appStore) userIDByTelegram(ctx context.Context, telegramID int64) (int64, error) {
@@ -1240,6 +1674,27 @@ RETURNING id;
 `, norm).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("ensure user by username: %w", err)
+	}
+	return id, nil
+}
+
+func (s *appStore) ensureUserByPhone(ctx context.Context, phone string) (int64, error) {
+	normalized := normalizePhoneNumber(phone)
+	if normalized == "" {
+		return 0, store.ErrInvalidArgument
+	}
+	username := "phone_" + phoneDigits(normalized)
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+INSERT INTO users (username, full_name, role)
+VALUES ($1, $2, 'user')
+ON CONFLICT(username) DO UPDATE SET
+	full_name = EXCLUDED.full_name,
+	updated_at = NOW()
+RETURNING id;
+`, username, normalized).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure user by phone: %w", err)
 	}
 	return id, nil
 }
@@ -1322,7 +1777,7 @@ LIMIT 1;
 }
 
 func (s *appStore) bookingIDByAdminUserStart(ctx context.Context, adminTelegramID int64, username string, start time.Time) (int64, error) {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return 0, err
 	}
@@ -1864,10 +2319,61 @@ func bookingDurationFromNote(note string) int {
 	return parsed.DurationMin
 }
 
+func bookingServiceNames(note, fallback string) []string {
+	var parsed bookingServiceNote
+	if err := json.Unmarshal([]byte(note), &parsed); err == nil && len(parsed.ServiceNames) > 0 {
+		return parsed.ServiceNames
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		return nil
+	}
+	return []string{fallback}
+}
+
 func normalizeUsername(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "@")
 	return strings.ToLower(value)
+}
+
+func normalizePhoneNumber(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var digits strings.Builder
+	for i, r := range value {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+			continue
+		}
+		if r == '+' && i == 0 {
+			continue
+		}
+		if r == ' ' || r == '-' || r == '(' || r == ')' {
+			continue
+		}
+		return ""
+	}
+	raw := digits.String()
+	if len(raw) < 5 {
+		return ""
+	}
+	if strings.HasPrefix(value, "+") {
+		return "+" + raw
+	}
+	return raw
+}
+
+func phoneDigits(value string) string {
+	var out strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 
 func validBotRole(role bot.Role) bool {
@@ -1876,6 +2382,11 @@ func validBotRole(role bot.Role) bool {
 
 func isBotAdmin(role bot.Role) bool {
 	return role == bot.RoleAdmin || role == bot.RoleSuperAdmin
+}
+
+func isSuperAdminViewingAdmin(ctx context.Context, s *appStore, telegramID int64) bool {
+	view, err := s.GetSuperAdminView(ctx, telegramID)
+	return err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != ""
 }
 
 func splitName(fullName string) (string, string) {

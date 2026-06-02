@@ -141,6 +141,162 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 	}
 }
 
+func TestAppStore_SuperAdminSeesAdminServicesCalendarsAndBookings(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+
+	super, err := repo.UpsertUser(ctx, 1001, "tim1106", "Super")
+	if err != nil {
+		t.Fatalf("UpsertUser super: %v", err)
+	}
+	admin1, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin1: %v", err)
+	}
+	admin2, err := repo.UpsertUser(ctx, 2002, "second", "Second")
+	if err != nil {
+		t.Fatalf("UpsertUser admin2: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id IN ($2, $3)", domain.RoleAdmin, admin1.ID, admin2.ID); err != nil {
+		t.Fatalf("promote admins: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Classic", 30, ""); err != nil {
+		t.Fatalf("AddService admin1: %v", err)
+	}
+	if err := app.AddService(ctx, 2002, "Hair > Cut > Short", 45, ""); err != nil {
+		t.Fatalf("AddService admin2: %v", err)
+	}
+	adminServices, err := app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices admin: %v", err)
+	}
+	if len(adminServices) != 1 || adminServices[0].AdminName != "master" {
+		t.Fatalf("admin services = %#v, want only master service", adminServices)
+	}
+	superServices, err := app.ListServices(ctx, 1001)
+	if err != nil {
+		t.Fatalf("ListServices super: %v", err)
+	}
+	if len(superServices) != 2 {
+		t.Fatalf("super services = %#v, want both admin services", superServices)
+	}
+
+	start1 := time.Date(2026, 6, 1, 10, 0, 0, 0, loc)
+	start2 := time.Date(2026, 6, 2, 11, 0, 0, 0, loc)
+	slot1, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+		AdminUserID: admin1.ID,
+		StartAt:     start1,
+		EndAt:       start1.Add(30 * time.Minute),
+		Capacity:    1,
+		Status:      domain.SlotStatusOpen,
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduleSlot admin1: %v", err)
+	}
+	slot2, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+		AdminUserID: admin2.ID,
+		StartAt:     start2,
+		EndAt:       start2.Add(45 * time.Minute),
+		Capacity:    1,
+		Status:      domain.SlotStatusOpen,
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduleSlot admin2: %v", err)
+	}
+	clientID := client.ID
+	if _, err := repo.CreateBooking(ctx, domain.Booking{SlotID: slot1.ID, UserID: &clientID, Status: domain.BookingStatusBooked, Note: "created_by_user"}); err != nil {
+		t.Fatalf("CreateBooking admin1: %v", err)
+	}
+	if _, err := repo.CreateBooking(ctx, domain.Booking{SlotID: slot2.ID, UserID: &clientID, Status: domain.BookingStatusBooked, Note: "created_by_user"}); err != nil {
+		t.Fatalf("CreateBooking admin2: %v", err)
+	}
+
+	adminBookings, err := app.ListAdminBookings(ctx, 2001, start1.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("ListAdminBookings admin: %v", err)
+	}
+	if len(adminBookings) != 1 || adminBookings[0].Username != "client" || adminBookings[0].AdminName != "" {
+		t.Fatalf("admin bookings = %#v, want one client booking without admin label", adminBookings)
+	}
+	superBookings, err := app.ListAdminBookings(ctx, 1001, start1.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("ListAdminBookings super: %v", err)
+	}
+	if len(superBookings) != 2 || superBookings[0].AdminName == "" || superBookings[1].AdminName == "" {
+		t.Fatalf("super bookings = %#v, want bookings with admin labels", superBookings)
+	}
+
+	superCalendar, err := app.AdminCalendar(ctx, 1001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("AdminCalendar super: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, day := range superCalendar {
+		seen[day.AdminName] = true
+	}
+	if !seen["master"] || !seen["second"] || seen[super.Username] {
+		t.Fatalf("super calendar admin names = %#v, want master and second", seen)
+	}
+}
+
+func TestAppStore_AddBookingByPhoneUsesSuperAdminView(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+
+	super, err := repo.UpsertUser(ctx, 1001, "tim1106", "Super")
+	if err != nil {
+		t.Fatalf("UpsertUser super: %v", err)
+	}
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleSuperAdmin, super.ID); err != nil {
+		t.Fatalf("promote super: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetSuperAdminView(ctx, 1001, bot.SuperAdminView{Role: bot.RoleAdmin, AdminUsername: "master"}); err != nil {
+		t.Fatalf("SetSuperAdminView: %v", err)
+	}
+
+	start := time.Date(2026, 7, 7, 12, 0, 0, 0, loc)
+	if err := app.AddBookingByPhone(ctx, 1001, "+357 99 999999", start); err != nil {
+		t.Fatalf("AddBookingByPhone: %v", err)
+	}
+
+	bookings, err := app.ListAdminBookings(ctx, 2001, start.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("ListAdminBookings admin: %v", err)
+	}
+	if len(bookings) != 1 {
+		t.Fatalf("bookings = %#v, want one booking", bookings)
+	}
+	if bookings[0].Username != "+35799999999" || !bookings[0].StartAt.Equal(start) {
+		t.Fatalf("booking = %#v, want phone client at %s", bookings[0], start)
+	}
+}
+
 func TestAppStore_GenerateScheduleForMultipleMonths(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

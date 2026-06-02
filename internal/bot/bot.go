@@ -21,13 +21,16 @@ const (
 )
 
 type UserRecord struct {
-	TelegramID  int64
-	Username    string
-	FirstName   string
-	LastName    string
-	Role        Role
-	Language    string
-	LanguageSet bool
+	TelegramID    int64
+	Username      string
+	FirstName     string
+	LastName      string
+	Role          Role
+	ActualRole    Role
+	ViewAdminName string
+	ViewRole      Role
+	Language      string
+	LanguageSet   bool
 }
 
 type Booking struct {
@@ -45,11 +48,13 @@ type MoveResult struct {
 }
 
 type BookingView struct {
-	ID        int64
-	AdminName string
-	StartAt   time.Time
-	EndAt     time.Time
-	Status    string
+	ID           int64
+	AdminName    string
+	Username     string
+	ServiceNames []string
+	StartAt      time.Time
+	EndAt        time.Time
+	Status       string
 }
 
 type ServiceView struct {
@@ -72,12 +77,33 @@ type AvailabilitySlot struct {
 }
 
 type CalendarDay struct {
+	AdminName  string
 	Date       time.Time
 	OpenSlots  int
 	Booked     int
 	Blocked    int
 	Closed     int
 	TotalSlots int
+}
+
+type WeekdayHours struct {
+	Weekday time.Weekday `json:"weekday"`
+	Working bool         `json:"working"`
+	Start   string       `json:"start,omitempty"`
+	End     string       `json:"end,omitempty"`
+}
+
+type AdminView struct {
+	Username       string
+	Role           Role
+	ActiveServices int
+	OpenSlots      int
+	BookedSlots    int
+}
+
+type SuperAdminView struct {
+	Role          Role
+	AdminUsername string
 }
 
 type GenerateScheduleRequest struct {
@@ -98,24 +124,35 @@ type DeleteScheduleResult struct {
 	Deleted int
 }
 
+type BlockDateResult struct {
+	Date        time.Time
+	ClosedSlots int
+}
+
 type ConversationState struct {
-	Step                  string `json:"step"`
-	Category              string `json:"category,omitempty"`
-	Subcategory           string `json:"subcategory,omitempty"`
-	ServiceName           string `json:"service_name,omitempty"`
-	Username              string `json:"username,omitempty"`
-	FromDateTime          string `json:"from_datetime,omitempty"`
-	SlotDay               string `json:"slot_day,omitempty"`
-	SlotPeriod            string `json:"slot_period,omitempty"`
-	ServiceIndexes        []int  `json:"service_indexes,omitempty"`
-	VisibleServiceIndexes []int  `json:"visible_service_indexes,omitempty"`
-	VisibleSlotIndexes    []int  `json:"visible_slot_indexes,omitempty"`
+	Step                  string         `json:"step"`
+	Category              string         `json:"category,omitempty"`
+	Subcategory           string         `json:"subcategory,omitempty"`
+	ServiceName           string         `json:"service_name,omitempty"`
+	Username              string         `json:"username,omitempty"`
+	FromDateTime          string         `json:"from_datetime,omitempty"`
+	ContactType           string         `json:"contact_type,omitempty"`
+	SlotDay               string         `json:"slot_day,omitempty"`
+	SlotPeriod            string         `json:"slot_period,omitempty"`
+	ServiceIndexes        []int          `json:"service_indexes,omitempty"`
+	VisibleServiceIndexes []int          `json:"visible_service_indexes,omitempty"`
+	VisibleSlotIndexes    []int          `json:"visible_slot_indexes,omitempty"`
+	WeekdayIndex          int            `json:"weekday_index,omitempty"`
+	WeeklyHours           []WeekdayHours `json:"weekly_hours,omitempty"`
 }
 
 type Store interface {
 	RegisterOrUpdateUser(ctx context.Context, user UserRecord) (UserRecord, error)
 	GetUserByTelegramID(ctx context.Context, telegramID int64) (UserRecord, error)
 	GetUserByUsername(ctx context.Context, username string) (UserRecord, error)
+	ListAdmins(ctx context.Context) ([]AdminView, error)
+	GetSuperAdminView(ctx context.Context, telegramID int64) (SuperAdminView, error)
+	SetSuperAdminView(ctx context.Context, telegramID int64, view SuperAdminView) error
 	SetUserRole(ctx context.Context, username string, role Role) error
 	SetUserLanguage(ctx context.Context, telegramID int64, language string) error
 
@@ -126,11 +163,14 @@ type Store interface {
 	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
 	MasterIntro(ctx context.Context, telegramID int64) (string, error)
 	SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error
+	SetWeeklyHours(ctx context.Context, adminTelegramID int64, hours []WeekdayHours) error
 	SetSessionDuration(ctx context.Context, adminTelegramID int64, durationMin int) error
 	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
 	DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (DeleteScheduleResult, error)
+	BlockScheduleDate(ctx context.Context, adminTelegramID int64, date time.Time) (BlockDateResult, error)
 
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
+	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) error
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
 	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error
 	BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error
@@ -142,6 +182,7 @@ type Store interface {
 	ListCachedAvailability(ctx context.Context, telegramID int64) ([]AvailabilitySlot, error)
 	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
 	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
+	ListAdminBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	BookForUser(ctx context.Context, telegramID int64, start time.Time) error
 	BookForUserByIndex(ctx context.Context, telegramID int64, index int) (time.Time, error)
