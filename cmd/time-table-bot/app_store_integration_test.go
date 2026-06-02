@@ -77,7 +77,8 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 		t.Fatalf("AddService 4: %v", err)
 	}
 
-	start := time.Date(2026, 6, 1, 10, 0, 0, 0, loc)
+	future := time.Now().In(loc).AddDate(0, 2, 0)
+	start := time.Date(future.Year(), future.Month(), 10, 10, 0, 0, 0, loc)
 	for i := 0; i < 8; i++ {
 		slotStart := start.Add(time.Duration(i*15) * time.Minute)
 		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
