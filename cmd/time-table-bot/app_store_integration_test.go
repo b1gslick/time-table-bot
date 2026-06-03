@@ -469,6 +469,83 @@ func TestAppStore_AdminScheduleReminderAndMissingMonthNotice(t *testing.T) {
 	}
 }
 
+func TestAppStore_DailyAdminBookingSummary(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+
+	start := time.Date(2026, 6, 16, 10, 0, 0, 0, loc)
+	slot, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+		AdminUserID: admin.ID,
+		StartAt:     start,
+		EndAt:       start.Add(time.Hour),
+		Capacity:    1,
+		Status:      domain.SlotStatusOpen,
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduleSlot: %v", err)
+	}
+	clientID := client.ID
+	if _, err := repo.CreateBooking(ctx, domain.Booking{SlotID: slot.ID, UserID: &clientID, Status: domain.BookingStatusBooked}); err != nil {
+		t.Fatalf("CreateBooking: %v", err)
+	}
+
+	if err := app.PrepareUpcomingReminders(ctx, time.Date(2026, 6, 16, 7, 59, 0, 0, loc)); err != nil {
+		t.Fatalf("PrepareUpcomingReminders before 8: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM reminders WHERE kind = 'admin_daily_bookings'").Scan(&count); err != nil {
+		t.Fatalf("count daily reminders before 8: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("daily reminders before 8 = %d, want 0", count)
+	}
+
+	if err := app.PrepareUpcomingReminders(ctx, time.Date(2026, 6, 16, 8, 0, 0, 0, loc)); err != nil {
+		t.Fatalf("PrepareUpcomingReminders at 8: %v", err)
+	}
+	var payload string
+	if err := db.QueryRowContext(ctx, `
+SELECT payload
+FROM reminders
+WHERE kind = 'admin_daily_bookings'
+  AND chat_id = $1;
+`, int64(2001)).Scan(&payload); err != nil {
+		t.Fatalf("select daily reminder payload: %v", err)
+	}
+	if !strings.Contains(payload, "Записи на сегодня, 16.06.2026") ||
+		!strings.Contains(payload, "10:00-11:00 - @client") {
+		t.Fatalf("daily reminder payload = %q", payload)
+	}
+
+	if err := app.PrepareUpcomingReminders(ctx, time.Date(2026, 6, 16, 8, 1, 0, 0, loc)); err != nil {
+		t.Fatalf("PrepareUpcomingReminders after 8: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM reminders WHERE kind = 'admin_daily_bookings'").Scan(&count); err != nil {
+		t.Fatalf("count daily reminders after 8: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("daily reminders after repeated prepare = %d, want 1", count)
+	}
+}
+
 func TestAppStore_RequestMissingMonth(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

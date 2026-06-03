@@ -1115,6 +1115,10 @@ func uniquePositiveInts(values []int) []int {
 }
 
 func (s *appStore) ListAdminBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {
+	return s.ListAdminBookingsRange(ctx, telegramID, from, time.Time{})
+}
+
+func (s *appStore) ListAdminBookingsRange(ctx context.Context, telegramID int64, from, to time.Time) ([]bot.BookingView, error) {
 	actor, err := s.GetUserByTelegramID(ctx, telegramID)
 	if err != nil {
 		return nil, err
@@ -1145,13 +1149,17 @@ WHERE b.status = 'booked'
   AND s.start_at >= $1
 `
 	args := []any{from.In(s.loc)}
+	if !to.IsZero() {
+		args = append(args, to.In(s.loc))
+		query += fmt.Sprintf("  AND s.start_at < $%d\n", len(args))
+	}
 	if actor.Role == bot.RoleAdmin {
-		query += "  AND a.telegram_id = $2\n"
 		args = append(args, telegramID)
+		query += fmt.Sprintf("  AND a.telegram_id = $%d\n", len(args))
 	} else if actor.Role == bot.RoleSuperAdmin {
 		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
-			query += "  AND a.username = $2\n"
 			args = append(args, normalizeUsername(view.AdminUsername))
+			query += fmt.Sprintf("  AND a.username = $%d\n", len(args))
 		}
 	}
 	query += "ORDER BY s.start_at ASC, a.username ASC LIMIT 50;"
@@ -1171,6 +1179,53 @@ WHERE b.status = 'booked'
 		}
 		if actor.Role != bot.RoleSuperAdmin || isSuperAdminViewingAdmin(ctx, s, telegramID) {
 			item.AdminName = ""
+		}
+		item.StartAt = item.StartAt.In(s.loc)
+		item.EndAt = item.EndAt.In(s.loc)
+		if duration := bookingDurationFromNote(note); duration > 0 {
+			item.EndAt = item.StartAt.Add(time.Duration(duration) * time.Minute)
+		}
+		item.ServiceNames = bookingServiceNames(note, serviceName)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *appStore) listAdminBookingsByAdminIDRange(ctx context.Context, adminID int64, from, to time.Time) ([]bot.BookingView, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT b.id,
+       CASE
+           WHEN u.username LIKE 'phone_%' AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           ELSE COALESCE(u.username, '')
+       END AS client_name,
+       s.start_at,
+       s.end_at,
+       b.status,
+       b.note,
+       COALESCE(svc.name, '') AS service_name
+FROM bookings b
+JOIN schedule_slots s ON s.id = b.slot_id
+LEFT JOIN users u ON u.id = b.user_id
+LEFT JOIN admin_services svc ON svc.id = b.service_id
+WHERE b.status = 'booked'
+  AND b.user_id IS NOT NULL
+  AND s.admin_user_id = $1
+  AND s.start_at >= $2
+  AND s.start_at < $3
+ORDER BY s.start_at ASC
+LIMIT 50;
+`, adminID, from.In(s.loc), to.In(s.loc))
+	if err != nil {
+		return nil, fmt.Errorf("list admin bookings by admin id: %w", err)
+	}
+	defer rows.Close()
+
+	var items []bot.BookingView
+	for rows.Next() {
+		var item bot.BookingView
+		var note, serviceName string
+		if err := rows.Scan(&item.ID, &item.Username, &item.StartAt, &item.EndAt, &item.Status, &note, &serviceName); err != nil {
+			return nil, err
 		}
 		item.StartAt = item.StartAt.In(s.loc)
 		item.EndAt = item.EndAt.In(s.loc)
@@ -1396,7 +1451,10 @@ WHERE b.status = 'booked'
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	return s.prepareAdminScheduleReminders(ctx, now)
+	if err := s.prepareAdminScheduleReminders(ctx, now); err != nil {
+		return err
+	}
+	return s.prepareDailyAdminBookingSummaries(ctx, now)
 }
 
 func (s *appStore) DueReminders(ctx context.Context, now time.Time, limit int) ([]scheduler.Reminder, error) {
@@ -1500,6 +1558,51 @@ WHERE u.role IN ('admin', 'super_admin')
 		month := nextMonth.Format("2006-01")
 		dedupeKey := fmt.Sprintf("admin_month_missing:%d:%s", adminID, month)
 		if err := s.upsertSystemReminder(ctx, dedupeKey, chatID, "admin_month_missing", "admin", sendAt, adminMonthMissingReminder(language, month)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (s *appStore) prepareDailyAdminBookingSummaries(ctx context.Context, now time.Time) error {
+	now = now.In(s.loc)
+	day := dateOnlyLocal(now, s.loc)
+	sendAt := time.Date(day.Year(), day.Month(), day.Day(), 8, 0, 0, 0, s.loc)
+	if now.Before(sendAt) {
+		return nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT u.id, u.telegram_id, COALESCE(l.value, 'ru') AS language
+FROM users u
+LEFT JOIN admin_settings l ON l.admin_user_id = u.id AND l.key = 'language'
+WHERE u.role IN ('admin', 'super_admin')
+  AND u.telegram_id IS NOT NULL;
+`)
+	if err != nil {
+		return fmt.Errorf("select admins for daily booking summaries: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			adminID  int64
+			chatID   int64
+			language string
+		)
+		if err := rows.Scan(&adminID, &chatID, &language); err != nil {
+			return err
+		}
+		items, err := s.listAdminBookingsByAdminIDRange(ctx, adminID, day, day.AddDate(0, 0, 1))
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			continue
+		}
+		dedupeKey := fmt.Sprintf("admin_daily_bookings:%d:%s", adminID, day.Format("2006-01-02"))
+		payload := adminDailyBookingsReminder(language, day, items)
+		if err := s.upsertSystemReminder(ctx, dedupeKey, chatID, "admin_daily_bookings", "admin", sendAt, payload); err != nil {
 			return err
 		}
 	}
@@ -2584,6 +2687,50 @@ func adminReminderDayBefore(language, userLabel string, startAt time.Time) strin
 		return fmt.Sprintf("Reminder: tomorrow client %s has a booking at %s.", userLabel, startAt.Format("02.01.2006 15:04"))
 	}
 	return fmt.Sprintf("Напоминание: завтра запись у клиента %s в %s.", userLabel, startAt.Format("02.01.2006 15:04"))
+}
+
+func adminDailyBookingsReminder(language string, day time.Time, items []bot.BookingView) string {
+	var sb strings.Builder
+	if language == bot.LangEN {
+		sb.WriteString(fmt.Sprintf("Today's bookings, %s:\n", day.Format("02.01.2006")))
+	} else {
+		sb.WriteString(fmt.Sprintf("Записи на сегодня, %s:\n", day.Format("02.01.2006")))
+	}
+	for i, item := range items {
+		sb.WriteString(fmt.Sprintf("%d. %s", i+1, item.StartAt.Format("15:04")))
+		if !item.EndAt.IsZero() {
+			sb.WriteString("-")
+			sb.WriteString(item.EndAt.Format("15:04"))
+		}
+		sb.WriteString(" - ")
+		if strings.TrimSpace(item.Username) == "" {
+			if language == bot.LangEN {
+				sb.WriteString("client")
+			} else {
+				sb.WriteString("клиент")
+			}
+		} else {
+			sb.WriteString(formatReminderClientContact(item.Username))
+		}
+		if len(item.ServiceNames) > 0 {
+			sb.WriteString(" - ")
+			sb.WriteString(strings.Join(item.ServiceNames, ", "))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func formatReminderClientContact(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	first := value[0]
+	if first == '+' || first >= '0' && first <= '9' {
+		return value
+	}
+	return "@" + value
 }
 
 func adminMonthMissingReminder(language, month string) string {

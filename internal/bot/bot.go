@@ -182,7 +182,7 @@ type Store interface {
 	ListCachedAvailability(ctx context.Context, telegramID int64) ([]AvailabilitySlot, error)
 	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
 	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
-	ListAdminBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
+	ListAdminBookingsRange(ctx context.Context, telegramID int64, from, to time.Time) ([]BookingView, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	BookForUser(ctx context.Context, telegramID int64, start time.Time) error
 	BookForUserByIndex(ctx context.Context, telegramID int64, index int) (time.Time, error)

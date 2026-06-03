@@ -135,7 +135,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 	case "/appoint":
 		return b.handleAppoint(ctx, msg.Chat.ID, current, parts)
 	case "/bookings", "/appointments":
-		return b.handleAdminBookings(ctx, msg.Chat.ID, current)
+		return b.handleAdminBookings(ctx, msg.Chat.ID, current, parts)
 	case "/cancel":
 		return b.handleCancel(ctx, msg.Chat.ID, current, parts)
 	case "/reschedule":
@@ -282,6 +282,11 @@ func callbackText(data string) (string, bool) {
 		if value == "telegram" || value == "phone" {
 			return value, true
 		}
+	case "viewadmin":
+		username := normalizeUsername(value)
+		if username != "" {
+			return username, true
+		}
 	}
 	return "", false
 }
@@ -349,7 +354,11 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 	case "action_my":
 		return true, b.handleMy(ctx, chatID, user)
 	case "action_client_bookings":
-		return true, b.handleAdminBookings(ctx, chatID, user)
+		return true, b.handleAdminBookings(ctx, chatID, user, []string{"/bookings"})
+	case "action_bookings_today":
+		return true, b.handleAdminBookings(ctx, chatID, user, []string{"/bookings", "today"})
+	case "action_bookings_tomorrow":
+		return true, b.handleAdminBookings(ctx, chatID, user, []string{"/bookings", "tomorrow"})
 	case "action_service_add":
 		return true, b.handleServiceAdd(ctx, chatID, user, []string{"/service_add"})
 	case "action_service_delete":
@@ -418,6 +427,8 @@ func menuButtonAction(lang, text string) string {
 		{"action_book", "button_action_book"},
 		{"action_my", "button_action_my"},
 		{"action_client_bookings", "button_action_client_bookings"},
+		{"action_bookings_today", "button_action_bookings_today"},
+		{"action_bookings_tomorrow", "button_action_bookings_tomorrow"},
 		{"action_service_add", "button_action_service_add"},
 		{"action_service_delete", "button_action_service_delete"},
 		{"action_service_list", "button_action_service_list"},
@@ -510,7 +521,7 @@ func (b *Bot) handleViewAdmin(ctx context.Context, chatID int64, actor UserRecor
 		return b.sendText(ctx, chatID, tr(actor.Language, "super_only_role"))
 	}
 	if len(parts) < 2 {
-		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepViewAdmin}, "view_admin_ask_username", nil)
+		return b.askViewAdmin(ctx, chatID, actor)
 	}
 	username := normalizeUsername(parts[1])
 	if username == "" {
@@ -524,6 +535,21 @@ func (b *Bot) handleViewAdmin(ctx context.Context, chatID int64, actor UserRecor
 	actor.ViewRole = RoleAdmin
 	actor.ViewAdminName = username
 	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "view_admin_ok", username), keyboardForUser(actor))
+}
+
+func (b *Bot) askViewAdmin(ctx context.Context, chatID int64, actor UserRecord) error {
+	admins, err := b.store.ListAdmins(ctx)
+	if err != nil {
+		b.logger.Printf("view admin list failed user=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_list_failed"))
+	}
+	if len(admins) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "view_admin_empty"))
+	}
+	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepViewAdmin}); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "view_admin_ask_username"), viewAdminKeyboard(actor.Language, admins))
 }
 
 func (b *Bot) handleViewUser(ctx context.Context, chatID int64, actor UserRecord) error {
@@ -987,51 +1013,30 @@ func (b *Bot) handleBlock(ctx context.Context, chatID int64, actor UserRecord, p
 	return b.sendText(ctx, chatID, tr(actor.Language, "block_ok"))
 }
 
-func (b *Bot) handleAdminBookings(ctx context.Context, chatID int64, actor UserRecord) error {
+func (b *Bot) handleAdminBookings(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
-	items, err := b.store.ListAdminBookings(ctx, actor.TelegramID, time.Now())
+	from, to, day, daily, err := adminBookingsRange(parts)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_bookings_usage"))
+	}
+	items, err := b.store.ListAdminBookingsRange(ctx, actor.TelegramID, from, to)
 	if err != nil {
 		b.logger.Printf("admin bookings failed user=%d role=%s: %v", actor.TelegramID, actor.Role, err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_bookings_failed"))
 	}
 	if len(items) == 0 {
+		if daily {
+			return b.sendText(ctx, chatID, tr(actor.Language, "admin_bookings_empty_day", day.Format("02.01.2006")))
+		}
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_bookings_empty"))
 	}
-	var sb strings.Builder
-	sb.WriteString(tr(actor.Language, "admin_bookings_header"))
-	limit := len(items)
-	if limit > 30 {
-		limit = 30
+	header := tr(actor.Language, "admin_bookings_header")
+	if daily {
+		header = tr(actor.Language, "admin_bookings_day_header", day.Format("02.01.2006"))
 	}
-	for i := 0; i < limit; i++ {
-		item := items[i]
-		sb.WriteString(strconv.Itoa(i + 1))
-		sb.WriteString(". ")
-		sb.WriteString(item.StartAt.Format(dateTimeLayout))
-		sb.WriteString(" - ")
-		if item.Username != "" {
-			sb.WriteString(formatClientContact(item.Username))
-		} else {
-			sb.WriteString(tr(actor.Language, "unknown_user"))
-		}
-		if item.AdminName != "" {
-			sb.WriteString(" (@")
-			sb.WriteString(item.AdminName)
-			sb.WriteString(")")
-		}
-		if len(item.ServiceNames) > 0 {
-			sb.WriteString(" - ")
-			sb.WriteString(strings.Join(item.ServiceNames, ", "))
-		}
-		sb.WriteString("\n")
-	}
-	if len(items) > limit {
-		sb.WriteString(tr(actor.Language, "admin_bookings_more", len(items)-limit))
-		sb.WriteString("\n")
-	}
-	return b.sendText(ctx, chatID, sb.String())
+	return b.sendText(ctx, chatID, formatAdminBookings(actor.Language, header, items, 30, true))
 }
 
 func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
@@ -1295,6 +1300,69 @@ func formatClientContact(value string) string {
 		return value
 	}
 	return "@" + value
+}
+
+func adminBookingsRange(parts []string) (time.Time, time.Time, time.Time, bool, error) {
+	if len(parts) < 2 {
+		return time.Now(), time.Time{}, time.Time{}, false, nil
+	}
+	raw := strings.ToLower(strings.TrimSpace(parts[1]))
+	now := time.Now()
+	var day time.Time
+	switch raw {
+	case "today", "сегодня":
+		day = dateOnly(now)
+	case "tomorrow", "завтра":
+		day = dateOnly(now).AddDate(0, 0, 1)
+	default:
+		parsed, err := parseSingleDate(raw)
+		if err != nil {
+			return time.Time{}, time.Time{}, time.Time{}, false, err
+		}
+		day = dateOnly(parsed)
+	}
+	return day, day.AddDate(0, 0, 1), day, true, nil
+}
+
+func formatAdminBookings(lang, header string, items []BookingView, limit int, includeDate bool) string {
+	var sb strings.Builder
+	sb.WriteString(header)
+	limit = minInt(limit, len(items))
+	for i := 0; i < limit; i++ {
+		item := items[i]
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		if includeDate {
+			sb.WriteString(item.StartAt.Format(dateTimeLayout))
+		} else {
+			sb.WriteString(item.StartAt.Format("15:04"))
+			if !item.EndAt.IsZero() {
+				sb.WriteString("-")
+				sb.WriteString(item.EndAt.Format("15:04"))
+			}
+		}
+		sb.WriteString(" - ")
+		if item.Username != "" {
+			sb.WriteString(formatClientContact(item.Username))
+		} else {
+			sb.WriteString(tr(lang, "unknown_user"))
+		}
+		if item.AdminName != "" {
+			sb.WriteString(" (@")
+			sb.WriteString(item.AdminName)
+			sb.WriteString(")")
+		}
+		if len(item.ServiceNames) > 0 {
+			sb.WriteString(" - ")
+			sb.WriteString(strings.Join(item.ServiceNames, ", "))
+		}
+		sb.WriteString("\n")
+	}
+	if len(items) > limit {
+		sb.WriteString(tr(lang, "admin_bookings_more", len(items)-limit))
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func parseDateTime(datePart, timePart string) (time.Time, error) {

@@ -4,6 +4,7 @@ image:
   repository: t1mon1106/time-table-bot
   tag: main
   pullPolicy: Always
+  pullSecrets: []
 
 serviceAccount:
   create: false

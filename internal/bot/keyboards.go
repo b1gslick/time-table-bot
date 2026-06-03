@@ -1,6 +1,10 @@
 package bot
 
-import "time-table-bot/internal/telegram"
+import (
+	"fmt"
+
+	"time-table-bot/internal/telegram"
+)
 
 func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 	switch role {
@@ -58,6 +62,7 @@ func calendarMenuKeyboard(lang string) *telegram.ReplyMarkup {
 
 func bookingMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
+		{tr(lang, "button_action_bookings_today"), tr(lang, "button_action_bookings_tomorrow")},
 		{tr(lang, "button_action_client_bookings")},
 		{tr(lang, "button_action_book"), tr(lang, "button_action_my")},
 		{tr(lang, "button_action_appoint"), tr(lang, "button_action_cancel")},
@@ -100,6 +105,23 @@ func adminsMenuKeyboard(lang string) *telegram.ReplyMarkup {
 		{tr(lang, "button_action_role")},
 		{tr(lang, "button_back")},
 	})
+}
+
+func viewAdminKeyboard(lang string, admins []AdminView) *telegram.ReplyMarkup {
+	rows := make([][]telegram.InlineKeyboardButton, 0, len(admins))
+	for _, admin := range admins {
+		if admin.Username == "" {
+			continue
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{{
+			Text:         fmt.Sprintf("@%s - %s", admin.Username, roleLabel(lang, admin.Role)),
+			CallbackData: "viewadmin:" + admin.Username,
+		}})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
 func roleChoiceKeyboard() *telegram.ReplyMarkup {

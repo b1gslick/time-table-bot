@@ -38,6 +38,20 @@ func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
 	}
 }
 
+func TestViewAdminKeyboardCallback(t *testing.T) {
+	kb := viewAdminKeyboard(LangRU, []AdminView{{Username: "master", Role: RoleAdmin}})
+	if kb == nil || len(kb.InlineKeyboard) != 1 || len(kb.InlineKeyboard[0]) != 1 {
+		t.Fatalf("keyboard = %#v, want one inline button", kb)
+	}
+	if got := kb.InlineKeyboard[0][0].CallbackData; got != "viewadmin:master" {
+		t.Fatalf("callback data = %q, want viewadmin:master", got)
+	}
+	text, ok := callbackText(kb.InlineKeyboard[0][0].CallbackData)
+	if !ok || text != "master" {
+		t.Fatalf("callbackText = %q, %v; want master, true", text, ok)
+	}
+}
+
 func TestParseDateList(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.Local)
 	got, err := parseDateList("2026-06-01, 03.06.2026, 04.06", now)
@@ -116,5 +130,26 @@ func TestFormatCalendarGroupsSuperAdminViewByAdmin(t *testing.T) {
 	}
 	if !strings.Contains(got, "01: свободно 0, записей 1") {
 		t.Fatalf("second day summary missing: %s", got)
+	}
+}
+
+func TestAdminBookingsRangeParsesRelativeDays(t *testing.T) {
+	from, to, day, daily, err := adminBookingsRange([]string{"/bookings", "завтра"})
+	if err != nil {
+		t.Fatalf("adminBookingsRange error: %v", err)
+	}
+	wantDay := dateOnly(time.Now()).AddDate(0, 0, 1)
+	if !daily || !day.Equal(wantDay) || !from.Equal(wantDay) || !to.Equal(wantDay.AddDate(0, 0, 1)) {
+		t.Fatalf("range = from %s to %s day %s daily %v, want tomorrow day range", from, to, day, daily)
+	}
+}
+
+func TestFormatAdminBookingsIncludesTimeClientAndService(t *testing.T) {
+	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.Local)
+	got := formatAdminBookings(LangRU, "Записи клиентов на 03.06.2026:\n", []BookingView{
+		{Username: "client", StartAt: start, EndAt: start.Add(time.Hour), ServiceNames: []string{"Маникюр"}},
+	}, 30, true)
+	if !strings.Contains(got, "2026-06-03 10:00 - @client - Маникюр") {
+		t.Fatalf("formatted bookings = %q", got)
 	}
 }

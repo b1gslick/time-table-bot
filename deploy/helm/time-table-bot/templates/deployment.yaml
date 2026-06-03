@@ -22,6 +22,10 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "time-table-bot.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
