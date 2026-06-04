@@ -52,6 +52,25 @@ func TestViewAdminKeyboardCallback(t *testing.T) {
 	}
 }
 
+func TestCancelBookingKeyboardCallback(t *testing.T) {
+	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.Local)
+	kb := cancelBookingKeyboard(LangRU, []BookingView{{
+		ID:           42,
+		Username:     "client",
+		StartAt:      start,
+		ServiceNames: []string{"Маникюр"},
+	}})
+	if kb == nil || len(kb.InlineKeyboard) != 1 || len(kb.InlineKeyboard[0]) != 1 {
+		t.Fatalf("keyboard = %#v, want one inline button", kb)
+	}
+	if got := kb.InlineKeyboard[0][0].CallbackData; got != "cancel:42" {
+		t.Fatalf("callback data = %q, want cancel:42", got)
+	}
+	if got := kb.InlineKeyboard[0][0].Text; !strings.Contains(got, "@client") || !strings.Contains(got, "Маникюр") {
+		t.Fatalf("button text = %q, want client and service", got)
+	}
+}
+
 func TestParseDateList(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.Local)
 	got, err := parseDateList("2026-06-01, 03.06.2026, 04.06", now)

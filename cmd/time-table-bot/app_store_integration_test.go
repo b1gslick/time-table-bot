@@ -125,12 +125,12 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 		t.Fatalf("first free slot = %#v, want 75 minute interval", free[0])
 	}
 
-	bookedStart, err := app.BookForUserByIndex(ctx, 3001, 1)
+	bookingResult, err := app.BookForUserByIndex(ctx, 3001, 1)
 	if err != nil {
 		t.Fatalf("BookForUserByIndex: %v", err)
 	}
-	if !bookedStart.Equal(start) {
-		t.Fatalf("booked start = %s, want %s", bookedStart, start)
+	if !bookingResult.StartAt.Equal(start) {
+		t.Fatalf("booked start = %s, want %s", bookingResult.StartAt, start)
 	}
 
 	free, err = app.ListFreeSlotsForServices(ctx, 3001, []int{1, 2}, start)
@@ -282,7 +282,7 @@ func TestAppStore_AddBookingByPhoneUsesSuperAdminView(t *testing.T) {
 	}
 
 	start := time.Date(2026, 7, 7, 12, 0, 0, 0, loc)
-	if err := app.AddBookingByPhone(ctx, 1001, "+357 99 999999", start); err != nil {
+	if _, err := app.AddBookingByPhone(ctx, 1001, "+357 99 999999", start); err != nil {
 		t.Fatalf("AddBookingByPhone: %v", err)
 	}
 
@@ -295,6 +295,24 @@ func TestAppStore_AddBookingByPhoneUsesSuperAdminView(t *testing.T) {
 	}
 	if bookings[0].Username != "+35799999999" || !bookings[0].StartAt.Equal(start) {
 		t.Fatalf("booking = %#v, want phone client at %s", bookings[0], start)
+	}
+
+	if err := app.SetSuperAdminView(ctx, 1001, bot.SuperAdminView{Role: bot.RoleSuperAdmin}); err != nil {
+		t.Fatalf("reset super view: %v", err)
+	}
+	result, err := app.DeleteBookingByID(ctx, 1001, bookings[0].ID)
+	if err != nil {
+		t.Fatalf("DeleteBookingByID as super admin: %v", err)
+	}
+	if result.AdminChatID != 2001 || result.Username != "+35799999999" {
+		t.Fatalf("delete result = %#v, want target admin chat and phone client", result)
+	}
+	var cancelled int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings WHERE id = $1 AND status = 'cancelled'", bookings[0].ID).Scan(&cancelled); err != nil {
+		t.Fatalf("count cancelled booking: %v", err)
+	}
+	if cancelled != 1 {
+		t.Fatalf("cancelled booking count = %d, want 1", cancelled)
 	}
 }
 

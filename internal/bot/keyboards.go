@@ -2,6 +2,7 @@ package bot
 
 import (
 	"fmt"
+	"strings"
 
 	"time-table-bot/internal/telegram"
 )
@@ -120,6 +121,34 @@ func viewAdminKeyboard(lang string, admins []AdminView) *telegram.ReplyMarkup {
 	}
 	if len(rows) == 0 {
 		return nil
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func cancelBookingKeyboard(lang string, items []BookingView) *telegram.ReplyMarkup {
+	limit := len(items)
+	if limit > 30 {
+		limit = 30
+	}
+	rows := make([][]telegram.InlineKeyboardButton, 0, limit)
+	for i := 0; i < limit; i++ {
+		item := items[i]
+		label := item.StartAt.Format("02.01 15:04")
+		client := formatClientContact(item.Username)
+		if client == "" {
+			client = tr(lang, "unknown_user")
+		}
+		label += " - " + client
+		if len(item.ServiceNames) > 0 {
+			label += " - " + strings.Join(item.ServiceNames, ", ")
+		}
+		if item.AdminName != "" {
+			label += " (@" + item.AdminName + ")"
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{{
+			Text:         label,
+			CallbackData: fmt.Sprintf("cancel:%d", item.ID),
+		}})
 	}
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }

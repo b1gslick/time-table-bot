@@ -509,6 +509,13 @@ WHERE id = $3 AND status != 'cancelled';
 	if affected == 0 {
 		return ErrNotFound
 	}
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE reminders
+SET sent_at = NOW()
+WHERE booking_id = $1 AND sent_at IS NULL;
+`, bookingID); err != nil {
+		return fmt.Errorf("cancel booking reminders: %w", err)
+	}
 	return nil
 }
 
@@ -543,6 +550,15 @@ SELECT id, booking_id, dedupe_key, chat_id, kind, recipient_role, send_at, sent_
 FROM reminders
 WHERE sent_at IS NULL
   AND send_at <= $1
+  AND (
+      booking_id IS NULL
+      OR EXISTS (
+          SELECT 1
+          FROM bookings b
+          WHERE b.id = reminders.booking_id
+            AND b.status = 'booked'
+      )
+  )
 ORDER BY send_at ASC
 LIMIT $2;
 `, before, limit)

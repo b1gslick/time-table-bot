@@ -107,6 +107,34 @@ VALUES ($1, $2, 'day_before', 'user', $3, 'test reminder')
 	if err := repo.MarkReminderSent(ctx, reminders[0].ID, time.Now()); err != nil {
 		t.Fatalf("MarkReminderSent: %v", err)
 	}
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO reminders (booking_id, chat_id, kind, recipient_role, send_at, payload)
+VALUES ($1, $2, 'hour_before', 'user', $3, 'cancelled booking reminder')
+`, booking.ID, 3001, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("insert cancellation reminder: %v", err)
+	}
+	if err := repo.DeleteBooking(ctx, booking.ID, "test_cancel"); err != nil {
+		t.Fatalf("DeleteBooking: %v", err)
+	}
+	reminders, err = repo.ListRemindersToSend(ctx, time.Now(), 10)
+	if err != nil {
+		t.Fatalf("ListRemindersToSend after cancellation: %v", err)
+	}
+	if len(reminders) != 0 {
+		t.Fatalf("reminders after cancellation = %#v, want none", reminders)
+	}
+	var pending int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM reminders
+WHERE booking_id = $1 AND sent_at IS NULL;
+`, booking.ID).Scan(&pending); err != nil {
+		t.Fatalf("count pending reminders after cancellation: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("pending reminders after cancellation = %d, want 0", pending)
+	}
 }
 
 func openPostgresContainer(t *testing.T, ctx context.Context) *sql.DB {

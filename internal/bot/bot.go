@@ -47,6 +47,17 @@ type MoveResult struct {
 	ToStart       time.Time
 }
 
+type BookingChangeResult struct {
+	AdminChatID   int64
+	AdminLanguage string
+	Username      string
+	StartAt       time.Time
+	EndAt         time.Time
+	NewStartAt    time.Time
+	NewEndAt      time.Time
+	ServiceNames  []string
+}
+
 type BookingView struct {
 	ID           int64
 	AdminName    string
@@ -169,10 +180,11 @@ type Store interface {
 	DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (DeleteScheduleResult, error)
 	BlockScheduleDate(ctx context.Context, adminTelegramID int64, date time.Time) (BlockDateResult, error)
 
-	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
-	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) error
-	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error
-	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error
+	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
+	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (BookingChangeResult, error)
+	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
+	DeleteBookingByID(ctx context.Context, adminTelegramID int64, bookingID int64) (BookingChangeResult, error)
+	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) (BookingChangeResult, error)
 	BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error
 
 	ListFreeSlotsForMonth(ctx context.Context, telegramID int64, monthStart time.Time) ([]time.Time, error)
@@ -184,8 +196,8 @@ type Store interface {
 	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
 	ListAdminBookingsRange(ctx context.Context, telegramID int64, from, to time.Time) ([]BookingView, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
-	BookForUser(ctx context.Context, telegramID int64, start time.Time) error
-	BookForUserByIndex(ctx context.Context, telegramID int64, index int) (time.Time, error)
+	BookForUser(ctx context.Context, telegramID int64, start time.Time) (BookingChangeResult, error)
+	BookForUserByIndex(ctx context.Context, telegramID int64, index int) (BookingChangeResult, error)
 	MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (MoveResult, error)
 	MoveBookingForUserByIndex(ctx context.Context, telegramID int64, bookingIndex, slotIndex int) (MoveResult, error)
 

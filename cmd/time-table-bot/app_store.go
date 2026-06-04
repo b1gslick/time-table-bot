@@ -691,82 +691,138 @@ func (s *appStore) saveBlockedDateSet(ctx context.Context, adminID int64, dates 
 	return s.repo.SetAdminSetting(ctx, adminID, "blocked_dates", string(data))
 }
 
-func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error {
+func (s *appStore) AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (bot.BookingChangeResult, error) {
 	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	clientID, err := s.ensureUserByUsername(ctx, username)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	slotID, err := s.ensureSlot(ctx, adminID, start)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
-	_, err = s.repo.CreateBooking(ctx, domain.Booking{
+	booking, err := s.repo.CreateBooking(ctx, domain.Booking{
 		SlotID:        slotID,
 		UserID:        &clientID,
 		Status:        domain.BookingStatusBooked,
 		TravelMinutes: 0,
 		Note:          "created_by_admin",
 	})
-	return err
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	return s.bookingChangeByID(ctx, booking.ID, adminID)
 }
 
-func (s *appStore) AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) error {
+func (s *appStore) AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (bot.BookingChangeResult, error) {
 	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	clientID, err := s.ensureUserByPhone(ctx, phone)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	slotID, err := s.ensureSlot(ctx, adminID, start)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
-	_, err = s.repo.CreateBooking(ctx, domain.Booking{
+	booking, err := s.repo.CreateBooking(ctx, domain.Booking{
 		SlotID:        slotID,
 		UserID:        &clientID,
 		Status:        domain.BookingStatusBooked,
 		TravelMinutes: 0,
 		Note:          "created_by_admin_phone",
 	})
-	return err
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	return s.bookingChangeByID(ctx, booking.ID, adminID)
 }
 
-func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) error {
+func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (bot.BookingChangeResult, error) {
 	bookingID, err := s.bookingIDByAdminUserStart(ctx, adminTelegramID, username, start)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
+	}
+	return s.DeleteBookingByID(ctx, adminTelegramID, bookingID)
+}
+
+func (s *appStore) DeleteBookingByID(ctx context.Context, adminTelegramID int64, bookingID int64) (bot.BookingChangeResult, error) {
+	adminID, err := s.adminIDFilterForBookingIDAction(ctx, adminTelegramID)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	result, err := s.bookingChangeByID(ctx, bookingID, adminID)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
 	}
 	if err := s.repo.DeleteBooking(ctx, bookingID, "cancelled_by_admin"); err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	_, err = s.db.ExecContext(ctx, `
 UPDATE bookings
 SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(), note = note || ';cancelled_by_admin'
 WHERE status = 'blocked' AND note = $1;
 `, coveredByBookingNote(bookingID))
-	return err
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	return result, nil
 }
 
-func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) error {
+func (s *appStore) adminIDFilterForBookingIDAction(ctx context.Context, telegramID int64) (int64, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return 0, err
+	}
+	if actor.Role != bot.RoleSuperAdmin {
+		return s.userIDByTelegram(ctx, telegramID)
+	}
+	view, err := s.GetSuperAdminView(ctx, telegramID)
+	if err != nil || view.Role != bot.RoleAdmin || strings.TrimSpace(view.AdminUsername) == "" {
+		return 0, nil
+	}
+	target, err := s.lookupUser(ctx, "username = $1", normalizeUsername(view.AdminUsername))
+	if err != nil {
+		return 0, err
+	}
+	if target.Role != domain.RoleAdmin && target.Role != domain.RoleSuperAdmin {
+		return 0, store.ErrInvalidArgument
+	}
+	return target.ID, nil
+}
+
+func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) (bot.BookingChangeResult, error) {
 	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	bookingID, err := s.bookingIDByAdminUserStart(ctx, adminTelegramID, username, fromStart)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
+	}
+	result, err := s.bookingChangeByID(ctx, bookingID, adminID)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
 	}
 	newSlotID, err := s.ensureSlot(ctx, adminID, toStart)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
-	return s.repo.RescheduleBooking(ctx, bookingID, newSlotID)
+	if err := s.repo.RescheduleBooking(ctx, bookingID, newSlotID); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	updated, err := s.bookingChangeByID(ctx, bookingID, adminID)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	result.NewStartAt = updated.StartAt
+	result.NewEndAt = updated.EndAt
+	return result, nil
 }
 
 func (s *appStore) BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error {
@@ -1238,6 +1294,70 @@ LIMIT 50;
 	return items, rows.Err()
 }
 
+func (s *appStore) bookingChangeByID(ctx context.Context, bookingID, adminID int64) (bot.BookingChangeResult, error) {
+	if bookingID <= 0 {
+		return bot.BookingChangeResult{}, store.ErrInvalidArgument
+	}
+	query := `
+SELECT a.telegram_id,
+       COALESCE(al.value, 'ru') AS admin_language,
+       CASE
+           WHEN u.username LIKE 'phone_%' AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           ELSE COALESCE(u.username, '')
+       END AS client_name,
+       s.start_at,
+       s.end_at,
+       b.note,
+       COALESCE(svc.name, '') AS service_name
+FROM bookings b
+JOIN schedule_slots s ON s.id = b.slot_id
+JOIN users a ON a.id = s.admin_user_id
+LEFT JOIN users u ON u.id = b.user_id
+LEFT JOIN admin_services svc ON svc.id = b.service_id
+LEFT JOIN admin_settings al ON al.admin_user_id = a.id AND al.key = 'language'
+WHERE b.id = $1
+  AND b.status = 'booked'
+`
+	args := []any{bookingID}
+	if adminID > 0 {
+		args = append(args, adminID)
+		query += fmt.Sprintf("  AND s.admin_user_id = $%d\n", len(args))
+	}
+	query += "LIMIT 1;"
+
+	var (
+		result      bot.BookingChangeResult
+		adminChatID sql.NullInt64
+		note        string
+		serviceName string
+	)
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&adminChatID,
+		&result.AdminLanguage,
+		&result.Username,
+		&result.StartAt,
+		&result.EndAt,
+		&note,
+		&serviceName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return bot.BookingChangeResult{}, store.ErrNotFound
+	}
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	if adminChatID.Valid {
+		result.AdminChatID = adminChatID.Int64
+	}
+	result.StartAt = result.StartAt.In(s.loc)
+	result.EndAt = result.EndAt.In(s.loc)
+	if duration := bookingDurationFromNote(note); duration > 0 {
+		result.EndAt = result.StartAt.Add(time.Duration(duration) * time.Minute)
+	}
+	result.ServiceNames = bookingServiceNames(note, serviceName)
+	return result, nil
+}
+
 func (s *appStore) ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]bot.BookingView, error) {
 	userID, err := s.userIDByTelegram(ctx, telegramID)
 	if err != nil {
@@ -1281,43 +1401,46 @@ LIMIT 20;
 	return items, nil
 }
 
-func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time.Time) error {
+func (s *appStore) BookForUser(ctx context.Context, telegramID int64, start time.Time) (bot.BookingChangeResult, error) {
 	userID, err := s.userIDByTelegram(ctx, telegramID)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
 	slotID, err := s.availableSlotIDByStart(ctx, start)
 	if err != nil {
-		return err
+		return bot.BookingChangeResult{}, err
 	}
-	_, err = s.repo.CreateBooking(ctx, domain.Booking{
+	booking, err := s.repo.CreateBooking(ctx, domain.Booking{
 		SlotID:        slotID,
 		UserID:        &userID,
 		Status:        domain.BookingStatusBooked,
 		TravelMinutes: 0,
 		Note:          "created_by_user",
 	})
-	return err
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	return s.bookingChangeByID(ctx, booking.ID, 0)
 }
 
-func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, index int) (time.Time, error) {
+func (s *appStore) BookForUserByIndex(ctx context.Context, telegramID int64, index int) (bot.BookingChangeResult, error) {
 	availability, err := s.loadAvailabilityForUser(ctx, telegramID)
 	if err == nil && len(availability) > 0 {
 		if index <= 0 || index > len(availability) {
-			return time.Time{}, store.ErrInvalidArgument
+			return bot.BookingChangeResult{}, store.ErrInvalidArgument
 		}
 		return s.bookAvailability(ctx, telegramID, availability[index-1])
 	}
 
 	slots, err := s.loadTimesForUser(ctx, telegramID, "last_free_slots")
 	if err != nil {
-		return time.Time{}, err
+		return bot.BookingChangeResult{}, err
 	}
 	if index <= 0 || index > len(slots) {
-		return time.Time{}, store.ErrInvalidArgument
+		return bot.BookingChangeResult{}, store.ErrInvalidArgument
 	}
 	start := slots[index-1]
-	return start, s.BookForUser(ctx, telegramID, start)
+	return s.BookForUser(ctx, telegramID, start)
 }
 
 func (s *appStore) MoveBookingForUser(ctx context.Context, telegramID int64, fromStart, toStart time.Time) (bot.MoveResult, error) {
@@ -1466,6 +1589,15 @@ SELECT id, chat_id, payload
 FROM reminders
 WHERE sent_at IS NULL
   AND send_at <= $1
+  AND (
+      booking_id IS NULL
+      OR EXISTS (
+          SELECT 1
+          FROM bookings b
+          WHERE b.id = reminders.booking_id
+            AND b.status = 'booked'
+      )
+  )
 ORDER BY send_at ASC
 LIMIT $2;
 `, now, limit)
@@ -2185,22 +2317,18 @@ func (s *appStore) usernameByID(ctx context.Context, userID int64) (string, erro
 	return username, err
 }
 
-func (s *appStore) bookAvailability(ctx context.Context, telegramID int64, entry availabilityCacheEntry) (time.Time, error) {
+func (s *appStore) bookAvailability(ctx context.Context, telegramID int64, entry availabilityCacheEntry) (bot.BookingChangeResult, error) {
 	if len(entry.SlotIDs) == 0 {
-		return time.Time{}, store.ErrInvalidArgument
+		return bot.BookingChangeResult{}, store.ErrInvalidArgument
 	}
 	userID, err := s.userIDByTelegram(ctx, telegramID)
 	if err != nil {
-		return time.Time{}, err
-	}
-	start, err := time.Parse(time.RFC3339, entry.Start)
-	if err != nil {
-		return time.Time{}, err
+		return bot.BookingChangeResult{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return time.Time{}, err
+		return bot.BookingChangeResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -2213,10 +2341,10 @@ WHERE id = $1 AND status = 'open'
 FOR UPDATE;
 `, slotID).Scan(&capacity)
 		if errors.Is(err, sql.ErrNoRows) {
-			return time.Time{}, store.ErrSlotUnavailable
+			return bot.BookingChangeResult{}, store.ErrSlotUnavailable
 		}
 		if err != nil {
-			return time.Time{}, err
+			return bot.BookingChangeResult{}, err
 		}
 		var booked int
 		if err := tx.QueryRowContext(ctx, `
@@ -2224,10 +2352,10 @@ SELECT COUNT(*)
 FROM bookings
 WHERE slot_id = $1 AND status IN ('booked', 'blocked');
 `, slotID).Scan(&booked); err != nil {
-			return time.Time{}, err
+			return bot.BookingChangeResult{}, err
 		}
 		if booked >= capacity {
-			return time.Time{}, store.ErrSlotUnavailable
+			return bot.BookingChangeResult{}, store.ErrSlotUnavailable
 		}
 	}
 
@@ -2241,7 +2369,7 @@ WHERE slot_id = $1 AND status IN ('booked', 'blocked');
 		DurationMin:  entry.DurationMin,
 	})
 	if err != nil {
-		return time.Time{}, err
+		return bot.BookingChangeResult{}, err
 	}
 
 	var bookingID int64
@@ -2250,20 +2378,20 @@ INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note
 VALUES ($1, $2, $3, 'booked', $4, $5)
 RETURNING id;
 `, entry.SlotIDs[0], userID, serviceID, 0, string(note)).Scan(&bookingID); err != nil {
-		return time.Time{}, err
+		return bot.BookingChangeResult{}, err
 	}
 	for _, slotID := range entry.SlotIDs[1:] {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
 VALUES ($1, NULL, NULL, 'blocked', $2, $3);
 `, slotID, 0, coveredByBookingNote(bookingID)); err != nil {
-			return time.Time{}, err
+			return bot.BookingChangeResult{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return time.Time{}, err
+		return bot.BookingChangeResult{}, err
 	}
-	return start.In(s.loc), nil
+	return s.bookingChangeByID(ctx, bookingID, 0)
 }
 
 func (s *appStore) moveBookingForUserToAvailability(ctx context.Context, telegramID int64, fromStart time.Time, entry availabilityCacheEntry) (bot.MoveResult, error) {

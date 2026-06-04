@@ -253,7 +253,7 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 		}
 		index = state.VisibleSlotIndexes[index-1]
 	}
-	start, err := b.store.BookForUserByIndex(ctx, user.TelegramID, index)
+	result, err := b.store.BookForUserByIndex(ctx, user.TelegramID, index)
 	if err != nil {
 		b.logger.Printf("conversation slot: book failed user=%d index=%d: %v", user.TelegramID, index, err)
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
@@ -261,9 +261,10 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, "book_failed"))
 	}
-	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s", user.TelegramID, index, start.Format(time.RFC3339))
+	b.logger.Printf("conversation slot: booked user=%d index=%d start=%s", user.TelegramID, index, result.StartAt.Format(time.RFC3339))
+	b.notifyBookingChange(ctx, "created", result, chatID)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", start.Format(dateTimeLayout)), keyboardForUser(user))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", result.StartAt.Format(dateTimeLayout)), keyboardForUser(user))
 }
 
 func (b *Bot) conversationBack(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -734,15 +735,19 @@ func (b *Bot) conversationAppointTime(ctx context.Context, chatID int64, user Us
 		return b.sendText(ctx, chatID, tr(user.Language, "datetime_bad_example"))
 	}
 	if state.ContactType == "phone" {
-		if err := b.store.AddBookingByPhone(ctx, user.TelegramID, state.Username, start); err != nil {
+		result, err := b.store.AddBookingByPhone(ctx, user.TelegramID, state.Username, start)
+		if err != nil {
 			return b.sendText(ctx, chatID, tr(user.Language, "appoint_failed"))
 		}
+		b.notifyBookingChange(ctx, "created", result, chatID)
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", state.Username), keyboardForUser(user))
 	}
-	if err := b.store.AddBookingByUsername(ctx, user.TelegramID, state.Username, start); err != nil {
+	result, err := b.store.AddBookingByUsername(ctx, user.TelegramID, state.Username, start)
+	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "appoint_failed"))
 	}
+	b.notifyBookingChange(ctx, "created", result, chatID)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForUser(user))
 }
@@ -756,9 +761,11 @@ func (b *Bot) conversationCancelTime(ctx context.Context, chatID int64, user Use
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "datetime_bad"))
 	}
-	if err := b.store.DeleteBookingByUsername(ctx, user.TelegramID, state.Username, start); err != nil {
+	result, err := b.store.DeleteBookingByUsername(ctx, user.TelegramID, state.Username, start)
+	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "cancel_failed"))
 	}
+	b.notifyBookingChange(ctx, "cancelled", result, chatID)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "cancel_ok", state.Username), keyboardForUser(user))
 }
@@ -790,9 +797,11 @@ func (b *Bot) conversationRescheduleTo(ctx context.Context, chatID int64, user U
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "to_datetime_bad"))
 	}
-	if err := b.store.RescheduleBookingByUsername(ctx, user.TelegramID, state.Username, fromStart, toStart); err != nil {
+	result, err := b.store.RescheduleBookingByUsername(ctx, user.TelegramID, state.Username, fromStart, toStart)
+	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "reschedule_failed"))
 	}
+	b.notifyBookingChange(ctx, "rescheduled", result, chatID)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "reschedule_ok", state.Username), keyboardForUser(user))
 }
