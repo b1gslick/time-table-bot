@@ -174,6 +174,27 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") {
 		return b.handleSlotBrowseCallback(ctx, cb)
 	}
+	if cb.Data == "my:list" {
+		return b.handleMyBookingsCallback(ctx, cb)
+	}
+	if cb.Data == "mycancel:list" {
+		return b.handleMyCancelListCallback(ctx, cb)
+	}
+	if cb.Data == "mymove:list" {
+		return b.handleMyMoveListCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "mycancel:") {
+		return b.handleMyCancelBookingCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "mymove:") {
+		return b.handleMyMoveBookingCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "moveslot:") {
+		return b.handleMyMoveSlotCallback(ctx, cb)
+	}
+	if cb.Data == "bookstart" {
+		return b.handleBookingStartCallback(ctx, cb)
+	}
 	if strings.HasPrefix(cb.Data, "cancel:") {
 		return b.handleCancelBookingCallback(ctx, cb)
 	}
@@ -256,22 +277,10 @@ func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.Callbac
 }
 
 func (b *Bot) handleCancelBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
-	user := UserRecord{
-		TelegramID: cb.From.ID,
-		Username:   normalizeUsername(cb.From.Username),
-		FirstName:  cb.From.FirstName,
-		LastName:   cb.From.LastName,
-		Role:       RoleUser,
-		Language:   LangRU,
-	}
-	if user.Username == b.superAdminUsername {
-		user.Role = RoleSuperAdmin
-	}
-	current, err := b.store.RegisterOrUpdateUser(ctx, user)
+	current, err := b.userFromCallback(ctx, cb)
 	if err != nil {
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
 	}
-	current = b.applySuperAdminView(ctx, current)
 	if !isAdmin(current.Role) {
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "admin_only"))
 	}
@@ -291,6 +300,112 @@ func (b *Bot) handleCancelBookingCallback(ctx context.Context, cb *telegram.Call
 		client = tr(current.Language, "unknown_user")
 	}
 	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, tr(current.Language, "cancel_ok_contact", client), keyboardForUser(current))
+}
+
+func (b *Bot) handleMyBookingsCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	return b.handleMy(ctx, cb.Message.Chat.ID, current)
+}
+
+func (b *Bot) handleMyCancelListCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	return b.showMyCancelBookingPicker(ctx, cb.Message.Chat.ID, current)
+}
+
+func (b *Bot) handleMyMoveListCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	return b.showMyMoveBookingPicker(ctx, cb.Message.Chat.ID, current)
+}
+
+func (b *Bot) handleMyCancelBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	rawID := strings.TrimPrefix(cb.Data, "mycancel:")
+	bookingID, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || bookingID <= 0 {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_cancel_failed"))
+	}
+	result, err := b.store.DeleteMyBookingByID(ctx, current.TelegramID, bookingID)
+	if err != nil {
+		b.logger.Printf("my cancel callback failed user=%d booking=%d: %v", current.TelegramID, bookingID, err)
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_cancel_failed"))
+	}
+	b.notifyBookingChange(ctx, "cancelled", result, cb.Message.Chat.ID)
+	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, tr(current.Language, "my_cancel_ok", result.StartAt.Format(dateTimeLayout)), keyboardForUser(current))
+}
+
+func (b *Bot) handleMyMoveBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	rawID := strings.TrimPrefix(cb.Data, "mymove:")
+	bookingID, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || bookingID <= 0 {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_move_failed"))
+	}
+	return b.showMyMoveSlots(ctx, cb.Message.Chat.ID, current, bookingID)
+}
+
+func (b *Bot) handleMyMoveSlotCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	parts := strings.Split(strings.TrimPrefix(cb.Data, "moveslot:"), ":")
+	if len(parts) != 2 {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_move_failed"))
+	}
+	bookingID, err1 := strconv.ParseInt(parts[0], 10, 64)
+	slotIndex, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || bookingID <= 0 || slotIndex <= 0 {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_move_failed"))
+	}
+	result, err := b.store.MoveMyBookingByIDToIndex(ctx, current.TelegramID, bookingID, slotIndex)
+	if err != nil {
+		b.logger.Printf("my move slot failed user=%d booking=%d slot=%d: %v", current.TelegramID, bookingID, slotIndex, err)
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_move_failed"))
+	}
+	b.notifyMove(ctx, result)
+	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, tr(current.Language, "move_ok", result.FromStart.Format(dateTimeLayout), result.ToStart.Format(dateTimeLayout)), keyboardForUser(current))
+}
+
+func (b *Bot) handleBookingStartCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	return b.handleBookingStart(ctx, cb.Message.Chat.ID, current)
+}
+
+func (b *Bot) userFromCallback(ctx context.Context, cb *telegram.CallbackQuery) (UserRecord, error) {
+	user := UserRecord{
+		TelegramID: cb.From.ID,
+		Username:   normalizeUsername(cb.From.Username),
+		FirstName:  cb.From.FirstName,
+		LastName:   cb.From.LastName,
+		Role:       RoleUser,
+		Language:   LangRU,
+	}
+	if user.Username == b.superAdminUsername {
+		user.Role = RoleSuperAdmin
+	}
+	current, err := b.store.RegisterOrUpdateUser(ctx, user)
+	if err != nil {
+		return UserRecord{}, err
+	}
+	return b.applySuperAdminView(ctx, current), nil
 }
 
 func callbackText(data string) (string, bool) {
@@ -335,6 +450,9 @@ func callbackText(data string) (string, bool) {
 func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) error {
 	if user.Role == RoleUser {
 		if user.LanguageSet {
+			if handled, err := b.showClientActiveBookingsMenu(ctx, chatID, user); handled {
+				return err
+			}
 			return b.askCategory(ctx, chatID, user, nil)
 		}
 		if err := b.store.SetConversationState(ctx, user.TelegramID, ConversationState{Step: conversationStepLanguage}); err != nil {
@@ -347,6 +465,18 @@ func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) er
 		txt += "\n" + viewModeText(user.Language, user)
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForUser(user))
+}
+
+func (b *Bot) showClientActiveBookingsMenu(ctx context.Context, chatID int64, user UserRecord) (bool, error) {
+	items, err := b.store.ListMyBookings(ctx, user.TelegramID, time.Now())
+	if err != nil {
+		b.logger.Printf("client active bookings check failed user=%d: %v", user.TelegramID, err)
+		return false, nil
+	}
+	if len(items) == 0 {
+		return false, nil
+	}
+	return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "my_active_prompt"), myActionsKeyboard(user.Language))
 }
 
 func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRecord) error {
@@ -1236,7 +1366,44 @@ func (b *Bot) handleMy(ctx context.Context, chatID int64, actor UserRecord) erro
 		}
 		sb.WriteString("\n")
 	}
-	return b.sendText(ctx, chatID, sb.String())
+	return b.sendTextWithKeyboard(ctx, chatID, sb.String(), myActionsKeyboard(actor.Language))
+}
+
+func (b *Bot) showMyCancelBookingPicker(ctx context.Context, chatID int64, actor UserRecord) error {
+	items, err := b.store.ListMyBookings(ctx, actor.TelegramID, time.Now())
+	if err != nil {
+		b.logger.Printf("my cancel picker failed user=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_failed"))
+	}
+	if len(items) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_empty"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "my_cancel_choose"), myBookingActionKeyboard(actor.Language, items, "mycancel"))
+}
+
+func (b *Bot) showMyMoveBookingPicker(ctx context.Context, chatID int64, actor UserRecord) error {
+	items, err := b.store.ListMyBookings(ctx, actor.TelegramID, time.Now())
+	if err != nil {
+		b.logger.Printf("my move picker failed user=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_failed"))
+	}
+	if len(items) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_empty"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "my_move_choose"), myBookingActionKeyboard(actor.Language, items, "mymove"))
+}
+
+func (b *Bot) showMyMoveSlots(ctx context.Context, chatID int64, actor UserRecord, bookingID int64) error {
+	now := time.Now()
+	slots, err := b.store.ListMoveTargetsForBooking(ctx, actor.TelegramID, bookingID, now, now.AddDate(0, 0, 14))
+	if err != nil {
+		b.logger.Printf("my move slots failed user=%d booking=%d: %v", actor.TelegramID, bookingID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_move_failed"))
+	}
+	if len(slots) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "my_move_empty"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "my_move_slot_choose"), moveSlotKeyboard(actor.Language, bookingID, slots))
 }
 
 func (b *Bot) handleBook(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {

@@ -153,6 +153,75 @@ func cancelBookingKeyboard(lang string, items []BookingView) *telegram.ReplyMark
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
+func myActionsKeyboard(lang string) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: tr(lang, "button_action_my"), CallbackData: "my:list"},
+		},
+		{
+			{Text: tr(lang, "button_my_cancel"), CallbackData: "mycancel:list"},
+			{Text: tr(lang, "button_my_move"), CallbackData: "mymove:list"},
+		},
+		{
+			{Text: tr(lang, "button_my_new_booking"), CallbackData: "bookstart"},
+		},
+	}}
+}
+
+func myBookingActionKeyboard(lang string, items []BookingView, prefix string) *telegram.ReplyMarkup {
+	limit := len(items)
+	if limit > 20 {
+		limit = 20
+	}
+	rows := make([][]telegram.InlineKeyboardButton, 0, limit)
+	for i := 0; i < limit; i++ {
+		item := items[i]
+		rows = append(rows, []telegram.InlineKeyboardButton{{
+			Text:         bookingButtonLabel(lang, item),
+			CallbackData: fmt.Sprintf("%s:%d", prefix, item.ID),
+		}})
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func moveSlotKeyboard(lang string, bookingID int64, slots []AvailabilitySlot) *telegram.ReplyMarkup {
+	limit := len(slots)
+	if limit > 20 {
+		limit = 20
+	}
+	rows := make([][]telegram.InlineKeyboardButton, 0, limit)
+	for i := 0; i < limit; i++ {
+		slot := slots[i]
+		label := slot.StartAt.Format("02.01 15:04")
+		if slot.DurationMin > 0 {
+			label += fmt.Sprintf(" (%d %s)", slot.DurationMin, tr(lang, "minutes_short"))
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{{
+			Text:         label,
+			CallbackData: fmt.Sprintf("moveslot:%d:%d", bookingID, i+1),
+		}})
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func bookingButtonLabel(lang string, item BookingView) string {
+	label := item.StartAt.Format("02.01 15:04")
+	if item.AdminName != "" {
+		label += " - @" + item.AdminName
+	}
+	if item.Username != "" {
+		client := formatClientContact(item.Username)
+		if client == "" {
+			client = tr(lang, "unknown_user")
+		}
+		label += " - " + client
+	}
+	if len(item.ServiceNames) > 0 {
+		label += " - " + strings.Join(item.ServiceNames, ", ")
+	}
+	return label
+}
+
 func roleChoiceKeyboard() *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
 		{"show", "admin"},

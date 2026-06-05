@@ -71,6 +71,35 @@ func TestCancelBookingKeyboardCallback(t *testing.T) {
 	}
 }
 
+func TestMyBookingInlineKeyboards(t *testing.T) {
+	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.Local)
+	items := []BookingView{{ID: 42, AdminName: "master", StartAt: start, ServiceNames: []string{"Маникюр"}}}
+
+	actions := myActionsKeyboard(LangRU)
+	if actions == nil || len(actions.InlineKeyboard) != 3 {
+		t.Fatalf("actions keyboard = %#v, want 3 rows", actions)
+	}
+	if got := actions.InlineKeyboard[1][0].CallbackData; got != "mycancel:list" {
+		t.Fatalf("cancel action callback = %q, want mycancel:list", got)
+	}
+	if got := actions.InlineKeyboard[1][1].CallbackData; got != "mymove:list" {
+		t.Fatalf("move action callback = %q, want mymove:list", got)
+	}
+
+	cancel := myBookingActionKeyboard(LangRU, items, "mycancel")
+	if got := cancel.InlineKeyboard[0][0].CallbackData; got != "mycancel:42" {
+		t.Fatalf("cancel booking callback = %q, want mycancel:42", got)
+	}
+	move := myBookingActionKeyboard(LangRU, items, "mymove")
+	if got := move.InlineKeyboard[0][0].CallbackData; got != "mymove:42" {
+		t.Fatalf("move booking callback = %q, want mymove:42", got)
+	}
+	slots := moveSlotKeyboard(LangRU, 42, []AvailabilitySlot{{StartAt: start.Add(time.Hour), DurationMin: 30}})
+	if got := slots.InlineKeyboard[0][0].CallbackData; got != "moveslot:42:1" {
+		t.Fatalf("move slot callback = %q, want moveslot:42:1", got)
+	}
+}
+
 func TestParseDateList(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.Local)
 	got, err := parseDateList("2026-06-01, 03.06.2026, 04.06", now)
