@@ -42,10 +42,12 @@ ALTER TABLE admin_services
 ALTER TABLE admin_services
     DROP CONSTRAINT IF EXISTS admin_services_admin_user_id_name_key;
 
+DROP INDEX IF EXISTS idx_admin_services_admin_path_unique;
+
 CREATE INDEX IF NOT EXISTS idx_admin_services_admin_active
     ON admin_services(admin_user_id, is_active);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_services_admin_path_unique
-    ON admin_services(admin_user_id, category, subcategory, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_services_admin_path_duration_unique
+    ON admin_services(admin_user_id, category, subcategory, name, duration_min);
 
 CREATE TABLE IF NOT EXISTS admin_settings (
     admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -164,9 +164,8 @@ func (s *PostgresStore) UpsertAdminService(ctx context.Context, service domain.A
 	const q = `
 INSERT INTO admin_services (admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-ON CONFLICT(admin_user_id, category, subcategory, name) DO UPDATE SET
+ON CONFLICT(admin_user_id, category, subcategory, name, duration_min) DO UPDATE SET
 	description = EXCLUDED.description,
-	duration_min = EXCLUDED.duration_min,
 	price_cents = EXCLUDED.price_cents,
 	is_active = EXCLUDED.is_active,
 	updated_at = NOW()

@@ -206,6 +206,29 @@ func (s *appStore) SetServicesText(ctx context.Context, adminTelegramID int64, t
 	return s.repo.SetAdminSetting(ctx, adminID, "services_text", strings.TrimSpace(text))
 }
 
+func (s *appStore) GetServicesText(ctx context.Context, adminTelegramID int64) (string, error) {
+	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return "", err
+	}
+	return s.stringSetting(ctx, adminID, "services_text", "")
+}
+
+func (s *appStore) SetCategoryOrder(ctx context.Context, adminTelegramID int64, categories []string) error {
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return store.ErrInvalidArgument
+	}
+	data, err := json.Marshal(categories)
+	if err != nil {
+		return err
+	}
+	return s.repo.SetAdminSetting(ctx, adminID, "category_order", string(data))
+}
+
 func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error {
 	if strings.TrimSpace(name) == "" || durationMin <= 0 {
 		return store.ErrInvalidArgument
@@ -220,6 +243,7 @@ func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name s
 		Category:    category,
 		Subcategory: subcategory,
 		Name:        serviceName,
+		Description: strings.TrimSpace(priceText),
 		DurationMin: durationMin,
 		IsActive:    true,
 	})
@@ -262,8 +286,49 @@ WHERE id = $1 AND admin_user_id = $2 AND is_active = TRUE;
 	return nil
 }
 
+func (s *appStore) EditServiceByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, priceText string) error {
+	if index <= 0 || strings.TrimSpace(name) == "" || durationMin <= 0 {
+		return store.ErrInvalidArgument
+	}
+	services, err := s.ListServices(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	if index > len(services) {
+		return store.ErrInvalidArgument
+	}
+	category, subcategory, serviceName := parseServicePath(name)
+	result, err := s.db.ExecContext(ctx, `
+UPDATE admin_services
+SET category = $1,
+    subcategory = $2,
+    name = $3,
+    description = $4,
+    duration_min = $5,
+    updated_at = NOW()
+WHERE id = $6 AND is_active = TRUE;
+`, category, subcategory, serviceName, strings.TrimSpace(priceText), durationMin, services[index-1].ID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return store.ErrNotFound
+	}
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_services")
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	return nil
+}
+
 func (s *appStore) ListServices(ctx context.Context, telegramID int64) ([]bot.ServiceView, error) {
 	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	targetAdminID, hasTargetAdmin, err := s.targetAdminIDForServiceScope(ctx, telegramID)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +372,11 @@ WHERE svc.is_active = TRUE
 	}
 	if telegramID > 0 {
 		_ = s.saveInt64sForUser(ctx, telegramID, "last_services", ids)
+	}
+	if hasTargetAdmin {
+		if order, err := s.categoryOrder(ctx, targetAdminID); err == nil && len(order) > 0 {
+			sortServicesByCategoryOrder(services, order)
+		}
 	}
 	return services, nil
 }
@@ -741,6 +811,34 @@ func (s *appStore) AddBookingByPhone(ctx context.Context, adminTelegramID int64,
 		return bot.BookingChangeResult{}, err
 	}
 	return s.bookingChangeByID(ctx, booking.ID, adminID)
+}
+
+func (s *appStore) AddBookingForContactByIndex(ctx context.Context, adminTelegramID int64, contactType, contact string, index int) (bot.BookingChangeResult, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	var clientID int64
+	switch contactType {
+	case "phone":
+		clientID, err = s.ensureUserByPhone(ctx, contact)
+	case "telegram":
+		clientID, err = s.ensureUserByUsername(ctx, contact)
+	default:
+		err = store.ErrInvalidArgument
+	}
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+
+	availability, err := s.loadAvailabilityForUser(ctx, adminTelegramID)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	if index <= 0 || index > len(availability) {
+		return bot.BookingChangeResult{}, store.ErrInvalidArgument
+	}
+	return s.bookAvailabilityForUserID(ctx, clientID, availability[index-1], adminID)
 }
 
 func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (bot.BookingChangeResult, error) {
@@ -2044,6 +2142,41 @@ func (s *appStore) userIDByTelegram(ctx context.Context, telegramID int64) (int6
 	return id, err
 }
 
+func (s *appStore) userIDByUsername(ctx context.Context, username string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT id
+FROM users
+WHERE username = $1;
+`, normalizeUsername(username)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, store.ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func (s *appStore) targetAdminIDForServiceScope(ctx context.Context, telegramID int64) (int64, bool, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return 0, false, err
+	}
+	if actor.Role == bot.RoleAdmin {
+		id, err := s.userIDByTelegram(ctx, telegramID)
+		return id, err == nil, err
+	}
+	if actor.Role == bot.RoleSuperAdmin {
+		view, err := s.GetSuperAdminView(ctx, telegramID)
+		if err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+			id, err := s.userIDByUsername(ctx, view.AdminUsername)
+			return id, err == nil, err
+		}
+	}
+	return 0, false, nil
+}
+
 func (s *appStore) ensureUserByUsername(ctx context.Context, username string) (int64, error) {
 	norm := normalizeUsername(username)
 	if norm == "" {
@@ -2221,6 +2354,39 @@ WHERE admin_user_id = $1 AND key = $2;
 		return fallback, nil
 	}
 	return raw, nil
+}
+
+func (s *appStore) categoryOrder(ctx context.Context, adminUserID int64) ([]string, error) {
+	raw, err := s.stringSetting(ctx, adminUserID, "category_order", "")
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func sortServicesByCategoryOrder(services []bot.ServiceView, order []string) {
+	rank := make(map[string]int, len(order))
+	for i, category := range order {
+		rank[category] = i
+	}
+	sort.SliceStable(services, func(i, j int) bool {
+		left, leftOK := rank[services[i].Category]
+		right, rightOK := rank[services[j].Category]
+		if leftOK && rightOK && left != right {
+			return left < right
+		}
+		if leftOK != rightOK {
+			return leftOK
+		}
+		return false
+	})
 }
 
 func (s *appStore) saveTimesForUser(ctx context.Context, telegramID int64, key string, values []time.Time) error {
@@ -2486,7 +2652,13 @@ func (s *appStore) bookAvailability(ctx context.Context, telegramID int64, entry
 	if err != nil {
 		return bot.BookingChangeResult{}, err
 	}
+	return s.bookAvailabilityForUserID(ctx, userID, entry, 0)
+}
 
+func (s *appStore) bookAvailabilityForUserID(ctx context.Context, userID int64, entry availabilityCacheEntry, adminID int64) (bot.BookingChangeResult, error) {
+	if userID <= 0 || len(entry.SlotIDs) == 0 {
+		return bot.BookingChangeResult{}, store.ErrInvalidArgument
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return bot.BookingChangeResult{}, err
@@ -2552,7 +2724,7 @@ VALUES ($1, NULL, NULL, 'blocked', $2, $3);
 	if err := tx.Commit(); err != nil {
 		return bot.BookingChangeResult{}, err
 	}
-	return s.bookingChangeByID(ctx, bookingID, 0)
+	return s.bookingChangeByID(ctx, bookingID, adminID)
 }
 
 func (s *appStore) moveBookingForUserToAvailability(ctx context.Context, telegramID int64, fromStart time.Time, entry availabilityCacheEntry) (bot.MoveResult, error) {

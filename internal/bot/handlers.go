@@ -29,9 +29,13 @@ const (
 	conversationStepAddSvcSub   = "admin_service_subcategory"
 	conversationStepAddSvcName  = "admin_service_name"
 	conversationStepAddSvcDur   = "admin_service_duration"
+	conversationStepAddSvcDesc  = "admin_service_description"
+	conversationStepEditSvc     = "admin_service_edit"
+	conversationStepEditSvcData = "admin_service_edit_data"
 	conversationStepDeleteSvc   = "admin_service_delete"
 	conversationStepSetProfile  = "admin_set_profile"
 	conversationStepSetServices = "admin_set_services"
+	conversationStepCategoryOrd = "admin_category_order"
 	conversationStepSetHours    = "admin_set_hours"
 	conversationStepSetHoursDay = "admin_set_hours_day"
 	conversationStepSetDuration = "admin_set_duration"
@@ -116,8 +120,12 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleSetProfile(ctx, msg.Chat.ID, current, text)
 	case "/setservices":
 		return b.handleSetServices(ctx, msg.Chat.ID, current, text)
+	case "/category_order", "/categories_order":
+		return b.handleCategoryOrder(ctx, msg.Chat.ID, current, parts)
 	case "/service_add", "/addservice":
 		return b.handleServiceAdd(ctx, msg.Chat.ID, current, parts)
+	case "/service_edit", "/editservice":
+		return b.handleServiceEdit(ctx, msg.Chat.ID, current, parts)
 	case "/service_delete", "/service_remove", "/delservice":
 		return b.handleServiceDelete(ctx, msg.Chat.ID, current, parts)
 	case "/services":
@@ -532,12 +540,16 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleAdminBookings(ctx, chatID, user, []string{"/bookings", "tomorrow"})
 	case "action_service_add":
 		return true, b.handleServiceAdd(ctx, chatID, user, []string{"/service_add"})
+	case "action_service_edit":
+		return true, b.handleServiceEdit(ctx, chatID, user, []string{"/service_edit"})
 	case "action_service_delete":
 		return true, b.handleServiceDelete(ctx, chatID, user, []string{"/service_delete"})
 	case "action_service_list":
 		return true, b.handleServices(ctx, chatID, user)
 	case "action_services_text":
 		return true, b.handleSetServices(ctx, chatID, user, "/setservices")
+	case "action_category_order":
+		return true, b.handleCategoryOrder(ctx, chatID, user, []string{"/category_order"})
 	case "action_set_hours":
 		return true, b.handleSetHours(ctx, chatID, user, "/sethours")
 	case "action_block_date":
@@ -601,9 +613,11 @@ func menuButtonAction(lang, text string) string {
 		{"action_bookings_today", "button_action_bookings_today"},
 		{"action_bookings_tomorrow", "button_action_bookings_tomorrow"},
 		{"action_service_add", "button_action_service_add"},
+		{"action_service_edit", "button_action_service_edit"},
 		{"action_service_delete", "button_action_service_delete"},
 		{"action_service_list", "button_action_service_list"},
 		{"action_services_text", "button_action_services_text"},
+		{"action_category_order", "button_action_category_order"},
 		{"action_set_hours", "button_action_set_hours"},
 		{"action_block_date", "button_action_block_date"},
 		{"action_set_duration", "button_action_set_duration"},
@@ -884,7 +898,7 @@ func (b *Bot) handleSetServices(ctx context.Context, chatID int64, actor UserRec
 	}
 	value := strings.TrimSpace(strings.TrimPrefix(text, "/setservices"))
 	if value == "" {
-		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepSetServices}, "services_ask_text", nil)
+		return b.askSetServices(ctx, chatID, actor)
 	}
 	if err := b.store.SetServicesText(ctx, actor.TelegramID, value); err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "services_failed"))
@@ -892,16 +906,80 @@ func (b *Bot) handleSetServices(ctx context.Context, chatID int64, actor UserRec
 	return b.sendText(ctx, chatID, tr(actor.Language, "services_ok"))
 }
 
+func (b *Bot) askSetServices(ctx context.Context, chatID int64, actor UserRecord) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	current, err := b.store.GetServicesText(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("get services text failed admin=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_failed"))
+	}
+	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepSetServices}); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
+	}
+	var sb strings.Builder
+	if strings.TrimSpace(current) == "" {
+		sb.WriteString(tr(actor.Language, "services_current_empty"))
+	} else {
+		sb.WriteString(tr(actor.Language, "services_current"))
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimSpace(current))
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(tr(actor.Language, "services_ask_text"))
+	return b.sendText(ctx, chatID, sb.String())
+}
+
+func (b *Bot) handleCategoryOrder(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	services, err := b.store.ListServices(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("category order list failed admin=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
+	}
+	categories := serviceCategories(services)
+	if len(categories) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_empty"))
+	}
+	if len(parts) > 1 {
+		return b.applyCategoryOrder(ctx, chatID, actor, categories, strings.Join(parts[1:], " "))
+	}
+	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepCategoryOrd}); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
+	}
+	var sb strings.Builder
+	sb.WriteString(tr(actor.Language, "category_order_ask"))
+	sb.WriteString("\n")
+	sb.WriteString(formatCategories(actor.Language, categories))
+	return b.sendText(ctx, chatID, sb.String())
+}
+
+func (b *Bot) applyCategoryOrder(ctx context.Context, chatID int64, actor UserRecord, categories []string, raw string) error {
+	ordered, ok := parseCategoryOrder(raw, categories)
+	if !ok {
+		var sb strings.Builder
+		sb.WriteString(tr(actor.Language, "category_order_bad"))
+		sb.WriteString("\n")
+		sb.WriteString(formatCategories(actor.Language, categories))
+		return b.sendText(ctx, chatID, sb.String())
+	}
+	if err := b.store.SetCategoryOrder(ctx, actor.TelegramID, ordered); err != nil {
+		b.logger.Printf("category order save failed admin=%d order=%v: %v", actor.TelegramID, ordered, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "category_order_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, actor.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "category_order_ok"), keyboardForUser(actor))
+}
+
 func (b *Bot) handleServiceAdd(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) == 1 {
-		state := ConversationState{Step: conversationStepAddSvcCat}
-		if err := b.store.SetConversationState(ctx, actor.TelegramID, state); err != nil {
-			return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
-		}
-		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_ask_category"))
+		return b.askServiceAddCategory(ctx, chatID, actor, ConversationState{Step: conversationStepAddSvcCat})
 	}
 	if len(parts) < 3 {
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_usage"))
@@ -911,10 +989,11 @@ func (b *Bot) handleServiceAdd(ctx context.Context, chatID int64, actor UserReco
 		return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
 	}
 	name := strings.TrimSpace(strings.Join(parts[2:], " "))
+	name, description := splitServiceNameDescription(name)
 	if name == "" {
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_usage"))
 	}
-	if err := b.store.AddService(ctx, actor.TelegramID, name, duration, ""); err != nil {
+	if err := b.store.AddService(ctx, actor.TelegramID, name, duration, description); err != nil {
 		b.logger.Printf("service add failed admin=%d duration=%d name=%q: %v", actor.TelegramID, duration, name, err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_failed"))
 	}
@@ -938,6 +1017,39 @@ func (b *Bot) handleServices(ctx context.Context, chatID int64, actor UserRecord
 	return b.sendText(ctx, chatID, sb.String())
 }
 
+func (b *Bot) handleServiceEdit(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	if len(parts) == 1 {
+		return b.askServiceEdit(ctx, chatID, actor)
+	}
+	if len(parts) < 4 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_usage"))
+	}
+	index, err := strconv.Atoi(parts[1])
+	if err != nil || index <= 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_usage"))
+	}
+	duration, err := strconv.Atoi(parts[2])
+	if err != nil || duration <= 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
+	}
+	name := strings.TrimSpace(strings.Join(parts[3:], " "))
+	name, description := splitServiceNameDescription(name)
+	if name == "" {
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_usage"))
+	}
+	if err := b.store.EditServiceByIndex(ctx, actor.TelegramID, index, name, duration, description); err != nil {
+		b.logger.Printf("service edit failed admin=%d index=%d duration=%d name=%q: %v", actor.TelegramID, index, duration, name, err)
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
+			return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_bad_index"))
+		}
+		return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_ok", index))
+}
+
 func (b *Bot) handleServiceDelete(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
@@ -957,6 +1069,25 @@ func (b *Bot) handleServiceDelete(ctx context.Context, chatID int64, actor UserR
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_delete_failed"))
 	}
 	return b.sendText(ctx, chatID, tr(actor.Language, "service_delete_ok", index))
+}
+
+func (b *Bot) askServiceEdit(ctx context.Context, chatID int64, actor UserRecord) error {
+	services, err := b.store.ListServices(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("service edit list failed admin=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
+	}
+	if len(services) == 0 {
+		return b.sendText(ctx, chatID, tr(actor.Language, "services_empty"))
+	}
+	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepEditSvc}); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
+	}
+	var sb strings.Builder
+	sb.WriteString(formatServices(actor.Language, services))
+	sb.WriteString("\n")
+	sb.WriteString(tr(actor.Language, "service_edit_ask_index"))
+	return b.sendText(ctx, chatID, sb.String())
 }
 
 func (b *Bot) askServiceDelete(ctx context.Context, chatID int64, actor UserRecord) error {
@@ -1099,10 +1230,17 @@ func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord,
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
-	if len(parts) < 4 {
+	if len(parts) < 2 {
 		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepAppointKind}, "appoint_ask_contact_type", contactTypeKeyboard(actor.Language))
 	}
 	if strings.EqualFold(parts[1], "phone") || strings.EqualFold(parts[1], "телефон") {
+		if len(parts) == 3 {
+			phone := normalizePhone(parts[2])
+			if phone == "" {
+				return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ask_phone"))
+			}
+			return b.askAdminAppointmentServices(ctx, chatID, actor, ConversationState{ContactType: "phone", Username: phone})
+		}
 		if len(parts) < 5 {
 			return b.sendText(ctx, chatID, tr(actor.Language, "appoint_phone_usage"))
 		}
@@ -1117,6 +1255,16 @@ func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord,
 		}
 		b.notifyBookingChange(ctx, "created", result, chatID)
 		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ok_contact", phone))
+	}
+	if len(parts) == 2 {
+		username := normalizeUsername(parts[1])
+		if username == "" {
+			return b.sendText(ctx, chatID, tr(actor.Language, "bad_username"))
+		}
+		return b.askAdminAppointmentServices(ctx, chatID, actor, ConversationState{ContactType: "telegram", Username: username})
+	}
+	if len(parts) < 4 {
+		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepAppointKind}, "appoint_ask_contact_type", contactTypeKeyboard(actor.Language))
 	}
 	username := normalizeUsername(parts[1])
 	start, err := parseDateTime(parts[2], parts[3])

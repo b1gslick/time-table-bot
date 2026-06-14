@@ -142,6 +142,78 @@ func TestAppStore_ServiceDurationAvailabilityFlow(t *testing.T) {
 	}
 }
 
+func TestAppStore_AllowsSameServiceWithDifferentDurations(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Classic", 30, ""); err != nil {
+		t.Fatalf("AddService 30: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Classic", 45, ""); err != nil {
+		t.Fatalf("AddService 45: %v", err)
+	}
+
+	services, err := app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	if len(services) != 2 {
+		t.Fatalf("services = %#v, want two duration variants", services)
+	}
+	if services[0].Name != "Classic" || services[0].DurationMin != 30 || services[1].Name != "Classic" || services[1].DurationMin != 45 {
+		t.Fatalf("services = %#v, want same service name with 30 and 45 min", services)
+	}
+}
+
+func TestAppStore_CategoryOrderChangesServiceListNumbers(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Classic", 30, ""); err != nil {
+		t.Fatalf("AddService Nails: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Hair > Cut > Short", 45, ""); err != nil {
+		t.Fatalf("AddService Hair: %v", err)
+	}
+	if err := app.SetCategoryOrder(ctx, 2001, []string{"Hair", "Nails"}); err != nil {
+		t.Fatalf("SetCategoryOrder: %v", err)
+	}
+
+	services, err := app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	if len(services) != 2 || services[0].Category != "Hair" || services[1].Category != "Nails" {
+		t.Fatalf("services = %#v, want Hair category first", services)
+	}
+}
+
 func TestAppStore_SuperAdminSeesAdminServicesCalendarsAndBookings(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
@@ -374,6 +446,64 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
 	}
 	if juneSlots == 0 || julySlots == 0 {
 		t.Fatalf("juneSlots=%d julySlots=%d, want both months filled", juneSlots, julySlots)
+	}
+}
+
+func TestAppStore_AddBookingForContactByIndexUsesSelectedServiceSlot(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Nails > Manicure > Classic", 30, ""); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Hour)
+	for i := 0; i < 2; i++ {
+		slotStart := start.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
+
+	services, err := app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	if len(services) != 1 {
+		t.Fatalf("services = %#v, want one service", services)
+	}
+	slots, err := app.ListFreeSlotsForServicesRange(ctx, 2001, []int{1}, start.Add(-time.Hour), start.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("ListFreeSlotsForServicesRange: %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("slots = %#v, want one 30-minute slot", slots)
+	}
+	result, err := app.AddBookingForContactByIndex(ctx, 2001, "phone", "+357 99 999999", 1)
+	if err != nil {
+		t.Fatalf("AddBookingForContactByIndex: %v", err)
+	}
+	if result.Username != "+35799999999" || len(result.ServiceNames) != 1 || result.ServiceNames[0] != "Classic" {
+		t.Fatalf("booking result = %#v, want phone client and Classic service", result)
 	}
 }
 

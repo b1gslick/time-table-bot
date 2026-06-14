@@ -145,6 +145,8 @@ type ConversationState struct {
 	Category              string         `json:"category,omitempty"`
 	Subcategory           string         `json:"subcategory,omitempty"`
 	ServiceName           string         `json:"service_name,omitempty"`
+	ServiceDescription    string         `json:"service_description,omitempty"`
+	ServiceIndex          int            `json:"service_index,omitempty"`
 	Username              string         `json:"username,omitempty"`
 	FromDateTime          string         `json:"from_datetime,omitempty"`
 	ContactType           string         `json:"contact_type,omitempty"`
@@ -168,8 +170,11 @@ type Store interface {
 	SetUserLanguage(ctx context.Context, telegramID int64, language string) error
 
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
+	GetServicesText(ctx context.Context, adminTelegramID int64) (string, error)
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
+	SetCategoryOrder(ctx context.Context, adminTelegramID int64, categories []string) error
 	AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error
+	EditServiceByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, priceText string) error
 	DeleteServiceByIndex(ctx context.Context, adminTelegramID int64, index int) error
 	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
 	MasterIntro(ctx context.Context, telegramID int64) (string, error)
@@ -182,6 +187,7 @@ type Store interface {
 
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (BookingChangeResult, error)
+	AddBookingForContactByIndex(ctx context.Context, adminTelegramID int64, contactType, contact string, index int) (BookingChangeResult, error)
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	DeleteBookingByID(ctx context.Context, adminTelegramID int64, bookingID int64) (BookingChangeResult, error)
 	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) (BookingChangeResult, error)
