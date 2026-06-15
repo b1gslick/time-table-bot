@@ -449,6 +449,58 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
 	}
 }
 
+func TestAppStore_ServiceChangesUseSuperAdminView(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	app := newAppStore(db, repo, time.UTC)
+	super, err := repo.UpsertUser(ctx, 1001, "tim1106", "Super")
+	if err != nil {
+		t.Fatalf("UpsertUser super: %v", err)
+	}
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleSuperAdmin, super.ID); err != nil {
+		t.Fatalf("promote super: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetSuperAdminView(ctx, 1001, bot.SuperAdminView{Role: bot.RoleAdmin, AdminUsername: "master"}); err != nil {
+		t.Fatalf("SetSuperAdminView: %v", err)
+	}
+
+	if err := app.AddService(ctx, 1001, "Electro > 2 hours", 120, ""); err != nil {
+		t.Fatalf("AddService through view: %v", err)
+	}
+	adminServices, err := app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices admin: %v", err)
+	}
+	if len(adminServices) != 1 || adminServices[0].AdminName != "master" || adminServices[0].Name != "2 hours" {
+		t.Fatalf("admin services = %#v, want service on target admin", adminServices)
+	}
+
+	if err := app.SetSuperAdminView(ctx, 1001, bot.SuperAdminView{Role: bot.RoleSuperAdmin}); err != nil {
+		t.Fatalf("reset super view: %v", err)
+	}
+	superServices, err := app.ListServices(ctx, 1001)
+	if err != nil {
+		t.Fatalf("ListServices super: %v", err)
+	}
+	for _, service := range superServices {
+		if service.AdminName == "tim1106" && service.Name == "2 hours" {
+			t.Fatalf("service was added to super admin instead of target admin: %#v", superServices)
+		}
+	}
+}
+
 func TestAppStore_AddBookingForContactByIndexUsesSelectedServiceSlot(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

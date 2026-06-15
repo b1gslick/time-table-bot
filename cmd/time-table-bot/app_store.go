@@ -185,9 +185,12 @@ WHERE admin_user_id = $1 AND key = 'super_admin_view';
 }
 
 func (s *appStore) SetProfileText(ctx context.Context, adminTelegramID int64, text string) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		return store.ErrInvalidArgument
 	}
 	return s.repo.UpsertAdminProfile(ctx, domain.AdminProfile{
 		UserID:        adminID,
@@ -199,17 +202,23 @@ func (s *appStore) SetProfileText(ctx context.Context, adminTelegramID int64, te
 }
 
 func (s *appStore) SetServicesText(ctx context.Context, adminTelegramID int64, text string) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		return store.ErrInvalidArgument
 	}
 	return s.repo.SetAdminSetting(ctx, adminID, "services_text", strings.TrimSpace(text))
 }
 
 func (s *appStore) GetServicesText(ctx context.Context, adminTelegramID int64) (string, error) {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
 		return "", err
+	}
+	if !ok {
+		return "", store.ErrInvalidArgument
 	}
 	return s.stringSetting(ctx, adminID, "services_text", "")
 }
@@ -233,9 +242,12 @@ func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name s
 	if strings.TrimSpace(name) == "" || durationMin <= 0 {
 		return store.ErrInvalidArgument
 	}
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		return store.ErrInvalidArgument
 	}
 	category, subcategory, serviceName := parseServicePath(name)
 	_, err = s.repo.UpsertAdminService(ctx, domain.AdminService{
@@ -254,9 +266,12 @@ func (s *appStore) DeleteServiceByIndex(ctx context.Context, adminTelegramID int
 	if index <= 0 {
 		return store.ErrInvalidArgument
 	}
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
 		return err
+	}
+	if !ok {
+		return store.ErrInvalidArgument
 	}
 	services, err := s.ListServices(ctx, adminTelegramID)
 	if err != nil {
@@ -324,10 +339,6 @@ WHERE id = $6 AND is_active = TRUE;
 }
 
 func (s *appStore) ListServices(ctx context.Context, telegramID int64) ([]bot.ServiceView, error) {
-	actor, err := s.GetUserByTelegramID(ctx, telegramID)
-	if err != nil {
-		return nil, err
-	}
 	targetAdminID, hasTargetAdmin, err := s.targetAdminIDForServiceScope(ctx, telegramID)
 	if err != nil {
 		return nil, err
@@ -340,14 +351,9 @@ JOIN users a ON a.id = svc.admin_user_id
 WHERE svc.is_active = TRUE
 `
 	args := []any{}
-	if actor.Role == bot.RoleAdmin {
-		query += " AND a.telegram_id = $1"
-		args = append(args, telegramID)
-	} else if actor.Role == bot.RoleSuperAdmin {
-		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
-			query += " AND a.username = $1"
-			args = append(args, normalizeUsername(view.AdminUsername))
-		}
+	if hasTargetAdmin {
+		query += " AND svc.admin_user_id = $1"
+		args = append(args, targetAdminID)
 	}
 	query += " ORDER BY a.username ASC, svc.created_at ASC;"
 
