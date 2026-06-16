@@ -169,6 +169,7 @@ type Store interface {
 	SetUserRole(ctx context.Context, username string, role Role) error
 	SetUserLanguage(ctx context.Context, telegramID int64, language string) error
 
+	GetProfileText(ctx context.Context, adminTelegramID int64) (string, error)
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
 	GetServicesText(ctx context.Context, adminTelegramID int64) (string, error)
 	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error

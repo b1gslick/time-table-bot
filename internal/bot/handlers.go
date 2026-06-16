@@ -884,12 +884,37 @@ func (b *Bot) handleSetProfile(ctx context.Context, chatID int64, actor UserReco
 	}
 	value := strings.TrimSpace(strings.TrimPrefix(text, "/setprofile"))
 	if value == "" {
-		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepSetProfile}, "profile_ask_text", nil)
+		return b.askSetProfile(ctx, chatID, actor)
 	}
 	if err := b.store.SetProfileText(ctx, actor.TelegramID, value); err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "profile_failed"))
 	}
 	return b.sendText(ctx, chatID, tr(actor.Language, "profile_ok"))
+}
+
+func (b *Bot) askSetProfile(ctx context.Context, chatID int64, actor UserRecord) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	current, err := b.store.GetProfileText(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("get profile text failed admin=%d: %v", actor.TelegramID, err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "profile_failed"))
+	}
+	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepSetProfile}); err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
+	}
+	var sb strings.Builder
+	if strings.TrimSpace(current) == "" {
+		sb.WriteString(tr(actor.Language, "profile_current_empty"))
+	} else {
+		sb.WriteString(tr(actor.Language, "profile_current"))
+		sb.WriteString("\n")
+		sb.WriteString(strings.TrimSpace(current))
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(tr(actor.Language, "profile_ask_text"))
+	return b.sendText(ctx, chatID, sb.String())
 }
 
 func (b *Bot) handleSetServices(ctx context.Context, chatID int64, actor UserRecord, text string) error {

@@ -46,3 +46,12 @@ func TestParseServicePath(t *testing.T) {
 		})
 	}
 }
+
+func TestMasterServicesTextUsesMasterTelegram(t *testing.T) {
+	raw := "Прайс\nЕсли вас интересуте какая-либо из услуг, обращайтесь: @old_contact\nКатегории:"
+	got := masterServicesText(raw, "master")
+	want := "Прайс\nЕсли вас интересует какая-либо из услуг, обращайтесь: @master\nКатегории:"
+	if got != want {
+		t.Fatalf("masterServicesText() = %q, want %q", got, want)
+	}
+}

@@ -201,6 +201,29 @@ func (s *appStore) SetProfileText(ctx context.Context, adminTelegramID int64, te
 	})
 }
 
+func (s *appStore) GetProfileText(ctx context.Context, adminTelegramID int64) (string, error) {
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", store.ErrInvalidArgument
+	}
+	var description string
+	err = s.db.QueryRowContext(ctx, `
+SELECT COALESCE(description, '')
+FROM admin_profiles
+WHERE user_id = $1;
+`, adminID).Scan(&description)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(description), nil
+}
+
 func (s *appStore) SetServicesText(ctx context.Context, adminTelegramID int64, text string) error {
 	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
@@ -390,7 +413,11 @@ WHERE svc.is_active = TRUE
 }
 
 func (s *appStore) MasterIntro(ctx context.Context, telegramID int64) (string, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	targetAdminID, hasTargetAdmin, err := s.targetAdminIDForServiceScope(ctx, telegramID)
+	if err != nil {
+		return "", err
+	}
+	query := `
 SELECT u.username,
        COALESCE(p.description, '') AS description,
        COALESCE(st.value, '') AS services_text
@@ -398,9 +425,17 @@ FROM users u
 LEFT JOIN admin_profiles p ON p.user_id = u.id
 LEFT JOIN admin_settings st ON st.admin_user_id = u.id AND st.key = 'services_text'
 WHERE u.role IN ('admin', 'super_admin')
+`
+	args := []any{}
+	if hasTargetAdmin {
+		query += "  AND u.id = $1\n"
+		args = append(args, targetAdminID)
+	}
+	query += `
 ORDER BY u.username ASC
 LIMIT 5;
-`)
+`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return "", err
 	}
@@ -421,7 +456,7 @@ LIMIT 5;
 		}
 		if strings.TrimSpace(servicesText) != "" {
 			sb.WriteString("\n")
-			sb.WriteString(strings.TrimSpace(servicesText))
+			sb.WriteString(masterServicesText(servicesText, username))
 		}
 		parts = append(parts, sb.String())
 	}
@@ -432,6 +467,24 @@ LIMIT 5;
 		return "", nil
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+func masterServicesText(text, username string) string {
+	text = strings.TrimSpace(text)
+	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
+	if text == "" || username == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		normalized := strings.ToLower(strings.TrimSpace(line))
+		if strings.Contains(normalized, "если вас интерес") &&
+			strings.Contains(normalized, "услуг") &&
+			strings.Contains(normalized, "обращ") {
+			lines[i] = "Если вас интересует какая-либо из услуг, обращайтесь: @" + username
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error {

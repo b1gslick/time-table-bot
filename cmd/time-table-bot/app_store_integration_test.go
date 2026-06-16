@@ -522,6 +522,52 @@ func TestAppStore_ServiceChangesUseSuperAdminView(t *testing.T) {
 	}
 }
 
+func TestAppStore_ProfileTextUsesSuperAdminView(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	app := newAppStore(db, repo, time.UTC)
+	super, err := repo.UpsertUser(ctx, 1001, "tim1106", "Super")
+	if err != nil {
+		t.Fatalf("UpsertUser super: %v", err)
+	}
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleSuperAdmin, super.ID); err != nil {
+		t.Fatalf("promote super: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetSuperAdminView(ctx, 1001, bot.SuperAdminView{Role: bot.RoleAdmin, AdminUsername: "master"}); err != nil {
+		t.Fatalf("SetSuperAdminView: %v", err)
+	}
+
+	if err := app.SetProfileText(ctx, 1001, "Target profile"); err != nil {
+		t.Fatalf("SetProfileText through view: %v", err)
+	}
+	got, err := app.GetProfileText(ctx, 1001)
+	if err != nil {
+		t.Fatalf("GetProfileText through view: %v", err)
+	}
+	if got != "Target profile" {
+		t.Fatalf("profile through view = %q, want Target profile", got)
+	}
+	var superProfiles int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_profiles WHERE user_id = $1", super.ID).Scan(&superProfiles); err != nil {
+		t.Fatalf("count super profiles: %v", err)
+	}
+	if superProfiles != 0 {
+		t.Fatalf("super profile rows = %d, want 0", superProfiles)
+	}
+}
+
 func TestAppStore_AddBookingForContactByIndexUsesSelectedServiceSlot(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
