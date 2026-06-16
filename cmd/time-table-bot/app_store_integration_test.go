@@ -212,6 +212,27 @@ func TestAppStore_CategoryOrderChangesServiceListNumbers(t *testing.T) {
 	if len(services) != 2 || services[0].Category != "Hair" || services[1].Category != "Nails" {
 		t.Fatalf("services = %#v, want Hair category first", services)
 	}
+
+	start := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		slotStart := start.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
+	slots, err := app.ListFreeSlotsForServicesRange(ctx, 2001, []int{1}, start.Add(-time.Hour), start.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListFreeSlotsForServicesRange: %v", err)
+	}
+	if len(slots) != 1 || len(slots[0].ServiceNames) != 1 || slots[0].ServiceNames[0] != "Short" {
+		t.Fatalf("slots = %#v, want first visible service Hair > Short", slots)
+	}
 }
 
 func TestAppStore_SuperAdminSeesAdminServicesCalendarsAndBookings(t *testing.T) {

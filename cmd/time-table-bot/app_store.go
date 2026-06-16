@@ -364,25 +364,27 @@ WHERE svc.is_active = TRUE
 	defer rows.Close()
 
 	var services []bot.ServiceView
-	var ids []int64
 	for rows.Next() {
 		var item bot.ServiceView
 		if err := rows.Scan(&item.ID, &item.AdminName, &item.Category, &item.Subcategory, &item.Name, &item.Description, &item.DurationMin, &item.PriceCents); err != nil {
 			return nil, err
 		}
 		services = append(services, item)
-		ids = append(ids, item.ID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	if telegramID > 0 {
-		_ = s.saveInt64sForUser(ctx, telegramID, "last_services", ids)
 	}
 	if hasTargetAdmin {
 		if order, err := s.categoryOrder(ctx, targetAdminID); err == nil && len(order) > 0 {
 			sortServicesByCategoryOrder(services, order)
 		}
+	}
+	if telegramID > 0 {
+		ids := make([]int64, 0, len(services))
+		for _, service := range services {
+			ids = append(ids, service.ID)
+		}
+		_ = s.saveInt64sForUser(ctx, telegramID, "last_services", ids)
 	}
 	return services, nil
 }
