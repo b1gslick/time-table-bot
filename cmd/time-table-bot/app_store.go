@@ -510,6 +510,7 @@ WHERE admin_user_id = $1 AND key = 'weekly_hours';
 			_ = s.repo.SetAdminSetting(ctx, adminID, "work_end", formatClockDuration(end))
 		}
 	}
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
 	return nil
 }
 
@@ -560,6 +561,7 @@ func (s *appStore) SetWeeklyHours(ctx context.Context, adminTelegramID int64, ho
 		_ = s.repo.SetAdminSetting(ctx, adminID, "work_start", firstStart)
 		_ = s.repo.SetAdminSetting(ctx, adminID, "work_end", firstEnd)
 	}
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
 	return nil
 }
 
@@ -571,7 +573,11 @@ func (s *appStore) SetSessionDuration(ctx context.Context, adminTelegramID int64
 	if err != nil {
 		return err
 	}
-	return s.repo.SetAdminSetting(ctx, adminID, "session_duration", fmt.Sprintf("%d", durationMin))
+	if err := s.repo.SetAdminSetting(ctx, adminID, "session_duration", fmt.Sprintf("%d", durationMin)); err != nil {
+		return err
+	}
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
+	return nil
 }
 
 func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, req bot.GenerateScheduleRequest) (bot.GenerateScheduleResult, error) {
@@ -642,6 +648,7 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 			}
 		}
 	}
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
 	return result, nil
 }
 
@@ -742,8 +749,7 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3;
 	if err != nil {
 		return bot.DeleteScheduleResult{}, err
 	}
-	_ = s.clearSettingForAdminID(ctx, adminID, "last_free_slots")
-	_ = s.clearSettingForAdminID(ctx, adminID, "last_availability_slots")
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
 	return bot.DeleteScheduleResult{Deleted: int(affected)}, nil
 }
 
@@ -780,8 +786,7 @@ WHERE s.admin_user_id = $1
 	if err != nil {
 		return bot.BlockDateResult{}, err
 	}
-	_ = s.clearSettingForAdminID(ctx, adminID, "last_free_slots")
-	_ = s.clearSettingForAdminID(ctx, adminID, "last_availability_slots")
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
 	return bot.BlockDateResult{Date: day, ClosedSlots: int(affected)}, nil
 }
 
@@ -2636,6 +2641,14 @@ func (s *appStore) clearSettingForAdminID(ctx context.Context, adminID int64, ke
 DELETE FROM admin_settings
 WHERE admin_user_id = $1 AND key = $2;
 `, adminID, key)
+	return err
+}
+
+func (s *appStore) clearScheduleCacheForAdminID(ctx context.Context, adminID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+DELETE FROM admin_settings
+WHERE admin_user_id = $1 AND key IN ('last_free_slots', 'last_availability_slots');
+`, adminID)
 	return err
 }
 

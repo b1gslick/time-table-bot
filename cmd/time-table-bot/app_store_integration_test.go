@@ -724,6 +724,12 @@ func TestAppStore_ScheduleChangesUseSuperAdminView(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetWeeklyHours through view: %v", err)
 	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "last_free_slots", `["stale"]`); err != nil {
+		t.Fatalf("seed last_free_slots: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "last_availability_slots", `[{"stale":true}]`); err != nil {
+		t.Fatalf("seed last_availability_slots: %v", err)
+	}
 
 	result, err := app.GenerateSchedule(ctx, 1001, bot.GenerateScheduleRequest{
 		Month:  time.Date(2026, 6, 1, 0, 0, 0, 0, loc),
@@ -748,6 +754,17 @@ func TestAppStore_ScheduleChangesUseSuperAdminView(t *testing.T) {
 	}
 	if superSlots != 0 {
 		t.Fatalf("super slots = %d, want 0", superSlots)
+	}
+	var staleCache int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM admin_settings
+WHERE admin_user_id = $1 AND key IN ('last_free_slots', 'last_availability_slots')
+`, admin.ID).Scan(&staleCache); err != nil {
+		t.Fatalf("count stale schedule cache: %v", err)
+	}
+	if staleCache != 0 {
+		t.Fatalf("stale schedule cache rows = %d, want 0", staleCache)
 	}
 
 	deleteResult, err := app.DeleteScheduleMonth(ctx, 1001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
