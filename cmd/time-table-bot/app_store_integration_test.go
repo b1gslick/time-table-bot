@@ -689,6 +689,76 @@ func TestAppStore_DeleteServiceAndScheduleMonth(t *testing.T) {
 	}
 }
 
+func TestAppStore_ScheduleChangesUseSuperAdminView(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	super, err := repo.UpsertUser(ctx, 1001, "tim1106", "Super")
+	if err != nil {
+		t.Fatalf("UpsertUser super: %v", err)
+	}
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleSuperAdmin, super.ID); err != nil {
+		t.Fatalf("promote super: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetSuperAdminView(ctx, 1001, bot.SuperAdminView{Role: bot.RoleAdmin, AdminUsername: "master"}); err != nil {
+		t.Fatalf("SetSuperAdminView: %v", err)
+	}
+	if err := app.SetSessionDuration(ctx, 1001, 15); err != nil {
+		t.Fatalf("SetSessionDuration through view: %v", err)
+	}
+	if err := app.SetWeeklyHours(ctx, 1001, []bot.WeekdayHours{
+		{Weekday: time.Thursday, Working: true, Start: "13:00", End: "14:00"},
+	}); err != nil {
+		t.Fatalf("SetWeeklyHours through view: %v", err)
+	}
+
+	result, err := app.GenerateSchedule(ctx, 1001, bot.GenerateScheduleRequest{
+		Month:  time.Date(2026, 6, 1, 0, 0, 0, 0, loc),
+		Months: 1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchedule through view: %v", err)
+	}
+	if result.Created == 0 {
+		t.Fatal("created slots = 0, want target admin slots")
+	}
+
+	var adminSlots, superSlots int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schedule_slots WHERE admin_user_id = $1", admin.ID).Scan(&adminSlots); err != nil {
+		t.Fatalf("count admin slots: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schedule_slots WHERE admin_user_id = $1", super.ID).Scan(&superSlots); err != nil {
+		t.Fatalf("count super slots: %v", err)
+	}
+	if adminSlots != result.Created {
+		t.Fatalf("admin slots = %d, want created %d", adminSlots, result.Created)
+	}
+	if superSlots != 0 {
+		t.Fatalf("super slots = %d, want 0", superSlots)
+	}
+
+	deleteResult, err := app.DeleteScheduleMonth(ctx, 1001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("DeleteScheduleMonth through view: %v", err)
+	}
+	if deleteResult.Deleted != result.Created {
+		t.Fatalf("deleted slots = %d, want %d", deleteResult.Deleted, result.Created)
+	}
+}
+
 func TestAppStore_AdminScheduleReminderAndMissingMonthNotice(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

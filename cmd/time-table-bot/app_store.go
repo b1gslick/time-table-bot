@@ -488,7 +488,7 @@ func masterServicesText(text, username string) string {
 }
 
 func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
 	}
@@ -514,7 +514,7 @@ WHERE admin_user_id = $1 AND key = 'weekly_hours';
 }
 
 func (s *appStore) SetWeeklyHours(ctx context.Context, adminTelegramID int64, hours []bot.WeekdayHours) error {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
 	}
@@ -567,7 +567,7 @@ func (s *appStore) SetSessionDuration(ctx context.Context, adminTelegramID int64
 	if durationMin <= 0 {
 		return store.ErrInvalidArgument
 	}
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return err
 	}
@@ -575,7 +575,7 @@ func (s *appStore) SetSessionDuration(ctx context.Context, adminTelegramID int64
 }
 
 func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, req bot.GenerateScheduleRequest) (bot.GenerateScheduleResult, error) {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return bot.GenerateScheduleResult{}, err
 	}
@@ -722,7 +722,7 @@ func (s *appStore) weeklyScheduleRules(ctx context.Context, adminID int64) (map[
 }
 
 func (s *appStore) DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (bot.DeleteScheduleResult, error) {
-	adminID, err := s.userIDByTelegram(ctx, adminTelegramID)
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
 		return bot.DeleteScheduleResult{}, err
 	}
@@ -742,8 +742,8 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3;
 	if err != nil {
 		return bot.DeleteScheduleResult{}, err
 	}
-	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_free_slots")
-	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	_ = s.clearSettingForAdminID(ctx, adminID, "last_free_slots")
+	_ = s.clearSettingForAdminID(ctx, adminID, "last_availability_slots")
 	return bot.DeleteScheduleResult{Deleted: int(affected)}, nil
 }
 
@@ -780,8 +780,8 @@ WHERE s.admin_user_id = $1
 	if err != nil {
 		return bot.BlockDateResult{}, err
 	}
-	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_free_slots")
-	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	_ = s.clearSettingForAdminID(ctx, adminID, "last_free_slots")
+	_ = s.clearSettingForAdminID(ctx, adminID, "last_availability_slots")
 	return bot.BlockDateResult{Date: day, ClosedSlots: int(affected)}, nil
 }
 
@@ -2628,10 +2628,14 @@ func (s *appStore) clearSettingForUser(ctx context.Context, telegramID int64, ke
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	return s.clearSettingForAdminID(ctx, userID, key)
+}
+
+func (s *appStore) clearSettingForAdminID(ctx context.Context, adminID int64, key string) error {
+	_, err := s.db.ExecContext(ctx, `
 DELETE FROM admin_settings
 WHERE admin_user_id = $1 AND key = $2;
-`, userID, key)
+`, adminID, key)
 	return err
 }
 
