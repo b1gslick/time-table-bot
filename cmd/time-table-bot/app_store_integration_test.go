@@ -470,6 +470,83 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
 	}
 }
 
+func TestAppStore_GenerateScheduleForSpecificDateClearsAvailabilityCache(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	loc := time.UTC
+	app := newAppStore(db, repo, loc)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "session_duration", "30"); err != nil {
+		t.Fatalf("set session_duration: %v", err)
+	}
+	if err := repo.SetAdminSetting(ctx, client.ID, "last_availability_slots", `[{"stale":true}]`); err != nil {
+		t.Fatalf("seed client availability cache: %v", err)
+	}
+
+	day := time.Date(2026, 6, 15, 0, 0, 0, 0, loc)
+	result, err := app.GenerateSchedule(ctx, 2001, bot.GenerateScheduleRequest{
+		Date:     day,
+		DayStart: 10 * time.Hour,
+		DayEnd:   11 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchedule date: %v", err)
+	}
+	if result.Created != 2 || result.Skipped != 0 {
+		t.Fatalf("result = %+v, want 2 created and 0 skipped", result)
+	}
+
+	result, err = app.GenerateSchedule(ctx, 2001, bot.GenerateScheduleRequest{
+		Date:        day,
+		DayStart:    10 * time.Hour,
+		DayEnd:      11 * time.Hour,
+		DurationMin: 30,
+	})
+	if err != nil {
+		t.Fatalf("GenerateSchedule date duplicate: %v", err)
+	}
+	if result.Created != 0 || result.Skipped != 2 {
+		t.Fatalf("duplicate result = %+v, want 0 created and 2 skipped", result)
+	}
+
+	var slots, staleCache int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM schedule_slots
+WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
+`, admin.ID, day, day.AddDate(0, 0, 1)).Scan(&slots); err != nil {
+		t.Fatalf("count day slots: %v", err)
+	}
+	if slots != 2 {
+		t.Fatalf("day slots = %d, want 2", slots)
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM admin_settings
+WHERE key IN ('last_free_slots', 'last_availability_slots') OR key LIKE 'last_move_availability:%'
+`).Scan(&staleCache); err != nil {
+		t.Fatalf("count stale cache: %v", err)
+	}
+	if staleCache != 0 {
+		t.Fatalf("stale cache rows = %d, want 0", staleCache)
+	}
+}
+
 func TestAppStore_ServiceChangesUseSuperAdminView(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

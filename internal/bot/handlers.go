@@ -41,6 +41,8 @@ const (
 	conversationStepSetDuration = "admin_set_duration"
 	conversationStepGenMonth    = "admin_generate_month"
 	conversationStepGenMonths   = "admin_generate_months"
+	conversationStepGenDayRange = "admin_generate_day_range"
+	conversationStepGenDayStep  = "admin_generate_day_step"
 	conversationStepDeleteMonth = "admin_delete_month"
 	conversationStepAdminAdd    = "super_admin_add"
 	conversationStepAdminRemove = "super_admin_remove"
@@ -1191,11 +1193,39 @@ func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord
 	if len(parts) < 2 {
 		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMonth}, "generate_ask_month", nil)
 	}
+	req := GenerateScheduleRequest{Months: 1}
+	if date, err := time.Parse("2006-01-02", parts[1]); err == nil {
+		if len(parts) < 3 {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
+		}
+		start, end, err := parseDayRange(parts[2])
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_bad_time"))
+		}
+		if end <= start {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_bad_range"))
+		}
+		req.Date = date
+		req.DayStart = start
+		req.DayEnd = end
+		if len(parts) >= 4 {
+			duration, err := strconv.Atoi(parts[3])
+			if err != nil || duration <= 0 {
+				return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
+			}
+			req.DurationMin = duration
+		}
+		result, err := b.store.GenerateSchedule(ctx, actor.TelegramID, req)
+		if err != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "generate_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(actor.Language, "generate_ok", result.Created, result.Skipped))
+	}
 	monthStart, err := time.Parse(monthLayout, parts[1])
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "generate_usage"))
 	}
-	req := GenerateScheduleRequest{Month: monthStart, Months: 1}
+	req.Month = monthStart
 	if len(parts) == 3 {
 		months, err := strconv.Atoi(parts[2])
 		if err != nil || months <= 0 {

@@ -585,7 +585,7 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 	if err != nil {
 		return bot.GenerateScheduleResult{}, err
 	}
-	if req.Month.IsZero() {
+	if req.Month.IsZero() && req.Date.IsZero() {
 		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
 	}
 	if req.DurationMin <= 0 {
@@ -602,6 +602,42 @@ func (s *appStore) GenerateSchedule(ctx context.Context, adminTelegramID int64, 
 	}
 	if req.Months > 12 {
 		return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+	}
+
+	if !req.Date.IsZero() {
+		if req.DayEnd <= req.DayStart {
+			return bot.GenerateScheduleResult{}, store.ErrInvalidArgument
+		}
+		day := dateOnlyLocal(req.Date, s.loc)
+		blocked, err := s.blockedDateSet(ctx, adminID)
+		if err != nil {
+			return bot.GenerateScheduleResult{}, err
+		}
+		var result bot.GenerateScheduleResult
+		if !blocked[day.Format("2006-01-02")] {
+			for offset := req.DayStart; offset+time.Duration(req.DurationMin)*time.Minute <= req.DayEnd; offset += time.Duration(req.DurationMin) * time.Minute {
+				start := day.Add(offset)
+				if _, err := s.slotIDByAdminStart(ctx, adminID, start); err == nil {
+					result.Skipped++
+					continue
+				} else if !errors.Is(err, store.ErrNotFound) {
+					return result, err
+				}
+				_, err := s.repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+					AdminUserID: adminID,
+					StartAt:     start,
+					EndAt:       start.Add(time.Duration(req.DurationMin) * time.Minute),
+					Capacity:    1,
+					Status:      domain.SlotStatusOpen,
+				})
+				if err != nil {
+					return result, err
+				}
+				result.Created++
+			}
+		}
+		_ = s.clearScheduleCacheForAdminID(ctx, adminID)
+		return result, nil
 	}
 
 	rules, err := s.scheduleRules(ctx, adminID, req)
@@ -2645,10 +2681,14 @@ WHERE admin_user_id = $1 AND key = $2;
 }
 
 func (s *appStore) clearScheduleCacheForAdminID(ctx context.Context, adminID int64) error {
+	if adminID <= 0 {
+		return store.ErrInvalidArgument
+	}
 	_, err := s.db.ExecContext(ctx, `
 DELETE FROM admin_settings
-WHERE admin_user_id = $1 AND key IN ('last_free_slots', 'last_availability_slots');
-`, adminID)
+WHERE key IN ('last_free_slots', 'last_availability_slots')
+   OR key LIKE 'last_move_availability:%';
+`)
 	return err
 }
 

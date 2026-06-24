@@ -119,6 +119,7 @@ type SuperAdminView struct {
 
 type GenerateScheduleRequest struct {
 	Month       time.Time
+	Date        time.Time
 	Months      int
 	Weekdays    []time.Weekday
 	DayStart    time.Duration
