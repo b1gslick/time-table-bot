@@ -1523,7 +1523,7 @@ func chooseSlotDayForPeriod(slots []AvailabilitySlot, currentDay, period string)
 }
 
 func moveSlotDay(slots []AvailabilitySlot, currentDay, _ string, direction string) string {
-	minDay, maxDay, ok := slotDayRange(slots)
+	minDay, ok := firstSlotDay(slots)
 	if !ok {
 		return ""
 	}
@@ -1540,43 +1540,36 @@ func moveSlotDay(slots []AvailabilitySlot, currentDay, _ string, direction strin
 	case "next":
 		day = day.AddDate(0, 0, 1)
 	}
-	return clampDayString(day.Format("2006-01-02"), minDay, maxDay)
+	return clampMinDayString(day.Format("2006-01-02"), minDay)
 }
 
 func clampSlotDay(slots []AvailabilitySlot, day string) string {
-	minDay, maxDay, ok := slotDayRange(slots)
+	minDay, ok := firstSlotDay(slots)
 	if !ok {
 		return ""
 	}
-	return clampDayString(day, minDay, maxDay)
+	return clampMinDayString(day, minDay)
 }
 
-func clampDayString(day, minDay, maxDay string) string {
+func clampMinDayString(day, minDay string) string {
 	if day == "" || day < minDay {
 		return minDay
-	}
-	if day > maxDay {
-		return maxDay
 	}
 	return day
 }
 
-func slotDayRange(slots []AvailabilitySlot) (string, string, bool) {
+func firstSlotDay(slots []AvailabilitySlot) (string, bool) {
 	if len(slots) == 0 {
-		return "", "", false
+		return "", false
 	}
 	minDay := slots[0].StartAt.Format("2006-01-02")
-	maxDay := minDay
 	for _, slot := range slots[1:] {
 		day := slot.StartAt.Format("2006-01-02")
 		if day < minDay {
 			minDay = day
 		}
-		if day > maxDay {
-			maxDay = day
-		}
 	}
-	return minDay, maxDay, true
+	return minDay, true
 }
 
 func slotDaysForPeriod(slots []AvailabilitySlot, period string) []string {

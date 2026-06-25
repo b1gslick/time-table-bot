@@ -172,6 +172,10 @@ func TestSlotBrowserMovesByCalendarDayAndHasBack(t *testing.T) {
 	if nextDay != "2026-06-27" {
 		t.Fatalf("next day = %q, want calendar day 2026-06-27", nextDay)
 	}
+	afterLastSlotDay := moveSlotDay(slots, "2026-07-01", "morning", "next")
+	if afterLastSlotDay != "2026-07-02" {
+		t.Fatalf("day after last slot day = %q, want calendar day 2026-07-02", afterLastSlotDay)
+	}
 	text, kb, next := renderSlotBrowser(LangRU, ConversationState{
 		SlotDay:    nextDay,
 		SlotPeriod: "morning",
