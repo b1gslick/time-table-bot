@@ -127,6 +127,36 @@ func TestParseDateListRejectsBadDate(t *testing.T) {
 	}
 }
 
+func TestResetSlotBrowserStateClearsStaleDay(t *testing.T) {
+	slots := []AvailabilitySlot{
+		{
+			StartAt: time.Date(2026, 7, 3, 9, 30, 0, 0, time.Local),
+			EndAt:   time.Date(2026, 7, 3, 10, 0, 0, 0, time.Local),
+		},
+		{
+			StartAt: time.Date(2026, 7, 4, 9, 30, 0, 0, time.Local),
+			EndAt:   time.Date(2026, 7, 4, 10, 0, 0, 0, time.Local),
+		},
+	}
+	state := resetSlotBrowserState(ConversationState{
+		Step:               conversationStepSlot,
+		SlotDay:            "2026-07-01",
+		SlotPeriod:         "day",
+		VisibleSlotIndexes: []int{10},
+	})
+
+	text, _, next := renderSlotBrowser(LangRU, state, slots)
+	if next.SlotDay != "2026-07-03" {
+		t.Fatalf("SlotDay = %q, want first available day 2026-07-03; text: %s", next.SlotDay, text)
+	}
+	if next.SlotPeriod != "morning" {
+		t.Fatalf("SlotPeriod = %q, want morning", next.SlotPeriod)
+	}
+	if len(next.VisibleSlotIndexes) != 1 || next.VisibleSlotIndexes[0] != 1 {
+		t.Fatalf("VisibleSlotIndexes = %#v, want [1]", next.VisibleSlotIndexes)
+	}
+}
+
 func TestNormalizePhone(t *testing.T) {
 	tests := map[string]string{
 		"+357 99 999999": "+35799999999",

@@ -184,6 +184,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") {
 		return b.handleSlotBrowseCallback(ctx, cb)
 	}
+	if strings.HasPrefix(cb.Data, "time:") {
+		return b.handleTimeChoiceCallback(ctx, cb)
+	}
 	if cb.Data == "my:list" {
 		return b.handleMyBookingsCallback(ctx, cb)
 	}
@@ -284,6 +287,26 @@ func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.Callbac
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "conversation_failed"))
 	}
 	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, text, kb)
+}
+
+func (b *Bot) handleTimeChoiceCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	state, err := b.store.GetConversationState(ctx, current.TelegramID)
+	if errors.Is(err, store.ErrNotFound) {
+		return b.handleBookingStart(ctx, cb.Message.Chat.ID, current)
+	}
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "conversation_failed"))
+	}
+	text, ok := callbackText(cb.Data)
+	if !ok {
+		b.logger.Printf("unknown time callback data user=%d data=%q", cb.From.ID, cb.Data)
+		return nil
+	}
+	return b.conversationTimeChoice(ctx, cb.Message.Chat.ID, current, state, text)
 }
 
 func (b *Bot) handleCancelBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {

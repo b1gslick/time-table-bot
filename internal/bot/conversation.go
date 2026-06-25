@@ -220,6 +220,7 @@ func (b *Bot) conversationMore(ctx context.Context, chatID int64, user UserRecor
 func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
 	normalized := normalizeChoice(text)
 	if normalized == "nearest" {
+		state = resetSlotBrowserState(state)
 		now := time.Now()
 		slots, err := b.store.ListFreeSlotsForServicesRange(ctx, user.TelegramID, state.ServiceIndexes, now, now.AddDate(0, 0, 7))
 		if err != nil {
@@ -230,6 +231,7 @@ func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user Use
 		return b.showInteractiveSlots(ctx, chatID, user, state, slots)
 	}
 	if normalized == "dates" {
+		state = resetSlotBrowserState(state)
 		state.Step = conversationStepDates
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 			b.logger.Printf("conversation dates choice: save state failed user=%d: %v", user.TelegramID, err)
@@ -238,6 +240,13 @@ func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user Use
 		return b.sendText(ctx, chatID, tr(user.Language, "ask_dates"))
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "ask_time_choice"), timeChoiceKeyboard(user.Language))
+}
+
+func resetSlotBrowserState(state ConversationState) ConversationState {
+	state.SlotDay = ""
+	state.SlotPeriod = ""
+	state.VisibleSlotIndexes = nil
+	return state
 }
 
 func (b *Bot) conversationDates(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
