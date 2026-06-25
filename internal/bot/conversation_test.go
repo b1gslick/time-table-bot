@@ -157,6 +157,47 @@ func TestResetSlotBrowserStateClearsStaleDay(t *testing.T) {
 	}
 }
 
+func TestSlotBrowserMovesByCalendarDayAndHasBack(t *testing.T) {
+	slots := []AvailabilitySlot{
+		{
+			StartAt: time.Date(2026, 6, 26, 9, 30, 0, 0, time.Local),
+			EndAt:   time.Date(2026, 6, 26, 10, 0, 0, 0, time.Local),
+		},
+		{
+			StartAt: time.Date(2026, 7, 1, 9, 30, 0, 0, time.Local),
+			EndAt:   time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local),
+		},
+	}
+	nextDay := moveSlotDay(slots, "2026-06-26", "morning", "next")
+	if nextDay != "2026-06-27" {
+		t.Fatalf("next day = %q, want calendar day 2026-06-27", nextDay)
+	}
+	text, kb, next := renderSlotBrowser(LangRU, ConversationState{
+		SlotDay:    nextDay,
+		SlotPeriod: "morning",
+	}, slots)
+	if next.SlotDay != "2026-06-27" {
+		t.Fatalf("rendered SlotDay = %q, want 2026-06-27; text: %s", next.SlotDay, text)
+	}
+	if len(next.VisibleSlotIndexes) != 0 {
+		t.Fatalf("VisibleSlotIndexes = %#v, want empty day", next.VisibleSlotIndexes)
+	}
+	if !strings.Contains(text, "На выбранный период") {
+		t.Fatalf("text = %q, want empty day message", text)
+	}
+	foundBack := false
+	for _, row := range kb.InlineKeyboard {
+		for _, button := range row {
+			if button.CallbackData == "back:slot" {
+				foundBack = true
+			}
+		}
+	}
+	if !foundBack {
+		t.Fatalf("keyboard = %#v, want back:slot button", kb)
+	}
+}
+
 func TestNormalizePhone(t *testing.T) {
 	tests := map[string]string{
 		"+357 99 999999": "+35799999999",

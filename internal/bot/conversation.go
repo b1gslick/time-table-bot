@@ -1452,11 +1452,8 @@ func renderSlotBrowser(lang string, state ConversationState, slots []Availabilit
 	if state.SlotDay == "" {
 		state.SlotDay = chooseSlotDayForPeriod(slots, "", state.SlotPeriod)
 	}
+	state.SlotDay = clampSlotDay(slots, state.SlotDay)
 	visible := visibleSlotsForDayPeriod(slots, state.SlotDay, state.SlotPeriod)
-	if len(visible) == 0 {
-		state.SlotDay = chooseSlotDayForPeriod(slots, state.SlotDay, state.SlotPeriod)
-		visible = visibleSlotsForDayPeriod(slots, state.SlotDay, state.SlotPeriod)
-	}
 	state.VisibleSlotIndexes = make([]int, 0, len(visible))
 
 	var sb strings.Builder
@@ -1525,29 +1522,61 @@ func chooseSlotDayForPeriod(slots []AvailabilitySlot, currentDay, period string)
 	return days[0]
 }
 
-func moveSlotDay(slots []AvailabilitySlot, currentDay, period, direction string) string {
-	days := slotDaysForPeriod(slots, period)
-	if len(days) == 0 {
+func moveSlotDay(slots []AvailabilitySlot, currentDay, _ string, direction string) string {
+	minDay, maxDay, ok := slotDayRange(slots)
+	if !ok {
 		return ""
 	}
-	idx := 0
-	for i, day := range days {
-		if day == currentDay {
-			idx = i
-			break
+	day, err := time.Parse("2006-01-02", currentDay)
+	if err != nil {
+		day, err = time.Parse("2006-01-02", minDay)
+		if err != nil {
+			return ""
 		}
 	}
 	switch direction {
 	case "prev":
-		if idx > 0 {
-			idx--
-		}
+		day = day.AddDate(0, 0, -1)
 	case "next":
-		if idx < len(days)-1 {
-			idx++
+		day = day.AddDate(0, 0, 1)
+	}
+	return clampDayString(day.Format("2006-01-02"), minDay, maxDay)
+}
+
+func clampSlotDay(slots []AvailabilitySlot, day string) string {
+	minDay, maxDay, ok := slotDayRange(slots)
+	if !ok {
+		return ""
+	}
+	return clampDayString(day, minDay, maxDay)
+}
+
+func clampDayString(day, minDay, maxDay string) string {
+	if day == "" || day < minDay {
+		return minDay
+	}
+	if day > maxDay {
+		return maxDay
+	}
+	return day
+}
+
+func slotDayRange(slots []AvailabilitySlot) (string, string, bool) {
+	if len(slots) == 0 {
+		return "", "", false
+	}
+	minDay := slots[0].StartAt.Format("2006-01-02")
+	maxDay := minDay
+	for _, slot := range slots[1:] {
+		day := slot.StartAt.Format("2006-01-02")
+		if day < minDay {
+			minDay = day
+		}
+		if day > maxDay {
+			maxDay = day
 		}
 	}
-	return days[idx]
+	return minDay, maxDay, true
 }
 
 func slotDaysForPeriod(slots []AvailabilitySlot, period string) []string {
@@ -1616,6 +1645,9 @@ func slotBrowserKeyboard(lang string, count int) *telegram.ReplyMarkup {
 	rows = append(rows, []telegram.InlineKeyboardButton{
 		{Text: tr(lang, "slot_prev_day"), CallbackData: "slotday:prev"},
 		{Text: tr(lang, "slot_next_day"), CallbackData: "slotday:next"},
+	})
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		{Text: tr(lang, "button_back"), CallbackData: "back:slot"},
 	})
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
