@@ -158,6 +158,7 @@ type ConversationState struct {
 	VisibleSlotIndexes    []int          `json:"visible_slot_indexes,omitempty"`
 	WeekdayIndex          int            `json:"weekday_index,omitempty"`
 	WeeklyHours           []WeekdayHours `json:"weekly_hours,omitempty"`
+	GenerateMode          string         `json:"generate_mode,omitempty"`
 	GenerateWeekdays      []time.Weekday `json:"generate_weekdays,omitempty"`
 }
 

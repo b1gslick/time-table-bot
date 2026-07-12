@@ -36,6 +36,23 @@ func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
 	if got := menuButtonAction(LangEN, "Календарь"); got != "menu_calendar" {
 		t.Fatalf("russian label in en mode action = %q", got)
 	}
+	scheduleKeyboard := scheduleMenuKeyboard(LangRU)
+	if got := scheduleKeyboard.Keyboard[1][0].Text; got != "Изменить расписание" {
+		t.Fatalf("schedule change button = %q", got)
+	}
+	changeKeyboard := scheduleChangeKeyboard(LangRU)
+	if got := changeKeyboard.Keyboard[0][0].Text; got != "Сгенерировать месяц" {
+		t.Fatalf("generate month button = %q", got)
+	}
+	if got := menuButtonAction(LangRU, "Изменить расписание"); got != "action_schedule_change" {
+		t.Fatalf("schedule change action = %q", got)
+	}
+	if got := menuButtonAction(LangEN, "Изменить один день"); got != "action_generate_day" {
+		t.Fatalf("cross-language generate day action = %q", got)
+	}
+	if mode, ok := parseGenerateMode(LangRU, "4"); !ok || mode != "weekday" {
+		t.Fatalf("parseGenerateMode = %q, %v; want weekday, true", mode, ok)
+	}
 }
 
 func TestViewAdminKeyboardCallback(t *testing.T) {

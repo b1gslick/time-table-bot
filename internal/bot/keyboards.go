@@ -83,9 +83,18 @@ func servicesMenuKeyboard(lang string) *telegram.ReplyMarkup {
 
 func scheduleMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
+		{tr(lang, "button_action_calendar"), tr(lang, "button_action_free")},
+		{tr(lang, "button_action_schedule_change"), tr(lang, "button_action_block_date")},
 		{tr(lang, "button_action_set_hours"), tr(lang, "button_action_set_duration")},
-		{tr(lang, "button_action_generate"), tr(lang, "button_action_calendar")},
-		{tr(lang, "button_action_block_date"), tr(lang, "button_action_delete_month")},
+		{tr(lang, "button_back")},
+	})
+}
+
+func scheduleChangeKeyboard(lang string) *telegram.ReplyMarkup {
+	return menuKeyboard([][]string{
+		{tr(lang, "button_action_generate_month"), tr(lang, "button_action_generate_months")},
+		{tr(lang, "button_action_generate_day"), tr(lang, "button_action_generate_weekday")},
+		{tr(lang, "button_action_delete_month")},
 		{tr(lang, "button_back")},
 	})
 }

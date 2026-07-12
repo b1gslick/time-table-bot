@@ -39,8 +39,10 @@ const (
 	conversationStepSetHours         = "admin_set_hours"
 	conversationStepSetHoursDay      = "admin_set_hours_day"
 	conversationStepSetDuration      = "admin_set_duration"
+	conversationStepGenMode          = "admin_generate_mode"
 	conversationStepGenMonth         = "admin_generate_month"
 	conversationStepGenMonths        = "admin_generate_months"
+	conversationStepGenWeekdays      = "admin_generate_weekdays"
 	conversationStepGenDayRange      = "admin_generate_day_range"
 	conversationStepGenDayStep       = "admin_generate_day_step"
 	conversationStepGenWeekdaysRange = "admin_generate_weekdays_range"
@@ -583,8 +585,18 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleBlockDate(ctx, chatID, user, []string{"/block_day"})
 	case "action_set_duration":
 		return true, b.handleSetDuration(ctx, chatID, user, []string{"/setduration"})
+	case "action_schedule_change":
+		return true, b.beginGenerateMode(ctx, chatID, user)
 	case "action_generate":
-		return true, b.handleGenerate(ctx, chatID, user, []string{"/generate"})
+		return true, b.beginGenerateMode(ctx, chatID, user)
+	case "action_generate_month":
+		return true, b.beginScheduleGenerateFlow(ctx, chatID, user, "month")
+	case "action_generate_months":
+		return true, b.beginScheduleGenerateFlow(ctx, chatID, user, "months")
+	case "action_generate_day":
+		return true, b.beginScheduleGenerateFlow(ctx, chatID, user, "day")
+	case "action_generate_weekday":
+		return true, b.beginScheduleGenerateFlow(ctx, chatID, user, "weekday")
 	case "action_delete_month":
 		return true, b.handleScheduleDelete(ctx, chatID, user, []string{"/calendar_delete"})
 	case "action_set_profile":
@@ -648,7 +660,12 @@ func menuButtonAction(lang, text string) string {
 		{"action_set_hours", "button_action_set_hours"},
 		{"action_block_date", "button_action_block_date"},
 		{"action_set_duration", "button_action_set_duration"},
+		{"action_schedule_change", "button_action_schedule_change"},
 		{"action_generate", "button_action_generate"},
+		{"action_generate_month", "button_action_generate_month"},
+		{"action_generate_months", "button_action_generate_months"},
+		{"action_generate_day", "button_action_generate_day"},
+		{"action_generate_weekday", "button_action_generate_weekday"},
 		{"action_delete_month", "button_action_delete_month"},
 		{"action_set_profile", "button_action_set_profile"},
 		{"action_lang_ru", "button_action_lang_ru"},
@@ -1216,7 +1233,7 @@ func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 2 {
-		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMonth}, "generate_ask_month", nil)
+		return b.beginGenerateMode(ctx, chatID, actor)
 	}
 	req := GenerateScheduleRequest{Months: 1}
 	if date, err := time.Parse("2006-01-02", parts[1]); err == nil {
@@ -1285,6 +1302,24 @@ func (b *Bot) handleGenerate(ctx context.Context, chatID int64, actor UserRecord
 		return b.sendText(ctx, chatID, tr(actor.Language, "generate_failed"))
 	}
 	return b.sendText(ctx, chatID, tr(actor.Language, "generate_ok", result.Created, result.Skipped))
+}
+
+func (b *Bot) beginGenerateMode(ctx context.Context, chatID int64, actor UserRecord) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMode}, "generate_ask_mode", scheduleChangeKeyboard(actor.Language))
+}
+
+func (b *Bot) beginScheduleGenerateFlow(ctx context.Context, chatID int64, actor UserRecord, mode string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	messageKey := "generate_ask_month_only"
+	if mode == "day" {
+		messageKey = "generate_ask_day"
+	}
+	return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMonth, GenerateMode: mode}, messageKey, nil)
 }
 
 func (b *Bot) handleScheduleDelete(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
