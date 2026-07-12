@@ -440,8 +440,19 @@ func TestAppStore_GenerateScheduleForMultipleMonths(t *testing.T) {
 		t.Fatalf("set session_duration: %v", err)
 	}
 
+	pastMonth := time.Date(2026, 6, 1, 0, 0, 0, 0, loc)
+	futureMonth := time.Now().In(loc).AddDate(0, 2, 0)
+	futureMonth = time.Date(futureMonth.Year(), futureMonth.Month(), 1, 0, 0, 0, 0, loc)
+	nextFutureMonth := futureMonth.AddDate(0, 1, 0)
+
+	if _, err := app.GenerateSchedule(ctx, 2001, bot.GenerateScheduleRequest{
+		Month:  pastMonth,
+		Months: 1,
+	}); err != nil {
+		t.Fatalf("GenerateSchedule past month: %v", err)
+	}
 	result, err := app.GenerateSchedule(ctx, 2001, bot.GenerateScheduleRequest{
-		Month:  time.Date(2026, 6, 1, 0, 0, 0, 0, loc),
+		Month:  futureMonth,
 		Months: 2,
 	})
 	if err != nil {
@@ -451,39 +462,46 @@ func TestAppStore_GenerateScheduleForMultipleMonths(t *testing.T) {
 		t.Fatalf("created slots = 0, want slots for two months")
 	}
 
-	var juneSlots, julySlots int
+	var futureSlots, nextFutureSlots int
 	if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*)
 FROM schedule_slots
 WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
-`, admin.ID, time.Date(2026, 6, 1, 0, 0, 0, 0, loc), time.Date(2026, 7, 1, 0, 0, 0, 0, loc)).Scan(&juneSlots); err != nil {
-		t.Fatalf("count june slots: %v", err)
+`, admin.ID, futureMonth, nextFutureMonth).Scan(&futureSlots); err != nil {
+		t.Fatalf("count future month slots: %v", err)
 	}
 	if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*)
 FROM schedule_slots
 WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
-`, admin.ID, time.Date(2026, 7, 1, 0, 0, 0, 0, loc), time.Date(2026, 8, 1, 0, 0, 0, 0, loc)).Scan(&julySlots); err != nil {
-		t.Fatalf("count july slots: %v", err)
+`, admin.ID, nextFutureMonth, nextFutureMonth.AddDate(0, 1, 0)).Scan(&nextFutureSlots); err != nil {
+		t.Fatalf("count next future month slots: %v", err)
 	}
-	if juneSlots == 0 || julySlots == 0 {
-		t.Fatalf("juneSlots=%d julySlots=%d, want both months filled", juneSlots, julySlots)
+	if futureSlots == 0 || nextFutureSlots == 0 {
+		t.Fatalf("futureSlots=%d nextFutureSlots=%d, want both future months filled", futureSlots, nextFutureSlots)
 	}
 	months, err := app.ListScheduleMonths(ctx, 2001)
 	if err != nil {
 		t.Fatalf("ListScheduleMonths: %v", err)
 	}
-	if len(months) != 2 || months[0].Month.Format("2006-01") != "2026-06" || months[1].Month.Format("2006-01") != "2026-07" {
-		t.Fatalf("months = %#v, want 2026-06 and 2026-07", months)
+	if len(months) != 2 || !months[0].Month.Equal(futureMonth) || !months[1].Month.Equal(nextFutureMonth) {
+		t.Fatalf("months = %#v, want %s and %s", months, futureMonth.Format("2006-01"), nextFutureMonth.Format("2006-01"))
 	}
-	days, err := app.ListScheduleDays(ctx, 2001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	pastDays, err := app.ListScheduleDays(ctx, 2001, pastMonth)
+	if err != nil {
+		t.Fatalf("ListScheduleDays past: %v", err)
+	}
+	if len(pastDays) != 0 {
+		t.Fatalf("past days = %#v, want none", pastDays)
+	}
+	days, err := app.ListScheduleDays(ctx, 2001, futureMonth)
 	if err != nil {
 		t.Fatalf("ListScheduleDays: %v", err)
 	}
-	if len(days) == 0 || days[0].Date.Format("2006-01-02") != "2026-06-01" {
-		t.Fatalf("days = %#v, want generated June days", days)
+	if len(days) == 0 || days[0].Date.Before(dateOnlyLocal(time.Now().In(loc), loc)) {
+		t.Fatalf("days = %#v, want future generated days", days)
 	}
-	weekdays, err := app.ListScheduleWeekdays(ctx, 2001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	weekdays, err := app.ListScheduleWeekdays(ctx, 2001, futureMonth)
 	if err != nil {
 		t.Fatalf("ListScheduleWeekdays: %v", err)
 	}

@@ -804,14 +804,16 @@ func (s *appStore) ListScheduleMonths(ctx context.Context, adminTelegramID int64
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().In(s.loc)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT date_trunc('month', start_at AT TIME ZONE $2)::date AS month,
+SELECT date_trunc('month', start_at AT TIME ZONE $3)::date AS month,
        COUNT(*) AS slot_count
 FROM schedule_slots
 WHERE admin_user_id = $1
+  AND start_at >= $2
 GROUP BY month
 ORDER BY month ASC;
-`, adminID, s.loc.String())
+`, adminID, now, s.loc.String())
 	if err != nil {
 		return nil, err
 	}
@@ -841,6 +843,10 @@ func (s *appStore) ListScheduleDays(ctx context.Context, adminTelegramID int64, 
 	}
 	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
 	to := from.AddDate(0, 1, 0)
+	from = maxTime(from, time.Now().In(s.loc))
+	if !from.Before(to) {
+		return []bot.ScheduleDay{}, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT date_trunc('day', start_at AT TIME ZONE $4)::date AS day,
        COUNT(*) AS slot_count
