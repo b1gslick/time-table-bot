@@ -27,6 +27,16 @@ func TestParseWeekdays(t *testing.T) {
 			raw:  "6-7",
 			want: []time.Weekday{time.Saturday, time.Sunday},
 		},
+		{
+			name: "russian full plural",
+			raw:  "четверги",
+			want: []time.Weekday{time.Thursday},
+		},
+		{
+			name: "russian full list",
+			raw:  "среда,пятницы",
+			want: []time.Weekday{time.Wednesday, time.Friday},
+		},
 	}
 
 	for _, tt := range tests {

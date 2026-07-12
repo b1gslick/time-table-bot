@@ -10,13 +10,6 @@ import (
 func parseWeekdays(raw string) ([]time.Weekday, error) {
 	raw = strings.ToLower(strings.TrimSpace(raw))
 	raw = strings.ReplaceAll(raw, " ", "")
-	raw = strings.ReplaceAll(raw, "пн", "mon")
-	raw = strings.ReplaceAll(raw, "вт", "tue")
-	raw = strings.ReplaceAll(raw, "ср", "wed")
-	raw = strings.ReplaceAll(raw, "чт", "thu")
-	raw = strings.ReplaceAll(raw, "пт", "fri")
-	raw = strings.ReplaceAll(raw, "сб", "sat")
-	raw = strings.ReplaceAll(raw, "вс", "sun")
 
 	if strings.Contains(raw, "-") && !strings.Contains(raw, ",") {
 		parts := strings.Split(raw, "-")
@@ -54,19 +47,19 @@ func parseWeekdays(raw string) ([]time.Weekday, error) {
 
 func parseWeekday(raw string) (time.Weekday, bool) {
 	switch raw {
-	case "mon", "monday", "1":
+	case "mon", "monday", "1", "пн", "понедельник", "понедельники":
 		return time.Monday, true
-	case "tue", "tuesday", "2":
+	case "tue", "tuesday", "2", "вт", "вторник", "вторники":
 		return time.Tuesday, true
-	case "wed", "wednesday", "3":
+	case "wed", "wednesday", "3", "ср", "среда", "среды":
 		return time.Wednesday, true
-	case "thu", "thursday", "4":
+	case "thu", "thursday", "4", "чт", "четверг", "четверги":
 		return time.Thursday, true
-	case "fri", "friday", "5":
+	case "fri", "friday", "5", "пт", "пятница", "пятницы":
 		return time.Friday, true
-	case "sat", "saturday", "6":
+	case "sat", "saturday", "6", "сб", "суббота", "субботы":
 		return time.Saturday, true
-	case "sun", "sunday", "7":
+	case "sun", "sunday", "7", "вс", "воскресенье", "воскресенья":
 		return time.Sunday, true
 	default:
 		return time.Sunday, false

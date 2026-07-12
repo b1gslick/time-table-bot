@@ -75,6 +75,10 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationGenerateDayRange(ctx, chatID, user, state, text)
 	case conversationStepGenDayStep:
 		return true, b.conversationGenerateDayStep(ctx, chatID, user, state, text)
+	case conversationStepGenWeekdaysRange:
+		return true, b.conversationGenerateWeekdaysRange(ctx, chatID, user, state, text)
+	case conversationStepGenWeekdaysStep:
+		return true, b.conversationGenerateWeekdaysStep(ctx, chatID, user, state, text)
 	case conversationStepDeleteMonth:
 		return true, b.conversationDeleteScheduleMonth(ctx, chatID, user, text)
 	case conversationStepAdminAdd:
@@ -684,10 +688,23 @@ func (b *Bot) conversationGenerateMonths(ctx context.Context, chatID int64, user
 	value := strings.TrimSpace(text)
 	if value != "" && value != "-" {
 		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed <= 0 {
-			return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_months"))
+		if err == nil {
+			if parsed <= 0 {
+				return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_months"))
+			}
+			months = parsed
+		} else {
+			days, err := parseWeekdays(value)
+			if err != nil {
+				return b.sendText(ctx, chatID, tr(user.Language, "generate_bad_days"))
+			}
+			state.GenerateWeekdays = days
+			state.Step = conversationStepGenWeekdaysRange
+			if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+				return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+			}
+			return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_weekdays_range"))
 		}
-		months = parsed
 	}
 	monthStart, err := time.Parse(monthLayout, state.ServiceName)
 	if err != nil {
@@ -695,6 +712,68 @@ func (b *Bot) conversationGenerateMonths(ctx context.Context, chatID int64, user
 		return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_month"))
 	}
 	result, err := b.store.GenerateSchedule(ctx, user.TelegramID, GenerateScheduleRequest{Month: monthStart, Months: months})
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_failed"))
+	}
+	_ = b.store.ClearConversationState(ctx, user.TelegramID)
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "generate_ok", result.Created, result.Skipped), keyboardForUser(user))
+}
+
+func (b *Bot) conversationGenerateWeekdaysRange(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	start, end, err := parseDayRange(strings.TrimSpace(text))
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_bad_time"))
+	}
+	if end <= start {
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_bad_range"))
+	}
+	state.FromDateTime = strings.TrimSpace(text)
+	state.Step = conversationStepGenWeekdaysStep
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_day_step"))
+}
+
+func (b *Bot) conversationGenerateWeekdaysStep(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	monthStart, err := time.Parse(monthLayout, state.ServiceName)
+	if err != nil {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_month"))
+	}
+	if len(state.GenerateWeekdays) == 0 {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_bad_days"))
+	}
+	start, end, err := parseDayRange(state.FromDateTime)
+	if err != nil || end <= start {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "generate_ask_weekdays_range"))
+	}
+	duration := 0
+	value := strings.TrimSpace(text)
+	if value != "" && value != "-" {
+		duration, err = strconv.Atoi(value)
+		if err != nil || duration <= 0 {
+			return b.sendText(ctx, chatID, tr(user.Language, "duration_bad"))
+		}
+	}
+	result, err := b.store.GenerateSchedule(ctx, user.TelegramID, GenerateScheduleRequest{
+		Month:       monthStart,
+		Months:      1,
+		Weekdays:    state.GenerateWeekdays,
+		DayStart:    start,
+		DayEnd:      end,
+		DurationMin: duration,
+	})
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "generate_failed"))
 	}
