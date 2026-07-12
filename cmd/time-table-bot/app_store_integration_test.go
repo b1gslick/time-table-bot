@@ -469,6 +469,27 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3
 	if juneSlots == 0 || julySlots == 0 {
 		t.Fatalf("juneSlots=%d julySlots=%d, want both months filled", juneSlots, julySlots)
 	}
+	months, err := app.ListScheduleMonths(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListScheduleMonths: %v", err)
+	}
+	if len(months) != 2 || months[0].Month.Format("2006-01") != "2026-06" || months[1].Month.Format("2006-01") != "2026-07" {
+		t.Fatalf("months = %#v, want 2026-06 and 2026-07", months)
+	}
+	days, err := app.ListScheduleDays(ctx, 2001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("ListScheduleDays: %v", err)
+	}
+	if len(days) == 0 || days[0].Date.Format("2006-01-02") != "2026-06-01" {
+		t.Fatalf("days = %#v, want generated June days", days)
+	}
+	weekdays, err := app.ListScheduleWeekdays(ctx, 2001, time.Date(2026, 6, 1, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("ListScheduleWeekdays: %v", err)
+	}
+	if len(weekdays) != 1 || weekdays[0].Weekday != time.Monday {
+		t.Fatalf("weekdays = %#v, want Monday only", weekdays)
+	}
 }
 
 func TestAppStore_GenerateScheduleForSpecificDateClearsAvailabilityCache(t *testing.T) {

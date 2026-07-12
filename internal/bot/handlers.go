@@ -42,6 +42,7 @@ const (
 	conversationStepGenMode          = "admin_generate_mode"
 	conversationStepGenMonth         = "admin_generate_month"
 	conversationStepGenMonths        = "admin_generate_months"
+	conversationStepGenDay           = "admin_generate_day"
 	conversationStepGenWeekdays      = "admin_generate_weekdays"
 	conversationStepGenDayRange      = "admin_generate_day_range"
 	conversationStepGenDayStep       = "admin_generate_day_step"
@@ -1315,11 +1316,33 @@ func (b *Bot) beginScheduleGenerateFlow(ctx context.Context, chatID int64, actor
 	if !isAdmin(actor.Role) {
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
-	messageKey := "generate_ask_month_only"
-	if mode == "day" {
-		messageKey = "generate_ask_day"
+	return b.beginGeneratedMonthConversation(ctx, chatID, actor, mode)
+}
+
+func (b *Bot) beginGeneratedMonthConversation(ctx context.Context, chatID int64, actor UserRecord, mode string) error {
+	months, err := b.store.ListScheduleMonths(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("list schedule months failed admin=%d mode=%s: %v", actor.TelegramID, mode, err)
+		months = nil
 	}
-	return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMonth, GenerateMode: mode}, messageKey, nil)
+	messageKey := "generate_ask_month_pick"
+	if len(months) == 0 {
+		messageKey = "generate_ask_no_months"
+	}
+	return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepGenMonth, GenerateMode: mode}, messageKey, scheduleMonthsKeyboard(actor.Language, months))
+}
+
+func (b *Bot) beginDeleteMonthConversation(ctx context.Context, chatID int64, actor UserRecord) error {
+	months, err := b.store.ListScheduleMonths(ctx, actor.TelegramID)
+	if err != nil {
+		b.logger.Printf("list schedule months for delete failed admin=%d: %v", actor.TelegramID, err)
+		months = nil
+	}
+	messageKey := "schedule_delete_ask_month"
+	if len(months) == 0 {
+		messageKey = "schedule_delete_empty"
+	}
+	return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepDeleteMonth}, messageKey, scheduleMonthsKeyboard(actor.Language, months))
 }
 
 func (b *Bot) handleScheduleDelete(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
@@ -1327,7 +1350,7 @@ func (b *Bot) handleScheduleDelete(ctx context.Context, chatID int64, actor User
 		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
 	}
 	if len(parts) < 2 {
-		return b.beginConversation(ctx, chatID, actor, ConversationState{Step: conversationStepDeleteMonth}, "schedule_delete_ask_month", nil)
+		return b.beginDeleteMonthConversation(ctx, chatID, actor)
 	}
 	monthStart, err := time.Parse(monthLayout, parts[1])
 	if err != nil {

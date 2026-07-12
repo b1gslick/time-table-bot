@@ -3,6 +3,7 @@ package bot
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"time-table-bot/internal/telegram"
 )
@@ -97,6 +98,93 @@ func scheduleChangeKeyboard(lang string) *telegram.ReplyMarkup {
 		{tr(lang, "button_action_delete_month")},
 		{tr(lang, "button_back")},
 	})
+}
+
+func scheduleMonthsKeyboard(lang string, months []ScheduleMonth) *telegram.ReplyMarkup {
+	if len(months) == 0 {
+		return menuKeyboard([][]string{{tr(lang, "button_back")}})
+	}
+	var rows [][]string
+	for i := 0; i < len(months); i += 3 {
+		var row []string
+		for j := i; j < len(months) && j < i+3; j++ {
+			row = append(row, months[j].Month.Format(monthLayout))
+		}
+		rows = append(rows, row)
+	}
+	rows = append(rows, []string{tr(lang, "button_back")})
+	return menuKeyboard(rows)
+}
+
+func scheduleDaysKeyboard(lang string, days []ScheduleDay) *telegram.ReplyMarkup {
+	if len(days) == 0 {
+		return menuKeyboard([][]string{{tr(lang, "button_back")}})
+	}
+	var rows [][]string
+	for i := 0; i < len(days); i += 4 {
+		var row []string
+		for j := i; j < len(days) && j < i+4; j++ {
+			row = append(row, days[j].Date.Format("2006-01-02"))
+		}
+		rows = append(rows, row)
+	}
+	rows = append(rows, []string{tr(lang, "button_back")})
+	return menuKeyboard(rows)
+}
+
+func scheduleWeekdaysKeyboard(lang string, weekdays []ScheduleWeekday) *telegram.ReplyMarkup {
+	if len(weekdays) == 0 {
+		return menuKeyboard([][]string{{tr(lang, "button_back")}})
+	}
+	var rows [][]string
+	for i := 0; i < len(weekdays); i += 3 {
+		var row []string
+		for j := i; j < len(weekdays) && j < i+3; j++ {
+			row = append(row, weekdayInputValue(lang, weekdays[j].Weekday))
+		}
+		rows = append(rows, row)
+	}
+	rows = append(rows, []string{tr(lang, "button_back")})
+	return menuKeyboard(rows)
+}
+
+func weekdayInputValue(lang string, weekday time.Weekday) string {
+	if lang == LangEN {
+		switch weekday {
+		case time.Monday:
+			return "mon"
+		case time.Tuesday:
+			return "tue"
+		case time.Wednesday:
+			return "wed"
+		case time.Thursday:
+			return "thu"
+		case time.Friday:
+			return "fri"
+		case time.Saturday:
+			return "sat"
+		case time.Sunday:
+			return "sun"
+		}
+	}
+	switch weekday {
+	case time.Monday:
+		return "пн"
+	case time.Tuesday:
+		return "вт"
+	case time.Wednesday:
+		return "ср"
+	case time.Thursday:
+		return "чт"
+	case time.Friday:
+		return "пт"
+	case time.Saturday:
+		return "сб"
+	case time.Sunday:
+		return "вс"
+	default:
+		return ""
+	}
 }
 
 func settingsMenuKeyboard(lang string) *telegram.ReplyMarkup {

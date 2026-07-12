@@ -97,6 +97,21 @@ type CalendarDay struct {
 	TotalSlots int
 }
 
+type ScheduleMonth struct {
+	Month     time.Time
+	SlotCount int
+}
+
+type ScheduleDay struct {
+	Date      time.Time
+	SlotCount int
+}
+
+type ScheduleWeekday struct {
+	Weekday   time.Weekday
+	SlotCount int
+}
+
 type WeekdayHours struct {
 	Weekday time.Weekday `json:"weekday"`
 	Working bool         `json:"working"`
@@ -188,6 +203,9 @@ type Store interface {
 	GenerateSchedule(ctx context.Context, adminTelegramID int64, req GenerateScheduleRequest) (GenerateScheduleResult, error)
 	DeleteScheduleMonth(ctx context.Context, adminTelegramID int64, monthStart time.Time) (DeleteScheduleResult, error)
 	BlockScheduleDate(ctx context.Context, adminTelegramID int64, date time.Time) (BlockDateResult, error)
+	ListScheduleMonths(ctx context.Context, adminTelegramID int64) ([]ScheduleMonth, error)
+	ListScheduleDays(ctx context.Context, adminTelegramID int64, monthStart time.Time) ([]ScheduleDay, error)
+	ListScheduleWeekdays(ctx context.Context, adminTelegramID int64, monthStart time.Time) ([]ScheduleWeekday, error)
 
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (BookingChangeResult, error)

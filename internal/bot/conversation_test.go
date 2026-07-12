@@ -44,6 +44,18 @@ func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
 	if got := changeKeyboard.Keyboard[0][0].Text; got != "Сгенерировать месяц" {
 		t.Fatalf("generate month button = %q", got)
 	}
+	monthsKeyboard := scheduleMonthsKeyboard(LangRU, []ScheduleMonth{{Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}})
+	if got := monthsKeyboard.Keyboard[0][0].Text; got != "2026-08" {
+		t.Fatalf("schedule month button = %q", got)
+	}
+	daysKeyboard := scheduleDaysKeyboard(LangRU, []ScheduleDay{{Date: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)}})
+	if got := daysKeyboard.Keyboard[0][0].Text; got != "2026-08-15" {
+		t.Fatalf("schedule day button = %q", got)
+	}
+	weekdaysKeyboard := scheduleWeekdaysKeyboard(LangRU, []ScheduleWeekday{{Weekday: time.Thursday}})
+	if got := weekdaysKeyboard.Keyboard[0][0].Text; got != "чт" {
+		t.Fatalf("schedule weekday button = %q", got)
+	}
 	if got := menuButtonAction(LangRU, "Изменить расписание"); got != "action_schedule_change" {
 		t.Fatalf("schedule change action = %q", got)
 	}

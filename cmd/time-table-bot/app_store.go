@@ -693,6 +693,16 @@ type scheduleRule struct {
 	End   time.Duration
 }
 
+var weeklyScheduleOrder = []time.Weekday{
+	time.Monday,
+	time.Tuesday,
+	time.Wednesday,
+	time.Thursday,
+	time.Friday,
+	time.Saturday,
+	time.Sunday,
+}
+
 func (s *appStore) scheduleRules(ctx context.Context, adminID int64, req bot.GenerateScheduleRequest) (map[time.Weekday]scheduleRule, error) {
 	if len(req.Weekdays) > 0 {
 		if req.DayEnd <= req.DayStart {
@@ -787,6 +797,98 @@ WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3;
 	}
 	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
 	return bot.DeleteScheduleResult{Deleted: int(affected)}, nil
+}
+
+func (s *appStore) ListScheduleMonths(ctx context.Context, adminTelegramID int64) ([]bot.ScheduleMonth, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT date_trunc('month', start_at AT TIME ZONE $2)::date AS month,
+       COUNT(*) AS slot_count
+FROM schedule_slots
+WHERE admin_user_id = $1
+GROUP BY month
+ORDER BY month ASC;
+`, adminID, s.loc.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []bot.ScheduleMonth
+	for rows.Next() {
+		var (
+			month time.Time
+			count int
+		)
+		if err := rows.Scan(&month, &count); err != nil {
+			return nil, err
+		}
+		out = append(out, bot.ScheduleMonth{
+			Month:     time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, s.loc),
+			SlotCount: count,
+		})
+	}
+	return out, rows.Err()
+}
+
+func (s *appStore) ListScheduleDays(ctx context.Context, adminTelegramID int64, monthStart time.Time) ([]bot.ScheduleDay, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return nil, err
+	}
+	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
+	to := from.AddDate(0, 1, 0)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT date_trunc('day', start_at AT TIME ZONE $4)::date AS day,
+       COUNT(*) AS slot_count
+FROM schedule_slots
+WHERE admin_user_id = $1
+  AND start_at >= $2
+  AND start_at < $3
+GROUP BY day
+ORDER BY day ASC;
+`, adminID, from, to, s.loc.String())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []bot.ScheduleDay
+	for rows.Next() {
+		var (
+			day   time.Time
+			count int
+		)
+		if err := rows.Scan(&day, &count); err != nil {
+			return nil, err
+		}
+		out = append(out, bot.ScheduleDay{
+			Date:      time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, s.loc),
+			SlotCount: count,
+		})
+	}
+	return out, rows.Err()
+}
+
+func (s *appStore) ListScheduleWeekdays(ctx context.Context, adminTelegramID int64, monthStart time.Time) ([]bot.ScheduleWeekday, error) {
+	days, err := s.ListScheduleDays(ctx, adminTelegramID, monthStart)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[time.Weekday]int)
+	for _, day := range days {
+		counts[day.Date.Weekday()] += day.SlotCount
+	}
+	out := make([]bot.ScheduleWeekday, 0, len(counts))
+	for _, weekday := range weeklyScheduleOrder {
+		if count := counts[weekday]; count > 0 {
+			out = append(out, bot.ScheduleWeekday{Weekday: weekday, SlotCount: count})
+		}
+	}
+	return out, nil
 }
 
 func (s *appStore) BlockScheduleDate(ctx context.Context, adminTelegramID int64, date time.Time) (bot.BlockDateResult, error) {
