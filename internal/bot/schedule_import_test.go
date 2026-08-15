@@ -75,3 +75,16 @@ func TestScheduleImportServicesCoverEveryRecognizedType(t *testing.T) {
 		t.Fatal("OCR spelling BOCK with a body zone must match the wax category")
 	}
 }
+
+func TestScheduleImportRejectsAmbiguousTariff(t *testing.T) {
+	services := []ServiceView{
+		{Category: "Электроэпиляция", Name: "До 30 мин", DurationMin: 30},
+		{Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
+	}
+	if scheduleImportServiceSelectionUnambiguous([]string{"электро"}, 0, []int{1}, services) {
+		t.Fatal("generic category must not select the first tariff")
+	}
+	if !scheduleImportServiceSelectionUnambiguous([]string{"электро 1 час"}, 60, []int{2}, services) {
+		t.Fatal("explicit duration must select the matching tariff")
+	}
+}

@@ -84,10 +84,16 @@ func TestQwenScheduleImportLive(t *testing.T) {
 		Now:      time.Date(2026, 8, 15, 15, 41, 0, 0, time.FixedZone("Europe/Nicosia", 3*60*60)),
 		Timezone: "Europe/Nicosia",
 		Services: []Service{
-			{Index: 1, Name: "Электроэпиляция", DurationMin: 60},
-			{Index: 2, Name: "Восковая эпиляция", DurationMin: 60},
-			{Index: 3, Name: "Бикини", DurationMin: 30},
-			{Index: 4, Name: "Подмышки", DurationMin: 30},
+			{Index: 1, Category: "Восковая депиляция", Name: "Бикини классика", DurationMin: 15},
+			{Index: 2, Category: "Восковая депиляция", Name: "Бикини глубокое", DurationMin: 30},
+			{Index: 3, Category: "Восковая депиляция", Name: "Лицо полностью", DurationMin: 15},
+			{Index: 4, Category: "Восковая депиляция", Name: "Ноги полностью", DurationMin: 30},
+			{Index: 5, Category: "Восковая депиляция", Name: "Руки полностью", DurationMin: 20},
+			{Index: 6, Category: "Электроэпиляция", Name: "До 30 мин", DurationMin: 30},
+			{Index: 7, Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
+			{Index: 8, Category: "Электроэпиляция", Name: "2 часа", DurationMin: 120},
+			{Index: 9, Category: "Эндосфера", Subcategory: "Разовая процедура", Name: "Только тело", DurationMin: 50},
+			{Index: 10, Category: "Эндосфера", Subcategory: "Разовая процедура", Name: "Тело и лицо", DurationMin: 65},
 		},
 	})
 	if err != nil {

@@ -140,6 +140,9 @@ func (b *Bot) evaluateScheduleImport(ctx context.Context, user UserRecord, draft
 		if len(item.Draft.ServiceIndexes) == 0 && item.Issue == "" {
 			item.Issue = tr(user.Language, "schedule_import_issue_service")
 		}
+		if item.Issue == "" && !scheduleImportServiceSelectionUnambiguous(item.Draft.ServiceQueries, item.Draft.DurationMin, item.Draft.ServiceIndexes, services) {
+			item.Issue = tr(user.Language, "schedule_import_issue_service")
+		}
 		if !adminBookingDurationMatches(item.Draft.ServiceIndexes, item.Draft.DurationMin, services) && item.Issue == "" {
 			item.Issue = tr(user.Language, "schedule_import_issue_duration")
 		}
@@ -326,6 +329,27 @@ func scheduleImportServicesCoverQuery(queries []string, indexes []int, services 
 		return false
 	}
 	return true
+}
+
+func scheduleImportServiceSelectionUnambiguous(queries []string, durationMin int, indexes []int, services []ServiceView) bool {
+	if len(indexes) != 1 {
+		return len(indexes) > 1
+	}
+	query := strings.Join(queries, " ")
+	bestScore, bestCount, selectedScore := 0, 0, 0
+	for i, service := range services {
+		score := serviceMatchScore(query, service, durationMin)
+		if i+1 == indexes[0] {
+			selectedScore = score
+		}
+		switch {
+		case score > bestScore:
+			bestScore, bestCount = score, 1
+		case score == bestScore && score > 0:
+			bestCount++
+		}
+	}
+	return selectedScore > 0 && selectedScore == bestScore && bestCount == 1
 }
 
 func scheduleImportKeyboard(lang string, canConfirm bool) *telegram.ReplyMarkup {
