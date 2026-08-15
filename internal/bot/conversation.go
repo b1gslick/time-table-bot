@@ -2328,15 +2328,16 @@ func parseDateList(text string, now time.Time) ([]time.Time, error) {
 }
 
 func parseUserDate(text string, now time.Time) (time.Time, error) {
+	loc := now.Location()
 	layouts := []string{"2006-01-02", "02.01.2006"}
 	for _, layout := range layouts {
-		if parsed, err := time.ParseInLocation(layout, text, time.Local); err == nil {
+		if parsed, err := time.ParseInLocation(layout, text, loc); err == nil {
 			return dateOnly(parsed), nil
 		}
 	}
-	parsed, err := time.ParseInLocation("02.01", text, time.Local)
+	parsed, err := time.ParseInLocation("02.01", text, loc)
 	if err == nil {
-		return time.Date(now.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.Local), nil
+		return time.Date(now.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, loc), nil
 	}
 	return time.Time{}, fmt.Errorf("bad date")
 }
