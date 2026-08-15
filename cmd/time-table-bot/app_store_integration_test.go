@@ -1177,6 +1177,7 @@ func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
 type fakeTelegramClient struct {
 	mu       sync.Mutex
 	messages []telegram.SendMessageRequest
+	photos   []telegram.SendPhotoRequest
 }
 
 func (f *fakeTelegramClient) GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]telegram.Update, error) {
@@ -1187,6 +1188,13 @@ func (f *fakeTelegramClient) SendMessage(ctx context.Context, reqBody telegram.S
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.messages = append(f.messages, reqBody)
+	return nil
+}
+
+func (f *fakeTelegramClient) SendPhoto(ctx context.Context, reqBody telegram.SendPhotoRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.photos = append(f.photos, reqBody)
 	return nil
 }
 

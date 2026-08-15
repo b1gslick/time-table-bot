@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"time"
@@ -86,6 +87,14 @@ type SendMessageRequest struct {
 	ReplyMarkup *ReplyMarkup `json:"reply_markup,omitempty"`
 }
 
+type SendPhotoRequest struct {
+	ChatID      int64        `json:"chat_id"`
+	PhotoName   string       `json:"photo_name,omitempty"`
+	Photo       []byte       `json:"-"`
+	Caption     string       `json:"caption,omitempty"`
+	ReplyMarkup *ReplyMarkup `json:"reply_markup,omitempty"`
+}
+
 type AnswerCallbackQueryRequest struct {
 	CallbackQueryID string `json:"callback_query_id"`
 	Text            string `json:"text,omitempty"`
@@ -145,6 +154,66 @@ func (c *Client) SendMessage(ctx context.Context, reqBody SendMessageRequest) er
 		return fmt.Errorf("telegram sendMessage error: %d %s", apiResp.ErrorCode, apiResp.Description)
 	}
 
+	return nil
+}
+
+func (c *Client) SendPhoto(ctx context.Context, reqBody SendPhotoRequest) error {
+	if len(reqBody.Photo) == 0 {
+		return fmt.Errorf("telegram sendPhoto error: empty photo")
+	}
+	if reqBody.PhotoName == "" {
+		reqBody.PhotoName = "schedule.png"
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("chat_id", fmt.Sprintf("%d", reqBody.ChatID)); err != nil {
+		return err
+	}
+	if reqBody.Caption != "" {
+		if err := writer.WriteField("caption", reqBody.Caption); err != nil {
+			return err
+		}
+	}
+	if reqBody.ReplyMarkup != nil {
+		data, err := json.Marshal(reqBody.ReplyMarkup)
+		if err != nil {
+			return err
+		}
+		if err := writer.WriteField("reply_markup", string(data)); err != nil {
+			return err
+		}
+	}
+	file, err := writer.CreateFormFile("photo", reqBody.PhotoName)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(reqBody.Photo); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sendPhoto", &body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var apiResp APIResponse[json.RawMessage]
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return err
+	}
+	if !apiResp.OK {
+		return fmt.Errorf("telegram sendPhoto error: %d %s", apiResp.ErrorCode, apiResp.Description)
+	}
 	return nil
 }
 

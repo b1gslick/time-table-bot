@@ -1371,6 +1371,73 @@ func calendarAdminSelect(showAdminNames bool) string {
 	return "''"
 }
 
+func (s *appStore) AdminSchedule(ctx context.Context, telegramID int64, from, to time.Time) ([]bot.ScheduleGridSlot, error) {
+	actor, err := s.GetUserByTelegramID(ctx, telegramID)
+	if err != nil {
+		return nil, err
+	}
+	if !isBotAdmin(actor.Role) {
+		return nil, store.ErrInvalidArgument
+	}
+	from = dateOnlyLocal(from, s.loc)
+	to = dateOnlyLocal(to, s.loc)
+	if !to.After(from) {
+		return nil, store.ErrInvalidArgument
+	}
+
+	showAdminNames := actor.Role == bot.RoleSuperAdmin && !isSuperAdminViewingAdmin(ctx, s, telegramID)
+	query := `
+SELECT ` + calendarAdminSelect(showAdminNames) + ` AS admin_name,
+       s.start_at,
+       s.end_at,
+       s.status,
+       s.capacity,
+       COUNT(b.id) FILTER (WHERE b.status = 'booked') AS booked,
+       COUNT(b.id) FILTER (WHERE b.status = 'blocked') AS blocked
+FROM schedule_slots s
+JOIN users a ON a.id = s.admin_user_id
+LEFT JOIN bookings b ON b.slot_id = s.id AND b.status IN ('booked', 'blocked')
+WHERE s.start_at >= $1
+  AND s.start_at < $2
+`
+	args := []any{from, to}
+	if actor.Role == bot.RoleAdmin {
+		args = append(args, telegramID)
+		query += fmt.Sprintf("  AND a.telegram_id = $%d\n", len(args))
+	} else if actor.Role == bot.RoleSuperAdmin {
+		if view, err := s.GetSuperAdminView(ctx, telegramID); err == nil && view.Role == bot.RoleAdmin && strings.TrimSpace(view.AdminUsername) != "" {
+			args = append(args, normalizeUsername(view.AdminUsername))
+			query += fmt.Sprintf("  AND a.username = $%d\n", len(args))
+		}
+	}
+	query += `
+GROUP BY admin_name, s.id, s.start_at, s.end_at, s.status, s.capacity
+ORDER BY admin_name ASC, s.start_at ASC;
+`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("admin schedule: %w", err)
+	}
+	defer rows.Close()
+
+	var out []bot.ScheduleGridSlot
+	for rows.Next() {
+		var item bot.ScheduleGridSlot
+		if err := rows.Scan(&item.AdminName, &item.StartAt, &item.EndAt, &item.Status, &item.Capacity, &item.Booked, &item.Blocked); err != nil {
+			return nil, err
+		}
+		item.StartAt = item.StartAt.In(s.loc)
+		item.EndAt = item.EndAt.In(s.loc)
+		item.Available = item.Capacity - item.Booked - item.Blocked
+		if item.Available < 0 {
+			item.Available = 0
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (s *appStore) listFreeSlotsForServices(ctx context.Context, telegramID int64, serviceIndexes []int, from, to time.Time, allowedDates map[string]bool) ([]bot.AvailabilitySlot, error) {
 	serviceIndexes = uniquePositiveInts(serviceIndexes)
 	if len(serviceIndexes) == 0 {

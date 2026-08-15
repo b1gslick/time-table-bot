@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"bytes"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -282,6 +284,65 @@ func TestFormatCalendarGroupsSuperAdminViewByAdmin(t *testing.T) {
 	}
 	if !strings.Contains(got, "01: свободно 0, записей 1") {
 		t.Fatalf("second day summary missing: %s", got)
+	}
+}
+
+func TestRenderScheduleWeekImageProducesPNG(t *testing.T) {
+	week := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
+	image, err := renderScheduleWeekImage(LangRU, week, []ScheduleGridSlot{
+		{
+			StartAt:   week.Add(10 * time.Hour),
+			EndAt:     week.Add(10*time.Hour + 30*time.Minute),
+			Status:    "open",
+			Capacity:  1,
+			Available: 1,
+		},
+		{
+			StartAt:  week.AddDate(0, 0, 1).Add(11 * time.Hour),
+			EndAt:    week.AddDate(0, 0, 1).Add(11*time.Hour + 30*time.Minute),
+			Status:   "open",
+			Capacity: 1,
+			Booked:   1,
+		},
+		{
+			StartAt:  week.AddDate(0, 0, 2).Add(12 * time.Hour),
+			EndAt:    week.AddDate(0, 0, 2).Add(12*time.Hour + 30*time.Minute),
+			Status:   "closed",
+			Capacity: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("renderScheduleWeekImage error: %v", err)
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(image))
+	if err != nil {
+		t.Fatalf("DecodeConfig error: %v", err)
+	}
+	if cfg.Width != scheduleImageWidth || cfg.Height < 1000 {
+		t.Fatalf("image size = %dx%d, want width %d and tall image", cfg.Width, cfg.Height, scheduleImageWidth)
+	}
+}
+
+func TestWeekNavigationKeyboardUsesAdjacentWeeks(t *testing.T) {
+	start := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
+	kb := weekNavigationKeyboard(LangRU, start)
+	if kb == nil || len(kb.InlineKeyboard) != 1 || len(kb.InlineKeyboard[0]) != 3 {
+		t.Fatalf("keyboard = %#v, want one row with three buttons", kb)
+	}
+	if got := kb.InlineKeyboard[0][0].CallbackData; got != "week:2026-06-15" {
+		t.Fatalf("prev callback = %q, want week:2026-06-15", got)
+	}
+	if got := kb.InlineKeyboard[0][2].CallbackData; got != "week:2026-06-29" {
+		t.Fatalf("next callback = %q, want week:2026-06-29", got)
+	}
+}
+
+func TestWeekStartUsesMonday(t *testing.T) {
+	sunday := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	got := weekStart(sunday)
+	want := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("weekStart = %s, want %s", got, want)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"time-table-bot/internal/nlu"
 	"time-table-bot/internal/telegram"
 )
 
@@ -95,6 +96,17 @@ type CalendarDay struct {
 	Blocked    int
 	Closed     int
 	TotalSlots int
+}
+
+type ScheduleGridSlot struct {
+	AdminName string
+	StartAt   time.Time
+	EndAt     time.Time
+	Status    string
+	Capacity  int
+	Booked    int
+	Blocked   int
+	Available int
 }
 
 type ScheduleMonth struct {
@@ -222,6 +234,7 @@ type Store interface {
 	ListCachedAvailability(ctx context.Context, telegramID int64) ([]AvailabilitySlot, error)
 	RequestMissingMonth(ctx context.Context, telegramID int64, monthStart time.Time) (bool, error)
 	AdminCalendar(ctx context.Context, telegramID int64, monthStart time.Time) ([]CalendarDay, error)
+	AdminSchedule(ctx context.Context, telegramID int64, from, to time.Time) ([]ScheduleGridSlot, error)
 	ListAdminBookingsRange(ctx context.Context, telegramID int64, from, to time.Time) ([]BookingView, error)
 	ListMyBookings(ctx context.Context, telegramID int64, from time.Time) ([]BookingView, error)
 	DeleteMyBookingByID(ctx context.Context, telegramID int64, bookingID int64) (BookingChangeResult, error)
@@ -240,6 +253,7 @@ type Store interface {
 type TelegramClient interface {
 	GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]telegram.Update, error)
 	SendMessage(ctx context.Context, reqBody telegram.SendMessageRequest) error
+	SendPhoto(ctx context.Context, reqBody telegram.SendPhotoRequest) error
 	AnswerCallbackQuery(ctx context.Context, reqBody telegram.AnswerCallbackQueryRequest) error
 }
 
@@ -248,6 +262,7 @@ type Bot struct {
 	store              Store
 	logger             *log.Logger
 	superAdminUsername string
+	bookingParser      nlu.BookingIntentParser
 }
 
 func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername ...string) *Bot {
@@ -264,6 +279,10 @@ func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername 
 		logger:             logger,
 		superAdminUsername: normalizeUsername(username),
 	}
+}
+
+func (b *Bot) SetBookingIntentParser(parser nlu.BookingIntentParser) {
+	b.bookingParser = parser
 }
 
 func (b *Bot) Run(ctx context.Context) error {

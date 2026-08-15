@@ -159,6 +159,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleBlock(ctx, msg.Chat.ID, current, parts)
 	case "/free", "/schedule":
 		return b.handleFree(ctx, msg.Chat.ID, current, parts)
+	case "/week", "/week_schedule":
+		return b.handleWeek(ctx, msg.Chat.ID, current, parts)
 	case "/calendar", "/cal":
 		return b.handleCalendar(ctx, msg.Chat.ID, current, parts)
 	case "/month", "/request_month":
@@ -172,6 +174,9 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 	default:
 		if !strings.HasPrefix(cmd, "/") {
 			if handled, err := b.handleConversation(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
+			if handled, err := b.handleNaturalBooking(ctx, msg.Chat.ID, current, text); handled {
 				return err
 			}
 		}
@@ -209,6 +214,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "moveslot:") {
 		return b.handleMyMoveSlotCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "week:") {
+		return b.handleWeekCallback(ctx, cb)
 	}
 	if cb.Data == "bookstart" {
 		return b.handleBookingStartCallback(ctx, cb)
@@ -556,6 +564,8 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_main_text"), keyboardForUser(user))
 	case "action_calendar":
 		return true, b.handleCalendar(ctx, chatID, user, []string{"/calendar"})
+	case "action_week":
+		return true, b.handleWeek(ctx, chatID, user, []string{"/week"})
 	case "action_free":
 		return true, b.handleFree(ctx, chatID, user, []string{"/schedule"})
 	case "action_book":
@@ -646,6 +656,7 @@ func menuButtonAction(lang, text string) string {
 		{"back", "button_back"},
 		{"main", "button_main"},
 		{"action_calendar", "button_action_calendar"},
+		{"action_week", "button_action_week"},
 		{"action_free", "button_action_free"},
 		{"action_book", "button_action_book"},
 		{"action_my", "button_action_my"},
@@ -1609,6 +1620,46 @@ func (b *Bot) handleCalendar(ctx context.Context, chatID int64, actor UserRecord
 	return b.sendText(ctx, chatID, formatCalendar(actor.Language, monthStart, days))
 }
 
+func (b *Bot) handleWeek(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
+	if !isAdmin(actor.Role) {
+		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
+	}
+	weekStart, err := parseWeekStart(parts)
+	if err != nil {
+		return b.sendText(ctx, chatID, tr(actor.Language, "week_usage"))
+	}
+	weekEnd := weekStart.AddDate(0, 0, 7)
+	slots, err := b.store.AdminSchedule(ctx, actor.TelegramID, weekStart, weekEnd)
+	if err != nil {
+		b.logger.Printf("week schedule failed user=%d role=%s from=%s: %v", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
+	}
+	b.logger.Printf("week schedule user=%d role=%s from=%s slots=%d", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), len(slots))
+	renderStart := weekStart
+	if len(slots) > 0 {
+		renderStart = dateOnly(weekStart.In(slots[0].StartAt.Location()))
+	}
+	image, err := renderScheduleWeekImage(actor.Language, renderStart, slots)
+	if err != nil {
+		b.logger.Printf("week schedule image failed user=%d from=%s: %v", actor.TelegramID, weekStart.Format("2006-01-02"), err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
+	}
+	return b.sendPhoto(ctx, chatID, image, scheduleWeekCaption(actor.Language, renderStart), weekNavigationKeyboard(actor.Language, renderStart))
+}
+
+func (b *Bot) handleWeekCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	raw := strings.TrimPrefix(cb.Data, "week:")
+	day, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "week_usage"))
+	}
+	return b.handleWeek(ctx, cb.Message.Chat.ID, current, []string{"/week", day.Format("2006-01-02")})
+}
+
 func (b *Bot) handleRequestMonth(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
 	if len(parts) < 2 {
 		return b.sendText(ctx, chatID, tr(actor.Language, "month_request_usage"))
@@ -1833,6 +1884,20 @@ func (b *Bot) sendTextWithKeyboard(ctx context.Context, chatID int64, text strin
 	return nil
 }
 
+func (b *Bot) sendPhoto(ctx context.Context, chatID int64, image []byte, caption string, kb *telegram.ReplyMarkup) error {
+	if err := b.tg.SendPhoto(ctx, telegram.SendPhotoRequest{
+		ChatID:      chatID,
+		PhotoName:   "schedule-week.png",
+		Photo:       image,
+		Caption:     caption,
+		ReplyMarkup: kb,
+	}); err != nil {
+		b.logger.Printf("send photo failed chat=%d: %v", chatID, err)
+		return err
+	}
+	return nil
+}
+
 func normalizeUsername(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "@")
@@ -1871,6 +1936,37 @@ func adminBookingsRange(parts []string) (time.Time, time.Time, time.Time, bool, 
 		day = dateOnly(parsed)
 	}
 	return day, day.AddDate(0, 0, 1), day, true, nil
+}
+
+func parseWeekStart(parts []string) (time.Time, error) {
+	now := dateOnly(time.Now())
+	if len(parts) < 2 {
+		return weekStart(now), nil
+	}
+	value := strings.ToLower(strings.TrimSpace(parts[1]))
+	switch value {
+	case "today", "сегодня":
+		return weekStart(now), nil
+	case "tomorrow", "завтра":
+		return weekStart(now.AddDate(0, 0, 1)), nil
+	case "next", "следующая", "след":
+		return weekStart(now.AddDate(0, 0, 7)), nil
+	case "prev", "previous", "прошлая", "пред":
+		return weekStart(now.AddDate(0, 0, -7)), nil
+	}
+	if parsed, err := parseUserDate(value, now); err == nil {
+		return weekStart(parsed), nil
+	}
+	return time.Time{}, errors.New("bad week date")
+}
+
+func weekStart(day time.Time) time.Time {
+	day = dateOnly(day)
+	weekday := int(day.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	return day.AddDate(0, 0, 1-weekday)
 }
 
 func formatAdminBookings(lang, header string, items []BookingView, limit int, includeDate bool) string {

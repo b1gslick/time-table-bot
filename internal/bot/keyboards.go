@@ -57,9 +57,20 @@ func menuKeyboard(rows [][]string) *telegram.ReplyMarkup {
 
 func calendarMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
-		{tr(lang, "button_action_calendar"), tr(lang, "button_action_free")},
+		{tr(lang, "button_action_week"), tr(lang, "button_action_calendar")},
+		{tr(lang, "button_action_free")},
 		{tr(lang, "button_back")},
 	})
+}
+
+func weekNavigationKeyboard(lang string, start time.Time) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: tr(lang, "week_prev"), CallbackData: "week:" + start.AddDate(0, 0, -7).Format("2006-01-02")},
+			{Text: tr(lang, "week_today"), CallbackData: "week:" + weekStart(time.Now()).Format("2006-01-02")},
+			{Text: tr(lang, "week_next"), CallbackData: "week:" + start.AddDate(0, 0, 7).Format("2006-01-02")},
+		},
+	}}
 }
 
 func bookingMenuKeyboard(lang string) *telegram.ReplyMarkup {

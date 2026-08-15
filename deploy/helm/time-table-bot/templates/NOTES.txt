@@ -4,6 +4,16 @@ Create secrets before install:
     --from-literal={{ .Values.env.telegramBotToken.secretKey }}='<telegram-bot-token>' \
     --from-literal={{ .Values.postgres.passwordSecret.key }}='<postgres-password>'
 
+Optional: add Qwen Cloud API key to enable natural-language booking:
+
+  kubectl create secret generic qwen-model-studio \
+    --from-literal=qwen-api-key='<qwen-api-key>'
+
+  helm upgrade --install {{ .Release.Name }} ./deploy/helm/time-table-bot \
+    --namespace {{ .Release.Namespace }} \
+    --set env.qwen.apiKey.secretName=qwen-model-studio \
+    --set env.qwen.apiKey.secretKey=qwen-api-key
+
 Optional: if you want to pass DATABASE_URL as a full secret value:
 
   kubectl create secret generic my-db-url-secret \

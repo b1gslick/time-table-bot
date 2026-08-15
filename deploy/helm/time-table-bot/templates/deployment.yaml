@@ -48,6 +48,19 @@ spec:
               value: {{ .Values.env.superAdminUsername | quote }}
             - name: TIMEZONE
               value: {{ .Values.env.timezone | quote }}
+            - name: QWEN_MODEL
+              value: {{ .Values.env.qwen.model | quote }}
+            {{- if .Values.env.qwen.baseUrl }}
+            - name: QWEN_BASE_URL
+              value: {{ .Values.env.qwen.baseUrl | quote }}
+            {{- end }}
+            {{- if .Values.env.qwen.apiKey.secretName }}
+            - name: QWEN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.env.qwen.apiKey.secretName }}
+                  key: {{ .Values.env.qwen.apiKey.secretKey }}
+            {{- end }}
             - name: POSTGRES_HOST
               value: {{ .Values.postgres.host | quote }}
             - name: POSTGRES_PORT

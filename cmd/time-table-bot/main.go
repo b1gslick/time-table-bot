@@ -13,6 +13,7 @@ import (
 
 	"time-table-bot/internal/bot"
 	"time-table-bot/internal/config"
+	"time-table-bot/internal/nlu"
 	"time-table-bot/internal/scheduler"
 	"time-table-bot/internal/store"
 	"time-table-bot/internal/telegram"
@@ -55,11 +56,24 @@ func main() {
 
 	appStore := newAppStore(db, repo, loc)
 	tg := telegram.NewClient(cfg.TelegramBotToken)
+	bookingBot := bot.New(tg, appStore, logger, cfg.SuperAdminUsername)
+	if cfg.QwenAPIKey != "" {
+		parser, err := nlu.NewQwenParser(nlu.QwenConfig{
+			APIKey:  cfg.QwenAPIKey,
+			BaseURL: cfg.QwenBaseURL,
+			Model:   cfg.QwenModel,
+		})
+		if err != nil {
+			logger.Fatalf("qwen nlu error: %v", err)
+		}
+		bookingBot.SetBookingIntentParser(parser)
+		logger.Printf("qwen nlu enabled model=%s", cfg.QwenModel)
+	}
 
 	svc := scheduler.New(appStore, telegramSender{client: tg}, loc, logger)
 	go svc.Start(ctx)
 	go func() {
-		if err := bot.New(tg, appStore, logger, cfg.SuperAdminUsername).Run(ctx); err != nil && ctx.Err() == nil {
+		if err := bookingBot.Run(ctx); err != nil && ctx.Err() == nil {
 			logger.Printf("bot stopped: %v", err)
 			cancel()
 		}
