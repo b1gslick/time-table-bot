@@ -18,6 +18,8 @@ type Config struct {
 	WhisperFFmpegPath  string
 	WhisperModelPath   string
 	WhisperThreads     int
+	TesseractCLIPath   string
+	TesseractLanguages string
 }
 
 func Load() (Config, error) {
@@ -33,6 +35,8 @@ func Load() (Config, error) {
 		WhisperFFmpegPath:  os.Getenv("WHISPER_FFMPEG_PATH"),
 		WhisperModelPath:   os.Getenv("WHISPER_MODEL_PATH"),
 		WhisperThreads:     envIntOrDefault("WHISPER_THREADS", 2),
+		TesseractCLIPath:   os.Getenv("TESSERACT_CLI_PATH"),
+		TesseractLanguages: envOrDefault("TESSERACT_LANGUAGES", "rus+eng"),
 	}
 
 	if cfg.TelegramBotToken == "" {

@@ -38,13 +38,17 @@ func TestMain(m *testing.M) {
 	if err := store.NewPostgresStore(db).ApplySchema(ctx); err != nil {
 		log.Printf("apply schema: %v", err)
 		_ = db.Close()
-		_ = container.Terminate(context.Background())
+		if container != nil {
+			_ = container.Terminate(context.Background())
+		}
 		os.Exit(1)
 	}
 
 	code := m.Run()
 	_ = db.Close()
-	_ = container.Terminate(context.Background())
+	if container != nil {
+		_ = container.Terminate(context.Background())
+	}
 	os.Exit(code)
 }
 
@@ -1239,6 +1243,17 @@ func openAppStorePostgresContainer(t *testing.T, ctx context.Context) *sql.DB {
 }
 
 func startAppStorePostgresContainer(ctx context.Context) (testcontainers.Container, *sql.DB, error) {
+	if dsn := os.Getenv("INTEGRATION_DATABASE_URL"); dsn != "" {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open integration db: %w", err)
+		}
+		if err := pingAppStorePostgres(ctx, db); err != nil {
+			_ = db.Close()
+			return nil, nil, err
+		}
+		return nil, db, nil
+	}
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},

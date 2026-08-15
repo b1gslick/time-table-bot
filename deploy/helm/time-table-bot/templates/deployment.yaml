@@ -75,6 +75,10 @@ spec:
               value: {{ .Values.env.whisper.ffmpegPath | quote }}
             - name: WHISPER_THREADS
               value: {{ .Values.env.whisper.threads | quote }}
+            - name: TESSERACT_CLI_PATH
+              value: {{ .Values.env.tesseract.cliPath | quote }}
+            - name: TESSERACT_LANGUAGES
+              value: {{ .Values.env.tesseract.languages | quote }}
             - name: POSTGRES_HOST
               value: {{ .Values.postgres.host | quote }}
             - name: POSTGRES_PORT

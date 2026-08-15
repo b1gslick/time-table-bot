@@ -45,7 +45,7 @@ FROM debian:bookworm-slim
 ARG WHISPER_MODEL=base-q5_1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+	&& apt-get install -y --no-install-recommends ca-certificates ffmpeg tesseract-ocr tesseract-ocr-eng tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -54,9 +54,11 @@ COPY --from=whisper-builder /build/source/build/bin/whisper-cli /usr/local/bin/w
 COPY --from=whisper-builder /build/ggml-${WHISPER_MODEL}.bin /models/ggml-${WHISPER_MODEL}.bin
 
 ENV WHISPER_CLI_PATH=/usr/local/bin/whisper-cli \
-    WHISPER_FFMPEG_PATH=/usr/bin/ffmpeg \
-    WHISPER_MODEL_PATH=/models/ggml-${WHISPER_MODEL}.bin \
-    WHISPER_THREADS=2
+	WHISPER_FFMPEG_PATH=/usr/bin/ffmpeg \
+	WHISPER_MODEL_PATH=/models/ggml-${WHISPER_MODEL}.bin \
+	WHISPER_THREADS=2 \
+	TESSERACT_CLI_PATH=/usr/bin/tesseract \
+	TESSERACT_LANGUAGES=rus+eng
 
 USER 65532:65532
 ENTRYPOINT ["/app/time-table-bot"]

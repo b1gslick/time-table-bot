@@ -47,3 +47,13 @@ type SpeechRequest struct {
 type SpeechRecognizer interface {
 	Transcribe(ctx context.Context, req SpeechRequest) (string, error)
 }
+
+type ImageTextRequest struct {
+	Image    []byte
+	MIMEType string
+	Language string
+}
+
+type ImageTextRecognizer interface {
+	RecognizeText(ctx context.Context, req ImageTextRequest) (string, error)
+}

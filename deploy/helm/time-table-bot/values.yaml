@@ -40,6 +40,9 @@ env:
     cliPath: /usr/local/bin/whisper-cli
     ffmpegPath: /usr/bin/ffmpeg
     threads: 2
+  tesseract:
+    cliPath: /usr/bin/tesseract
+    languages: rus+eng
 
 postgres:
   image: postgres:16

@@ -57,8 +57,9 @@ func main() {
 	appStore := newAppStore(db, repo, loc)
 	tg := telegram.NewClient(cfg.TelegramBotToken)
 	bookingBot := bot.New(tg, appStore, logger, cfg.SuperAdminUsername)
+	var qwenParser *nlu.QwenParser
 	if cfg.QwenAPIKey != "" {
-		parser, err := nlu.NewQwenParser(nlu.QwenConfig{
+		qwenParser, err = nlu.NewQwenParser(nlu.QwenConfig{
 			APIKey:  cfg.QwenAPIKey,
 			BaseURL: cfg.QwenBaseURL,
 			Model:   cfg.QwenModel,
@@ -66,7 +67,7 @@ func main() {
 		if err != nil {
 			logger.Fatalf("qwen nlu error: %v", err)
 		}
-		bookingBot.SetBookingIntentParser(parser)
+		bookingBot.SetBookingIntentParser(qwenParser)
 		logger.Printf("qwen nlu enabled model=%s", cfg.QwenModel)
 	}
 	if cfg.WhisperModelPath != "" {
@@ -81,6 +82,21 @@ func main() {
 		}
 		bookingBot.SetSpeechRecognizer(recognizer)
 		logger.Printf("whisper asr enabled model=%s threads=%d", cfg.WhisperModelPath, cfg.WhisperThreads)
+	}
+	if cfg.TesseractCLIPath != "" {
+		recognizer, err := nlu.NewTesseractRecognizer(nlu.TesseractConfig{
+			CLIPath:   cfg.TesseractCLIPath,
+			Languages: cfg.TesseractLanguages,
+		})
+		if err != nil {
+			logger.Fatalf("tesseract OCR error: %v", err)
+		}
+		var imageRecognizer nlu.ImageTextRecognizer = recognizer
+		if qwenParser != nil {
+			imageRecognizer = nlu.NewFallbackImageTextRecognizer(recognizer, qwenParser)
+		}
+		bookingBot.SetImageTextRecognizer(imageRecognizer)
+		logger.Printf("tesseract OCR enabled languages=%s", cfg.TesseractLanguages)
 	}
 
 	svc := scheduler.New(appStore, telegramSender{client: tg}, loc, logger)

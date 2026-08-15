@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -139,6 +140,17 @@ WHERE booking_id = $1 AND sent_at IS NULL;
 
 func openPostgresContainer(t *testing.T, ctx context.Context) *sql.DB {
 	t.Helper()
+	if dsn := os.Getenv("INTEGRATION_DATABASE_URL"); dsn != "" {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			t.Fatalf("open integration db: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatalf("ping integration db: %v", err)
+		}
+		return db
+	}
 	req := testcontainers.ContainerRequest{
 		Image:        "postgres:16-alpine",
 		ExposedPorts: []string{"5432/tcp"},

@@ -270,6 +270,7 @@ type Bot struct {
 	superAdminUsername string
 	bookingParser      nlu.BookingIntentParser
 	speechRecognizer   nlu.SpeechRecognizer
+	imageRecognizer    nlu.ImageTextRecognizer
 }
 
 func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername ...string) *Bot {
@@ -294,6 +295,10 @@ func (b *Bot) SetBookingIntentParser(parser nlu.BookingIntentParser) {
 
 func (b *Bot) SetSpeechRecognizer(recognizer nlu.SpeechRecognizer) {
 	b.speechRecognizer = recognizer
+}
+
+func (b *Bot) SetImageTextRecognizer(recognizer nlu.ImageTextRecognizer) {
+	b.imageRecognizer = recognizer
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -331,7 +336,7 @@ func (b *Bot) Run(ctx context.Context) error {
 				}
 				continue
 			}
-			if upd.Message != nil && (strings.TrimSpace(upd.Message.Text) != "" || upd.Message.Voice != nil || upd.Message.Audio != nil) {
+			if upd.Message != nil && (strings.TrimSpace(upd.Message.Text) != "" || upd.Message.Voice != nil || upd.Message.Audio != nil || len(upd.Message.Photo) > 0 || isImageDocument(upd.Message.Document)) {
 				if err := b.HandleMessage(ctx, upd.Message); err != nil {
 					b.logger.Printf("handleMessage error: %v", err)
 				}

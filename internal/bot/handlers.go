@@ -88,6 +88,9 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 	if msg.Voice != nil || msg.Audio != nil {
 		return b.handleSpeechMessage(ctx, msg, current)
 	}
+	if len(msg.Photo) > 0 || isImageDocument(msg.Document) {
+		return b.handleImageMessage(ctx, msg, current)
+	}
 
 	text := strings.TrimSpace(msg.Text)
 	parts := strings.Fields(text)
