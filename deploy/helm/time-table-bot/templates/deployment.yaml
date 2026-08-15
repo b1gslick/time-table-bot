@@ -67,6 +67,14 @@ spec:
                   name: {{ .Values.env.qwen.apiKey.secretName }}
                   key: {{ .Values.env.qwen.apiKey.secretKey }}
             {{- end }}
+            - name: WHISPER_MODEL_PATH
+              value: {{ .Values.env.whisper.modelPath | quote }}
+            - name: WHISPER_CLI_PATH
+              value: {{ .Values.env.whisper.cliPath | quote }}
+            - name: WHISPER_FFMPEG_PATH
+              value: {{ .Values.env.whisper.ffmpegPath | quote }}
+            - name: WHISPER_THREADS
+              value: {{ .Values.env.whisper.threads | quote }}
             - name: POSTGRES_HOST
               value: {{ .Values.postgres.host | quote }}
             - name: POSTGRES_PORT

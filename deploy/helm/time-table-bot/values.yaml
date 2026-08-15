@@ -35,6 +35,11 @@ env:
     apiKey:
       secretName: ""
       secretKey: QWEN_API_KEY
+  whisper:
+    modelPath: /models/ggml-base-q5_1.bin
+    cliPath: /usr/local/bin/whisper-cli
+    ffmpegPath: /usr/bin/ffmpeg
+    threads: 2
 
 postgres:
   image: postgres:16

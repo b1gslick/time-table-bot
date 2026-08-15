@@ -26,6 +26,10 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       SUPER_ADMIN_USERNAME: ${SUPER_ADMIN_USERNAME:-tim1106}
       TIMEZONE: ${TIMEZONE:-Europe/Nicosia}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3.7-plus}
+      WHISPER_THREADS: ${WHISPER_THREADS:-2}
     depends_on:
       postgres:
         condition: service_healthy

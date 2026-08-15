@@ -131,6 +131,41 @@ func TestMyBookingInlineKeyboards(t *testing.T) {
 	}
 }
 
+func TestBookingConfirmationKeyboard(t *testing.T) {
+	kb := bookingConfirmationKeyboard(LangRU)
+	if kb == nil || len(kb.InlineKeyboard) != 2 {
+		t.Fatalf("keyboard = %#v, want two rows", kb)
+	}
+	want := []string{"bookconfirm:yes", "bookconfirm:no", "bookconfirm:other"}
+	var got []string
+	for _, row := range kb.InlineKeyboard {
+		for _, button := range row {
+			got = append(got, button.CallbackData)
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("callbacks = %#v, want %#v", got, want)
+	}
+	if got := kb.InlineKeyboard[1][0].Text; got != "Найти другое" {
+		t.Fatalf("find another text = %q", got)
+	}
+}
+
+func TestNormalizeBookingConfirmationChoice(t *testing.T) {
+	tests := map[string]string{
+		"Да":           "yes",
+		"нет":          "no",
+		"Найти другое": "other",
+		"другое время": "other",
+		"Find another": "other",
+	}
+	for input, want := range tests {
+		if got := normalizeChoice(input); got != want {
+			t.Fatalf("normalizeChoice(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestParseDateList(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.Local)
 	got, err := parseDateList("2026-06-01, 03.06.2026, 04.06", now)
@@ -173,8 +208,12 @@ func TestResetSlotBrowserStateClearsStaleDay(t *testing.T) {
 		Step:               conversationStepSlot,
 		SlotDay:            "2026-07-01",
 		SlotPeriod:         "day",
+		PendingSlotIndex:   4,
 		VisibleSlotIndexes: []int{10},
 	})
+	if state.PendingSlotIndex != 0 {
+		t.Fatalf("PendingSlotIndex = %d, want 0", state.PendingSlotIndex)
+	}
 
 	text, _, next := renderSlotBrowser(LangRU, state, slots)
 	if next.SlotDay != "2026-07-03" {

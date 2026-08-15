@@ -180,6 +180,7 @@ type ConversationState struct {
 	ContactType           string         `json:"contact_type,omitempty"`
 	SlotDay               string         `json:"slot_day,omitempty"`
 	SlotPeriod            string         `json:"slot_period,omitempty"`
+	PendingSlotIndex      int            `json:"pending_slot_index,omitempty"`
 	ServiceIndexes        []int          `json:"service_indexes,omitempty"`
 	VisibleServiceIndexes []int          `json:"visible_service_indexes,omitempty"`
 	VisibleSlotIndexes    []int          `json:"visible_slot_indexes,omitempty"`
@@ -257,12 +258,18 @@ type TelegramClient interface {
 	AnswerCallbackQuery(ctx context.Context, reqBody telegram.AnswerCallbackQueryRequest) error
 }
 
+type TelegramFileClient interface {
+	GetFile(ctx context.Context, fileID string) (telegram.File, error)
+	DownloadFile(ctx context.Context, filePath string, maxBytes int64) ([]byte, error)
+}
+
 type Bot struct {
 	tg                 TelegramClient
 	store              Store
 	logger             *log.Logger
 	superAdminUsername string
 	bookingParser      nlu.BookingIntentParser
+	speechRecognizer   nlu.SpeechRecognizer
 }
 
 func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername ...string) *Bot {
@@ -283,6 +290,10 @@ func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername 
 
 func (b *Bot) SetBookingIntentParser(parser nlu.BookingIntentParser) {
 	b.bookingParser = parser
+}
+
+func (b *Bot) SetSpeechRecognizer(recognizer nlu.SpeechRecognizer) {
+	b.speechRecognizer = recognizer
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -320,7 +331,7 @@ func (b *Bot) Run(ctx context.Context) error {
 				}
 				continue
 			}
-			if upd.Message != nil && strings.TrimSpace(upd.Message.Text) != "" {
+			if upd.Message != nil && (strings.TrimSpace(upd.Message.Text) != "" || upd.Message.Voice != nil || upd.Message.Audio != nil) {
 				if err := b.HandleMessage(ctx, upd.Message); err != nil {
 					b.logger.Printf("handleMessage error: %v", err)
 				}

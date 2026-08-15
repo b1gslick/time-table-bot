@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -12,13 +13,15 @@ import (
 )
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL     string
+	fileBaseURL string
+	httpClient  *http.Client
 }
 
 func NewClient(token string) *Client {
 	return &Client{
-		baseURL: fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		baseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		fileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
 		httpClient: &http.Client{
 			Timeout: 70 * time.Second,
 		},
@@ -44,6 +47,31 @@ type Message struct {
 	Chat      Chat   `json:"chat"`
 	Date      int64  `json:"date"`
 	Text      string `json:"text"`
+	Voice     *Voice `json:"voice,omitempty"`
+	Audio     *Audio `json:"audio,omitempty"`
+}
+
+type Voice struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MIMEType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+type Audio struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MIMEType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+type File struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	FilePath     string `json:"file_path,omitempty"`
 }
 
 type User struct {
@@ -126,6 +154,57 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeoutSec int) (
 	}
 
 	return apiResp.Result, nil
+}
+
+func (c *Client) GetFile(ctx context.Context, fileID string) (File, error) {
+	params := url.Values{}
+	params.Set("file_id", fileID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/getFile?"+params.Encode(), nil)
+	if err != nil {
+		return File{}, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return File{}, err
+	}
+	defer resp.Body.Close()
+	var apiResp APIResponse[File]
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return File{}, err
+	}
+	if !apiResp.OK {
+		return File{}, fmt.Errorf("telegram getFile error: %d %s", apiResp.ErrorCode, apiResp.Description)
+	}
+	if apiResp.Result.FilePath == "" {
+		return File{}, fmt.Errorf("telegram getFile error: empty file path")
+	}
+	return apiResp.Result, nil
+}
+
+func (c *Client) DownloadFile(ctx context.Context, filePath string, maxBytes int64) ([]byte, error) {
+	if filePath == "" || maxBytes <= 0 {
+		return nil, fmt.Errorf("telegram downloadFile error: invalid arguments")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.fileBaseURL+"/"+filePath, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("telegram downloadFile status: %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("telegram downloadFile error: file exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 
 func (c *Client) SendMessage(ctx context.Context, reqBody SendMessageRequest) error {

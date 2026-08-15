@@ -55,6 +55,16 @@ func menuKeyboard(rows [][]string) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{ResizeKeyboard: true, Keyboard: keyboard}
 }
 
+func bookingConfirmationKeyboard(lang string) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: tr(lang, "yes"), CallbackData: "bookconfirm:yes"},
+			{Text: tr(lang, "no"), CallbackData: "bookconfirm:no"},
+		},
+		{{Text: tr(lang, "booking_find_other"), CallbackData: "bookconfirm:other"}},
+	}}
+}
+
 func calendarMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
 		{tr(lang, "button_action_week"), tr(lang, "button_action_calendar")},

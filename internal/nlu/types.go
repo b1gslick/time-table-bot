@@ -37,3 +37,13 @@ type BookingIntent struct {
 type BookingIntentParser interface {
 	ParseBookingIntent(ctx context.Context, req BookingIntentRequest) (BookingIntent, error)
 }
+
+type SpeechRequest struct {
+	Audio    []byte
+	MIMEType string
+	Language string
+}
+
+type SpeechRecognizer interface {
+	Transcribe(ctx context.Context, req SpeechRequest) (string, error)
+}

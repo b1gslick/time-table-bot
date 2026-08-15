@@ -69,6 +69,19 @@ func main() {
 		bookingBot.SetBookingIntentParser(parser)
 		logger.Printf("qwen nlu enabled model=%s", cfg.QwenModel)
 	}
+	if cfg.WhisperModelPath != "" {
+		recognizer, err := nlu.NewWhisperRecognizer(nlu.WhisperConfig{
+			CLIPath:    cfg.WhisperCLIPath,
+			FFmpegPath: cfg.WhisperFFmpegPath,
+			ModelPath:  cfg.WhisperModelPath,
+			Threads:    cfg.WhisperThreads,
+		})
+		if err != nil {
+			logger.Fatalf("whisper asr error: %v", err)
+		}
+		bookingBot.SetSpeechRecognizer(recognizer)
+		logger.Printf("whisper asr enabled model=%s threads=%d", cfg.WhisperModelPath, cfg.WhisperThreads)
+	}
 
 	svc := scheduler.New(appStore, telegramSender{client: tg}, loc, logger)
 	go svc.Start(ctx)

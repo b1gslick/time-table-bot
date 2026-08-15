@@ -1145,6 +1145,23 @@ func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
 			t.Fatalf("HandleCallback(%q): %v", data, err)
 		}
 	}
+	var bookedBeforeConfirmation int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings WHERE status = 'booked'").Scan(&bookedBeforeConfirmation); err != nil {
+		t.Fatalf("count booked before confirmation: %v", err)
+	}
+	if bookedBeforeConfirmation != 0 {
+		t.Fatalf("booked before confirmation = %d, want 0", bookedBeforeConfirmation)
+	}
+	if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID:   "callback-bookconfirm:yes",
+		From: client,
+		Message: &telegram.Message{
+			Chat: chat,
+		},
+		Data: "bookconfirm:yes",
+	}); err != nil {
+		t.Fatalf("HandleCallback(bookconfirm:yes): %v", err)
+	}
 
 	messages := tg.texts()
 	if len(messages) == 0 {

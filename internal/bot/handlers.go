@@ -25,6 +25,7 @@ const (
 	conversationStepTimeChoice       = "time_choice"
 	conversationStepDates            = "dates"
 	conversationStepSlot             = "slot"
+	conversationStepBookingConfirm   = "booking_confirm"
 	conversationStepAddSvcCat        = "admin_service_category"
 	conversationStepAddSvcSub        = "admin_service_subcategory"
 	conversationStepAddSvcName       = "admin_service_name"
@@ -84,6 +85,9 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.sendText(ctx, msg.Chat.ID, tr(LangRU, "register_failed"))
 	}
 	current = b.applySuperAdminView(ctx, current)
+	if msg.Voice != nil || msg.Audio != nil {
+		return b.handleSpeechMessage(ctx, msg, current)
+	}
 
 	text := strings.TrimSpace(msg.Text)
 	parts := strings.Fields(text)
@@ -196,6 +200,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "time:") {
 		return b.handleTimeChoiceCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "bookconfirm:") {
+		return b.handleBookingConfirmCallback(ctx, cb)
 	}
 	if cb.Data == "my:list" {
 		return b.handleMyBookingsCallback(ctx, cb)
@@ -320,6 +327,19 @@ func (b *Bot) handleTimeChoiceCallback(ctx context.Context, cb *telegram.Callbac
 		return nil
 	}
 	return b.conversationTimeChoice(ctx, cb.Message.Chat.ID, current, state, text)
+}
+
+func (b *Bot) handleBookingConfirmCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	state, err := b.store.GetConversationState(ctx, current.TelegramID)
+	if err != nil || state.Step != conversationStepBookingConfirm {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
+	}
+	choice := strings.TrimPrefix(cb.Data, "bookconfirm:")
+	return b.conversationBookingConfirm(ctx, cb.Message.Chat.ID, current, state, choice)
 }
 
 func (b *Bot) handleCancelBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {

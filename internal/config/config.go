@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 type Config struct {
@@ -13,6 +14,10 @@ type Config struct {
 	QwenAPIKey         string
 	QwenBaseURL        string
 	QwenModel          string
+	WhisperCLIPath     string
+	WhisperFFmpegPath  string
+	WhisperModelPath   string
+	WhisperThreads     int
 }
 
 func Load() (Config, error) {
@@ -24,6 +29,10 @@ func Load() (Config, error) {
 		QwenAPIKey:         envFirst("QWEN_API_KEY", "DASHSCOPE_API_KEY"),
 		QwenBaseURL:        envFirst("QWEN_BASE_URL", "DASHSCOPE_BASE_URL"),
 		QwenModel:          envOrDefault("QWEN_MODEL", "qwen3.7-plus"),
+		WhisperCLIPath:     os.Getenv("WHISPER_CLI_PATH"),
+		WhisperFFmpegPath:  os.Getenv("WHISPER_FFMPEG_PATH"),
+		WhisperModelPath:   os.Getenv("WHISPER_MODEL_PATH"),
+		WhisperThreads:     envIntOrDefault("WHISPER_THREADS", 2),
 	}
 
 	if cfg.TelegramBotToken == "" {
@@ -34,6 +43,14 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func envOrDefault(key, fallback string) string {

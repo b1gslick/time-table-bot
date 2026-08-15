@@ -39,6 +39,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationDates(ctx, chatID, user, state, text)
 	case conversationStepSlot:
 		return true, b.conversationSlot(ctx, chatID, user, state, text)
+	case conversationStepBookingConfirm:
+		return true, b.conversationBookingConfirm(ctx, chatID, user, state, text)
 	case conversationStepAddSvcCat:
 		return true, b.conversationAddServiceCategory(ctx, chatID, user, state, text)
 	case conversationStepAddSvcSub:
@@ -255,6 +257,7 @@ func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user Use
 func resetSlotBrowserState(state ConversationState) ConversationState {
 	state.SlotDay = ""
 	state.SlotPeriod = ""
+	state.PendingSlotIndex = 0
 	state.VisibleSlotIndexes = nil
 	return state
 }
@@ -284,7 +287,47 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 		}
 		index = state.VisibleSlotIndexes[index-1]
 	}
+	return b.beginBookingConfirmation(ctx, chatID, user, state, index)
+}
+
+func (b *Bot) beginBookingConfirmation(ctx context.Context, chatID int64, user UserRecord, state ConversationState, index int) error {
+	slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
+	if err != nil || index <= 0 || index > len(slots) {
+		return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+	}
+	state.Step = conversationStepBookingConfirm
+	state.PendingSlotIndex = index
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendBookingConfirmation(ctx, chatID, user, state, slots[index-1])
+}
+
+func (b *Bot) conversationBookingConfirm(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	switch normalizeChoice(text) {
+	case "yes":
+		return b.completePendingBooking(ctx, chatID, user, state)
+	case "no":
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_cancelled"), keyboardForUser(user))
+	case "other":
+		return b.showOtherBookingSlots(ctx, chatID, user, state)
+	default:
+		slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
+		if err != nil || state.PendingSlotIndex <= 0 || state.PendingSlotIndex > len(slots) {
+			return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+		}
+		return b.sendBookingConfirmation(ctx, chatID, user, state, slots[state.PendingSlotIndex-1])
+	}
+}
+
+func (b *Bot) completePendingBooking(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	index := state.PendingSlotIndex
+	if index <= 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+	}
 	var result BookingChangeResult
+	var err error
 	if isAdminAppointmentState(state) {
 		result, err = b.store.AddBookingForContactByIndex(ctx, user.TelegramID, state.ContactType, state.Username, index)
 	} else {
@@ -307,6 +350,32 @@ func (b *Bot) conversationSlot(ctx context.Context, chatID int64, user UserRecor
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForUser(user))
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", result.StartAt.Format(dateTimeLayout)), keyboardForUser(user))
+}
+
+func (b *Bot) showOtherBookingSlots(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
+	if err != nil || len(slots) == 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+	}
+	state.Step = conversationStepSlot
+	state.PendingSlotIndex = 0
+	return b.showInteractiveSlots(ctx, chatID, user, state, slots)
+}
+
+func (b *Bot) sendBookingConfirmation(ctx context.Context, chatID int64, user UserRecord, state ConversationState, slot AvailabilitySlot) error {
+	services := strings.Join(slot.ServiceNames, ", ")
+	if services == "" {
+		services = tr(user.Language, "unknown_service")
+	}
+	text := tr(user.Language, "booking_proposal", services, slot.StartAt.Format("02.01.2006"), slot.StartAt.Format("15:04"), slot.EndAt.Format("15:04"))
+	if isAdminAppointmentState(state) {
+		client := formatClientContact(state.Username)
+		if client == "" {
+			client = tr(user.Language, "unknown_user")
+		}
+		text = tr(user.Language, "booking_proposal_admin", client, services, slot.StartAt.Format("02.01.2006"), slot.StartAt.Format("15:04"), slot.EndAt.Format("15:04"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, text, bookingConfirmationKeyboard(user.Language))
 }
 
 func (b *Bot) conversationBack(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -333,7 +402,7 @@ func (b *Bot) conversationBack(ctx context.Context, chatID int64, user UserRecor
 		return b.askCategoryWithState(ctx, chatID, user, state)
 	case conversationStepTimeChoice:
 		return b.askCategory(ctx, chatID, user, state.ServiceIndexes)
-	case conversationStepDates, conversationStepSlot:
+	case conversationStepDates, conversationStepSlot, conversationStepBookingConfirm:
 		state.Step = conversationStepTimeChoice
 		state.VisibleSlotIndexes = nil
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
@@ -2165,6 +2234,8 @@ func normalizeChoice(text string) string {
 		return "yes"
 	case "нет", "no", "n", "н":
 		return "no"
+	case "найти другое", "другое", "другое время", "еще варианты", "find another", "other", "another":
+		return "other"
 	case "ближайшее время", "ближайшее", "nearest", "soon":
 		return "nearest"
 	case "конкретные даты", "даты", "dates", "date":
