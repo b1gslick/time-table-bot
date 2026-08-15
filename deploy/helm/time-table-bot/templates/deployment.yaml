@@ -50,7 +50,13 @@ spec:
               value: {{ .Values.env.timezone | quote }}
             - name: QWEN_MODEL
               value: {{ .Values.env.qwen.model | quote }}
-            {{- if .Values.env.qwen.baseUrl }}
+            {{- if .Values.env.qwen.baseUrlSecret.secretName }}
+            - name: QWEN_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.env.qwen.baseUrlSecret.secretName }}
+                  key: {{ .Values.env.qwen.baseUrlSecret.secretKey }}
+            {{- else if .Values.env.qwen.baseUrl }}
             - name: QWEN_BASE_URL
               value: {{ .Values.env.qwen.baseUrl | quote }}
             {{- end }}

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	DefaultQwenModel   = "qwen-plus"
+	DefaultQwenModel   = "qwen3.7-plus"
 	DefaultQwenBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 

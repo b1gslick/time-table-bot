@@ -7,12 +7,15 @@ Create secrets before install:
 Optional: add Qwen Cloud API key to enable natural-language booking:
 
   kubectl create secret generic qwen-model-studio \
-    --from-literal=qwen-api-key='<qwen-api-key>'
+    --from-literal=QWEN_API_KEY='<qwen-api-key>' \
+    --from-literal=QWEN_BASE_URL='https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
 
   helm upgrade --install {{ .Release.Name }} ./deploy/helm/time-table-bot \
     --namespace {{ .Release.Namespace }} \
     --set env.qwen.apiKey.secretName=qwen-model-studio \
-    --set env.qwen.apiKey.secretKey=qwen-api-key
+    --set env.qwen.apiKey.secretKey=QWEN_API_KEY \
+    --set env.qwen.baseUrlSecret.secretName=qwen-model-studio \
+    --set env.qwen.baseUrlSecret.secretKey=QWEN_BASE_URL
 
 Optional: if you want to pass DATABASE_URL as a full secret value:
 

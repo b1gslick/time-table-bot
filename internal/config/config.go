@@ -23,7 +23,7 @@ func Load() (Config, error) {
 		Timezone:           envOrDefault("TIMEZONE", "Europe/Nicosia"),
 		QwenAPIKey:         envFirst("QWEN_API_KEY", "DASHSCOPE_API_KEY"),
 		QwenBaseURL:        envFirst("QWEN_BASE_URL", "DASHSCOPE_BASE_URL"),
-		QwenModel:          envOrDefault("QWEN_MODEL", "qwen-plus"),
+		QwenModel:          envOrDefault("QWEN_MODEL", "qwen3.7-plus"),
 	}
 
 	if cfg.TelegramBotToken == "" {

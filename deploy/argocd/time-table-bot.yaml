@@ -31,6 +31,14 @@ spec:
           value: tim1106
         - name: env.timezone
           value: Europe/Nicosia
+        - name: env.qwen.apiKey.secretName
+          value: qwen-model-studio
+        - name: env.qwen.apiKey.secretKey
+          value: QWEN_API_KEY
+        - name: env.qwen.baseUrlSecret.secretName
+          value: qwen-model-studio
+        - name: env.qwen.baseUrlSecret.secretKey
+          value: QWEN_BASE_URL
   project: default
   syncPolicy:
     automated:

@@ -27,11 +27,14 @@ env:
     secretName: time-table-bot-secrets
     secretKey: telegram-bot-token
   qwen:
-    model: qwen-plus
+    model: qwen3.7-plus
     baseUrl: ""
+    baseUrlSecret:
+      secretName: ""
+      secretKey: QWEN_BASE_URL
     apiKey:
       secretName: ""
-      secretKey: qwen-api-key
+      secretKey: QWEN_API_KEY
 
 postgres:
   image: postgres:16

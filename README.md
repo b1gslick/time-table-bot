@@ -24,7 +24,7 @@ DATABASE_URL='postgres://timetable:timetable@localhost:5432/timetable?sslmode=di
 - `TIMEZONE` по умолчанию `Europe/Nicosia`.
 - `QWEN_API_KEY` или `DASHSCOPE_API_KEY` включает LLM-разбор обычного текста клиента через Qwen Cloud. Без ключа бот работает в прежнем пошаговом режиме.
 - `QWEN_BASE_URL` опционально задает OpenAI-compatible endpoint Qwen Cloud под нужный регион. По умолчанию `https://dashscope.aliyuncs.com/compatible-mode/v1`.
-- `QWEN_MODEL` по умолчанию `qwen-plus`.
+- `QWEN_MODEL` по умолчанию `qwen3.7-plus`.
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT` используются локальным compose.
 
 ## Роли
@@ -61,8 +61,7 @@ Chart находится в `deploy/helm/time-table-bot` и повторяет �
 ```bash
 kubectl create secret generic time-table-bot-secrets \
   --from-literal=telegram-bot-token='<telegram-token>' \
-  --from-literal=postgres-password='<postgres-password>' \
-  --from-literal=qwen-api-key='<qwen-api-key>'
+  --from-literal=postgres-password='<postgres-password>'
 
 helm lint deploy/helm/time-table-bot
 helm template ttb deploy/helm/time-table-bot
@@ -72,10 +71,16 @@ helm install ttb deploy/helm/time-table-bot --namespace time-table-bot --create-
 Для включения Qwen в Helm укажите secret с ключом:
 
 ```bash
+kubectl create secret generic qwen-model-studio \
+  --from-literal=QWEN_API_KEY='<qwen-api-key>' \
+  --from-literal=QWEN_BASE_URL='https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+
 helm upgrade --install ttb deploy/helm/time-table-bot \
   --namespace time-table-bot --create-namespace \
-  --set env.qwen.apiKey.secretName=time-table-bot-secrets \
-  --set env.qwen.apiKey.secretKey=qwen-api-key
+  --set env.qwen.apiKey.secretName=qwen-model-studio \
+  --set env.qwen.apiKey.secretKey=QWEN_API_KEY \
+  --set env.qwen.baseUrlSecret.secretName=qwen-model-studio \
+  --set env.qwen.baseUrlSecret.secretKey=QWEN_BASE_URL
 ```
 
 Кластер сейчас может быть недоступен, поэтому безопасная локальная проверка деплоя: `helm template`.
