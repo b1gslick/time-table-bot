@@ -68,7 +68,10 @@ func TestScheduleImportServicesCoverEveryRecognizedType(t *testing.T) {
 	if !scheduleImportServicesCoverQuery([]string{"электро подмышки"}, []int{1}, services) {
 		t.Fatal("body zone must be allowed as a note for electrolysis")
 	}
-	if !scheduleImportServicesCoverQuery([]string{"BOCK"}, []int{2}, services) {
-		t.Fatal("OCR spelling BOCK must match the wax category")
+	if scheduleImportServicesCoverQuery([]string{"BOCK"}, []int{2}, services) {
+		t.Fatal("generic wax text must not select an arbitrary body zone")
+	}
+	if !scheduleImportServicesCoverQuery([]string{"BOCK бикини"}, []int{2}, services) {
+		t.Fatal("OCR spelling BOCK with a body zone must match the wax category")
 	}
 }

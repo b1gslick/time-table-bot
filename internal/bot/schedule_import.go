@@ -301,13 +301,28 @@ func scheduleImportServicesCoverQuery(queries []string, indexes []int, services 
 	if strings.Contains(query, "электро") && !strings.Contains(joined, "электро") {
 		return false
 	}
-	if strings.Contains(query, "воск") && !strings.Contains(joined, "воск") {
-		return false
+	if strings.Contains(query, "воск") {
+		if !strings.Contains(joined, "воск") {
+			return false
+		}
+		hasWaxZone := false
+		for _, zone := range []string{"бикини", "лицо", "ног", "рук", "ягод", "усы"} {
+			if strings.Contains(query, zone) {
+				hasWaxZone = true
+				break
+			}
+		}
+		if !hasWaxZone {
+			return false
+		}
 	}
 	if strings.Contains(query, "бикини") && !strings.Contains(joined, "бикини") {
 		return false
 	}
 	if strings.Contains(query, "эндо") && !strings.Contains(joined, "эндо") {
+		return false
+	}
+	if strings.Contains(query, "подмыш") && !strings.Contains(query, "электро") && !strings.Contains(joined, "подмыш") {
 		return false
 	}
 	return true
