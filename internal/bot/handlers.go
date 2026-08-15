@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"time-table-bot/internal/store"
 	"time-table-bot/internal/telegram"
@@ -26,6 +27,8 @@ const (
 	conversationStepDates            = "dates"
 	conversationStepSlot             = "slot"
 	conversationStepBookingConfirm   = "booking_confirm"
+	conversationStepBookingEdit      = "booking_edit"
+	conversationStepAdminBookingTime = "admin_booking_time"
 	conversationStepAddSvcCat        = "admin_service_category"
 	conversationStepAddSvcSub        = "admin_service_subcategory"
 	conversationStepAddSvcName       = "admin_service_name"
@@ -65,6 +68,7 @@ const (
 	conversationStepReschTo          = "admin_reschedule_to"
 	conversationStepBlock            = "admin_block"
 	conversationStepBlockDate        = "admin_block_date"
+	conversationStepScheduleImport   = "admin_schedule_import"
 )
 
 func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
@@ -105,6 +109,9 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		if handled, err := b.handleMenuButton(ctx, msg.Chat.ID, current, text); handled {
 			return err
 		}
+		if handled, err := b.handleAdminContactAlias(ctx, msg.Chat.ID, current, text); handled {
+			return err
+		}
 	}
 
 	switch cmd {
@@ -114,6 +121,19 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.handleBookingStart(ctx, msg.Chat.ID, current)
 	case "/help":
 		return b.sendHelp(ctx, msg.Chat.ID, current)
+	case "/aliases":
+		return b.sendContactAliases(ctx, msg.Chat.ID, current)
+	case "/alias":
+		if handled, err := b.handleAdminContactAlias(ctx, msg.Chat.ID, current, text); handled {
+			return err
+		}
+		return b.sendText(ctx, msg.Chat.ID, tr(current.Language, "contact_alias_usage"))
+	case "/alias_delete":
+		alias := strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
+		if handled, err := b.handleAdminContactAlias(ctx, msg.Chat.ID, current, "удали алиас "+alias); handled {
+			return err
+		}
+		return b.sendText(ctx, msg.Chat.ID, tr(current.Language, "contact_alias_delete_usage"))
 	case "/lang", "/language":
 		return b.handleLanguage(ctx, msg.Chat.ID, current, parts)
 	case "/role":
@@ -212,6 +232,12 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "bookconfirm:") {
 		return b.handleBookingConfirmCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "bookedit:") {
+		return b.handleBookingEditCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "scheduleimport:") {
+		return b.handleScheduleImportCallback(ctx, cb)
 	}
 	if cb.Data == "my:list" {
 		return b.handleMyBookingsCallback(ctx, cb)
@@ -349,6 +375,18 @@ func (b *Bot) handleBookingConfirmCallback(ctx context.Context, cb *telegram.Cal
 	}
 	choice := strings.TrimPrefix(cb.Data, "bookconfirm:")
 	return b.conversationBookingConfirm(ctx, cb.Message.Chat.ID, current, state, choice)
+}
+
+func (b *Bot) handleBookingEditCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	state, err := b.store.GetConversationState(ctx, current.TelegramID)
+	if err != nil || state.Step != conversationStepBookingEdit {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
+	}
+	return b.conversationBookingEdit(ctx, cb.Message.Chat.ID, current, state, strings.TrimPrefix(cb.Data, "bookedit:"))
 }
 
 func (b *Bot) handleCancelBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
@@ -681,6 +719,8 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleScheduleDelete(ctx, chatID, user, []string{"/calendar_delete"})
 	case "action_set_profile":
 		return true, b.handleSetProfile(ctx, chatID, user, "/setprofile")
+	case "action_contact_aliases":
+		return true, b.sendContactAliases(ctx, chatID, user)
 	case "action_lang_ru":
 		return true, b.handleLanguage(ctx, chatID, user, []string{"/lang", LangRU})
 	case "action_lang_en":
@@ -749,6 +789,7 @@ func menuButtonAction(lang, text string) string {
 		{"action_generate_weekday", "button_action_generate_weekday"},
 		{"action_delete_month", "button_action_delete_month"},
 		{"action_set_profile", "button_action_set_profile"},
+		{"action_contact_aliases", "button_action_contact_aliases"},
 		{"action_lang_ru", "button_action_lang_ru"},
 		{"action_lang_en", "button_action_lang_en"},
 		{"action_admin_add", "button_action_admin_add"},
@@ -1987,6 +2028,11 @@ func formatClientContact(value string) string {
 	first := value[0]
 	if first == '+' || first >= '0' && first <= '9' {
 		return value
+	}
+	for _, char := range value {
+		if unicode.IsSpace(char) || char > unicode.MaxASCII {
+			return value
+		}
 	}
 	return "@" + value
 }

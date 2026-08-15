@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,6 +88,148 @@ func (s *appStore) SetUserLanguage(ctx context.Context, telegramID int64, langua
 		return err
 	}
 	return s.repo.SetAdminSetting(ctx, userID, "language", language)
+}
+
+func (s *appStore) UpsertContactAlias(ctx context.Context, adminTelegramID int64, alias, contactType, contact string) (int64, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return 0, err
+	}
+	alias = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(alias)), " "))
+	contactType = strings.ToLower(strings.TrimSpace(contactType))
+	switch contactType {
+	case "telegram":
+		contact = normalizeUsername(contact)
+	case "phone":
+		contact = normalizePhoneNumber(contact)
+	default:
+		return 0, store.ErrInvalidArgument
+	}
+	if alias == "" || contact == "" {
+		return 0, store.ErrInvalidArgument
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	targetUserID, err := ensureAliasTargetUserTx(ctx, tx, contactType, contact)
+	if err != nil {
+		return 0, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+INSERT INTO admin_contact_aliases (admin_user_id, alias, contact_type, contact)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT(admin_user_id, alias) DO UPDATE SET
+    contact_type = EXCLUDED.contact_type,
+    contact = EXCLUDED.contact,
+    updated_at = NOW();
+`, adminID, alias, contactType, contact); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE bookings b
+SET user_id = $3,
+    updated_at = NOW()
+FROM schedule_slots s, users source_user
+WHERE b.slot_id = s.id
+  AND b.user_id = source_user.id
+  AND s.admin_user_id = $1
+  AND b.status = 'booked'
+  AND source_user.id <> $3
+  AND (
+      LOWER(REGEXP_REPLACE(BTRIM(source_user.full_name), '\s+', ' ', 'g')) = $2
+      OR LOWER(REGEXP_REPLACE(BTRIM(source_user.username), '\s+', ' ', 'g')) = $2
+  );
+`, adminID, alias, targetUserID)
+	if err != nil {
+		return 0, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
+func ensureAliasTargetUserTx(ctx context.Context, tx *sql.Tx, contactType, contact string) (int64, error) {
+	username, fullName := "", ""
+	switch contactType {
+	case "telegram":
+		username = normalizeUsername(contact)
+	case "phone":
+		fullName = normalizePhoneNumber(contact)
+		username = "phone_" + phoneDigits(fullName)
+	default:
+		return 0, store.ErrInvalidArgument
+	}
+	if username == "" {
+		return 0, store.ErrInvalidArgument
+	}
+	var id int64
+	err := tx.QueryRowContext(ctx, `
+INSERT INTO users (username, full_name, role)
+VALUES ($1, $2, 'user')
+ON CONFLICT(username) DO UPDATE SET
+    full_name = CASE WHEN EXCLUDED.full_name = '' THEN users.full_name ELSE EXCLUDED.full_name END,
+    updated_at = NOW()
+RETURNING id;
+`, username, fullName).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure alias target user: %w", err)
+	}
+	return id, nil
+}
+
+func (s *appStore) DeleteContactAlias(ctx context.Context, adminTelegramID int64, alias string) error {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	alias = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(alias)), " "))
+	if alias == "" {
+		return store.ErrInvalidArgument
+	}
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM admin_contact_aliases
+WHERE admin_user_id = $1 AND alias = $2;
+`, adminID, alias)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *appStore) ListContactAliases(ctx context.Context, adminTelegramID int64) ([]bot.ContactAlias, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT alias, contact_type, contact
+FROM admin_contact_aliases
+WHERE admin_user_id = $1
+ORDER BY alias;
+`, adminID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var aliases []bot.ContactAlias
+	for rows.Next() {
+		var item bot.ContactAlias
+		if err := rows.Scan(&item.Alias, &item.ContactType, &item.Contact); err != nil {
+			return nil, err
+		}
+		aliases = append(aliases, item)
+	}
+	return aliases, rows.Err()
 }
 
 func (s *appStore) ListAdmins(ctx context.Context) ([]bot.AdminView, error) {
@@ -1034,6 +1178,8 @@ func (s *appStore) AddBookingForContactByIndex(ctx context.Context, adminTelegra
 		clientID, err = s.ensureUserByPhone(ctx, contact)
 	case "telegram":
 		clientID, err = s.ensureUserByUsername(ctx, contact)
+	case "name":
+		clientID, err = s.ensureUserByName(ctx, contact)
 	default:
 		err = store.ErrInvalidArgument
 	}
@@ -1049,6 +1195,170 @@ func (s *appStore) AddBookingForContactByIndex(ctx context.Context, adminTelegra
 		return bot.BookingChangeResult{}, store.ErrInvalidArgument
 	}
 	return s.bookAvailabilityForUserID(ctx, clientID, availability[index-1], adminID)
+}
+
+type importedBookingSpec struct {
+	adminID      int64
+	serviceIDs   []int64
+	serviceNames []string
+	durationMin  int
+}
+
+func (s *appStore) importedBookingSpec(ctx context.Context, adminTelegramID int64, serviceIndexes []int) (importedBookingSpec, error) {
+	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
+	if err != nil {
+		return importedBookingSpec{}, err
+	}
+	services, err := s.ListServices(ctx, adminTelegramID)
+	if err != nil {
+		return importedBookingSpec{}, err
+	}
+	indexes := uniquePositiveInts(serviceIndexes)
+	if len(indexes) == 0 {
+		return importedBookingSpec{}, store.ErrInvalidArgument
+	}
+	spec := importedBookingSpec{adminID: adminID}
+	for _, index := range indexes {
+		if index <= 0 || index > len(services) {
+			return importedBookingSpec{}, store.ErrInvalidArgument
+		}
+		service := services[index-1]
+		if service.DurationMin <= 0 {
+			return importedBookingSpec{}, store.ErrInvalidArgument
+		}
+		spec.serviceIDs = append(spec.serviceIDs, service.ID)
+		spec.serviceNames = append(spec.serviceNames, service.Name)
+		spec.durationMin += service.DurationMin
+	}
+	return spec, nil
+}
+
+func (s *appStore) CanImportBooking(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) error {
+	if start.IsZero() {
+		return store.ErrInvalidArgument
+	}
+	spec, err := s.importedBookingSpec(ctx, adminTelegramID, serviceIndexes)
+	if err != nil {
+		return err
+	}
+	end := start.In(s.loc).Add(time.Duration(spec.durationMin) * time.Minute)
+	var occupied bool
+	err = s.db.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM schedule_slots slot
+    JOIN bookings booking ON booking.slot_id = slot.id
+    WHERE slot.admin_user_id = $1
+      AND booking.status IN ('booked', 'blocked')
+      AND slot.start_at < $3
+      AND slot.end_at > $2
+);
+`, spec.adminID, start.In(s.loc), end).Scan(&occupied)
+	if err != nil {
+		return err
+	}
+	if occupied {
+		return store.ErrSlotUnavailable
+	}
+	return nil
+}
+
+func (s *appStore) AddImportedBooking(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (bot.BookingChangeResult, error) {
+	if start.IsZero() {
+		return bot.BookingChangeResult{}, store.ErrInvalidArgument
+	}
+	spec, err := s.importedBookingSpec(ctx, adminTelegramID, serviceIndexes)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	var userID int64
+	switch contactType {
+	case "telegram":
+		userID, err = s.ensureUserByUsername(ctx, contact)
+	case "phone":
+		userID, err = s.ensureUserByPhone(ctx, contact)
+	case "name":
+		userID, err = s.ensureUserByName(ctx, contact)
+	default:
+		err = store.ErrInvalidArgument
+	}
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	start = start.In(s.loc)
+	end := start.Add(time.Duration(spec.durationMin) * time.Minute)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1);`, spec.adminID); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	var occupied bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM schedule_slots slot
+    JOIN bookings booking ON booking.slot_id = slot.id
+    WHERE slot.admin_user_id = $1
+      AND booking.status IN ('booked', 'blocked')
+      AND slot.start_at < $3
+      AND slot.end_at > $2
+);
+`, spec.adminID, start, end).Scan(&occupied); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	if occupied {
+		return bot.BookingChangeResult{}, store.ErrSlotUnavailable
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots slot
+SET status = 'closed', updated_at = NOW()
+WHERE slot.admin_user_id = $1
+  AND slot.start_at < $3
+  AND slot.end_at > $2
+  AND NOT EXISTS (
+      SELECT 1 FROM bookings booking
+      WHERE booking.slot_id = slot.id AND booking.status IN ('booked', 'blocked')
+  );
+`, spec.adminID, start, end); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	var slotID int64
+	if err := tx.QueryRowContext(ctx, `
+INSERT INTO schedule_slots (admin_user_id, service_id, start_at, end_at, capacity, status, note)
+VALUES ($1, $2, $3, $4, 1, 'open', 'imported_schedule')
+ON CONFLICT (admin_user_id, start_at) DO UPDATE SET
+    service_id = EXCLUDED.service_id,
+    end_at = EXCLUDED.end_at,
+    capacity = 1,
+    status = 'open',
+    note = EXCLUDED.note,
+    updated_at = NOW()
+RETURNING id;
+`, spec.adminID, spec.serviceIDs[0], start, end).Scan(&slotID); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	note, err := json.Marshal(bookingServiceNote{
+		ServiceIDs: spec.serviceIDs, ServiceNames: spec.serviceNames, DurationMin: spec.durationMin,
+	})
+	if err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	var bookingID int64
+	if err := tx.QueryRowContext(ctx, `
+INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
+VALUES ($1, $2, $3, 'booked', 0, $4)
+RETURNING id;
+`, slotID, userID, spec.serviceIDs[0], string(note)).Scan(&bookingID); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return bot.BookingChangeResult{}, err
+	}
+	_ = s.clearScheduleCacheForAdminID(ctx, spec.adminID)
+	return s.bookingChangeByID(ctx, bookingID, spec.adminID)
 }
 
 func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (bot.BookingChangeResult, error) {
@@ -1562,7 +1872,7 @@ func (s *appStore) ListAdminBookingsRange(ctx context.Context, telegramID int64,
 SELECT b.id,
        COALESCE(a.username, '') AS admin_name,
        CASE
-           WHEN u.username LIKE 'phone_%' AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
            ELSE COALESCE(u.username, '')
        END AS client_name,
        s.start_at,
@@ -1630,7 +1940,7 @@ func (s *appStore) listAdminBookingsByAdminIDRange(ctx context.Context, adminID 
 	rows, err := s.db.QueryContext(ctx, `
 SELECT b.id,
        CASE
-           WHEN u.username LIKE 'phone_%' AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
            ELSE COALESCE(u.username, '')
        END AS client_name,
        s.start_at,
@@ -1681,7 +1991,7 @@ func (s *appStore) bookingChangeByID(ctx context.Context, bookingID, adminID int
 SELECT a.telegram_id,
        COALESCE(al.value, 'ru') AS admin_language,
        CASE
-           WHEN u.username LIKE 'phone_%' AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
            ELSE COALESCE(u.username, '')
        END AS client_name,
        s.start_at,
@@ -2493,6 +2803,29 @@ RETURNING id;
 `, username, normalized).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("ensure user by phone: %w", err)
+	}
+	return id, nil
+}
+
+func (s *appStore) ensureUserByName(ctx context.Context, name string) (int64, error) {
+	name = strings.Join(strings.Fields(strings.TrimSpace(name)), " ")
+	if name == "" {
+		return 0, store.ErrInvalidArgument
+	}
+	normalized := strings.ToLower(name)
+	digest := sha256.Sum256([]byte(normalized))
+	username := "name_" + hex.EncodeToString(digest[:12])
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+INSERT INTO users (username, full_name, role)
+VALUES ($1, $2, 'user')
+ON CONFLICT(username) DO UPDATE SET
+    full_name = EXCLUDED.full_name,
+    updated_at = NOW()
+RETURNING id;
+`, username, name).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("ensure user by name: %w", err)
 	}
 	return id, nil
 }

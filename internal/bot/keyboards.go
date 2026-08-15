@@ -60,8 +60,23 @@ func bookingConfirmationKeyboard(lang string) *telegram.ReplyMarkup {
 			{Text: tr(lang, "yes"), CallbackData: "bookconfirm:yes"},
 			{Text: tr(lang, "no"), CallbackData: "bookconfirm:no"},
 		},
-		{{Text: tr(lang, "booking_find_other"), CallbackData: "bookconfirm:other"}},
+		{
+			{Text: tr(lang, "booking_edit"), CallbackData: "bookconfirm:edit"},
+			{Text: tr(lang, "booking_find_other"), CallbackData: "bookconfirm:other"},
+		},
 	}}
+}
+
+func bookingEditKeyboard(lang string, admin bool) *telegram.ReplyMarkup {
+	row := []telegram.InlineKeyboardButton{
+		{Text: tr(lang, "booking_edit_service"), CallbackData: "bookedit:service"},
+		{Text: tr(lang, "booking_edit_time"), CallbackData: "bookedit:time"},
+	}
+	rows := [][]telegram.InlineKeyboardButton{row}
+	if admin {
+		rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "booking_edit_client"), CallbackData: "bookedit:client"}})
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
 func calendarMenuKeyboard(lang string) *telegram.ReplyMarkup {
@@ -209,7 +224,7 @@ func weekdayInputValue(lang string, weekday time.Weekday) string {
 
 func settingsMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
-		{tr(lang, "button_action_set_profile")},
+		{tr(lang, "button_action_set_profile"), tr(lang, "button_action_contact_aliases")},
 		{tr(lang, "button_action_lang_ru"), tr(lang, "button_action_lang_en")},
 		{"/help", tr(lang, "button_back")},
 	})

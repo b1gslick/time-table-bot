@@ -43,6 +43,31 @@ func TestClientGetsAndDownloadsFile(t *testing.T) {
 	}
 }
 
+func TestClientGetUpdatesRequestsMessagesAndCallbacks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("offset"); got != "42" {
+			t.Fatalf("offset = %q", got)
+		}
+		if got := r.URL.Query().Get("timeout"); got != "15" {
+			t.Fatalf("timeout = %q", got)
+		}
+		if got := r.URL.Query().Get("allowed_updates"); got != `["message","callback_query"]` {
+			t.Fatalf("allowed_updates = %q", got)
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":[]}`)
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, httpClient: server.Client()}
+	updates, err := client.GetUpdates(context.Background(), 42, 15)
+	if err != nil {
+		t.Fatalf("GetUpdates: %v", err)
+	}
+	if len(updates) != 0 {
+		t.Fatalf("updates = %#v", updates)
+	}
+}
+
 func TestClientRejectsOversizedDownload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte{1, 2, 3, 4})

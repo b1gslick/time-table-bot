@@ -59,6 +59,17 @@ printf '5\t1\t1\t1\t1\t2\t0\t0\t10\t10\t60\tзавтра\n'
 	}
 }
 
+func TestParseTesseractTSVPreservesLineOrder(t *testing.T) {
+	data := []byte("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n" +
+		"5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t90\t09:30\n" +
+		"5\t1\t1\t1\t1\t2\t0\t0\t10\t10\t90\tЛиза\n" +
+		"5\t1\t1\t1\t2\t1\t0\t0\t10\t10\t90\tэпиляция\n")
+	text, confidence, err := parseTesseractTSV(data)
+	if err != nil || text != "09:30 Лиза\nэпиляция" || confidence != 90 {
+		t.Fatalf("result = %q, %.1f, err=%v", text, confidence, err)
+	}
+}
+
 func TestTesseractRecognizerRejectsEmptyOutput(t *testing.T) {
 	dir := t.TempDir()
 	tesseractPath := writeExecutable(t, dir, "tesseract", "#!/bin/sh\nexit 0\n")

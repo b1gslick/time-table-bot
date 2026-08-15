@@ -45,7 +45,7 @@ func NewQwenParser(cfg QwenConfig) (*QwenParser, error) {
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 12 * time.Second
+		timeout = 45 * time.Second
 	}
 	return &QwenParser{
 		apiKey:  apiKey,

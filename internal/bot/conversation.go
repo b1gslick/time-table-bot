@@ -41,6 +41,10 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationSlot(ctx, chatID, user, state, text)
 	case conversationStepBookingConfirm:
 		return true, b.conversationBookingConfirm(ctx, chatID, user, state, text)
+	case conversationStepBookingEdit:
+		return true, b.conversationBookingEdit(ctx, chatID, user, state, text)
+	case conversationStepAdminBookingTime:
+		return true, b.conversationAdminBookingTime(ctx, chatID, user, state, text)
 	case conversationStepAddSvcCat:
 		return true, b.conversationAddServiceCategory(ctx, chatID, user, state, text)
 	case conversationStepAddSvcSub:
@@ -119,6 +123,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationBlock(ctx, chatID, user, text)
 	case conversationStepBlockDate:
 		return true, b.conversationBlockDate(ctx, chatID, user, text)
+	case conversationStepScheduleImport:
+		return true, b.showScheduleImportPreview(ctx, chatID, user, state)
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil
@@ -144,6 +150,23 @@ func (b *Bot) conversationLanguage(ctx context.Context, chatID int64, user UserR
 func (b *Bot) conversationCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
 	index, err := strconv.Atoi(strings.TrimSpace(text))
 	if err != nil || index <= 0 {
+		if state.BookingDraft != "" {
+			services, listErr := b.store.ListServices(ctx, user.TelegramID)
+			if listErr == nil {
+				matched, score := bestServiceMatch(text, 0, services)
+				if matched > 0 && score >= 3 {
+					state.ServiceIndexes = []int{matched}
+					state.Category = ""
+					state.Subcategory = ""
+					state.VisibleServiceIndexes = nil
+					state.Step = conversationStepMore
+					if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+						return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+					}
+					return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "ask_more_services"), yesNoKeyboard(user.Language))
+				}
+			}
+		}
 		return b.askCategoryWithState(ctx, chatID, user, state)
 	}
 	services, err := b.store.ListServices(ctx, user.TelegramID)
@@ -223,6 +246,12 @@ func (b *Bot) conversationMore(ctx context.Context, chatID int64, user UserRecor
 		return b.askCategoryWithState(ctx, chatID, user, state)
 	}
 	if isNo(user.Language, text) {
+		if state.BookingDraft == "client" {
+			return b.continueClientBookingDraft(ctx, chatID, user, state)
+		}
+		if state.BookingDraft == "admin" {
+			return b.continueAdminBookingDraft(ctx, chatID, user, state)
+		}
 		state.Step = conversationStepTimeChoice
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 			b.logger.Printf("conversation more: save state failed user=%d: %v", user.TelegramID, err)
@@ -254,6 +283,12 @@ func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user Use
 			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, "ask_dates"))
+	}
+	if state.BookingDraft == "client" {
+		if corrected, ok := b.correctClientBookingTime(ctx, user, state, text); ok {
+			return b.continueClientBookingDraft(ctx, chatID, user, corrected)
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, "booking_time_correction"))
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "ask_time_choice"), timeChoiceKeyboard(user.Language))
 }
@@ -316,6 +351,24 @@ func (b *Bot) conversationBookingConfirm(ctx context.Context, chatID int64, user
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_cancelled"), keyboardForUser(user))
 	case "other":
 		return b.showOtherBookingSlots(ctx, chatID, user, state)
+	case "edit":
+		slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
+		if err == nil && state.PendingSlotIndex > 0 && state.PendingSlotIndex <= len(slots) {
+			slot := slots[state.PendingSlotIndex-1]
+			if isAdminAppointmentState(state) {
+				state.BookingDraft = "admin"
+				state.FromDateTime = slot.StartAt.Format(time.RFC3339)
+			} else {
+				state.BookingDraft = "client"
+				state.DateFrom = slot.StartAt.Format("2006-01-02")
+				state.DateTo = dateOnly(slot.StartAt).AddDate(0, 0, 1).Format("2006-01-02")
+			}
+		}
+		state.Step = conversationStepBookingEdit
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_edit_ask"), bookingEditKeyboard(user.Language, isAdminAppointmentState(state)))
 	default:
 		slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
 		if err != nil || state.PendingSlotIndex <= 0 || state.PendingSlotIndex > len(slots) {
@@ -323,6 +376,59 @@ func (b *Bot) conversationBookingConfirm(ctx context.Context, chatID int64, user
 		}
 		return b.sendBookingConfirmation(ctx, chatID, user, state, slots[state.PendingSlotIndex-1])
 	}
+}
+
+func (b *Bot) conversationBookingEdit(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	choice := normalizeChoice(text)
+	switch choice {
+	case "service":
+		state.ServiceIndexes = nil
+		state.PendingSlotIndex = 0
+		state.VisibleSlotIndexes = nil
+		return b.askCategoryWithState(ctx, chatID, user, state)
+	case "time":
+		state.PendingSlotIndex = 0
+		state.VisibleSlotIndexes = nil
+		if state.BookingDraft == "admin" || isAdminAppointmentState(state) {
+			state.BookingDraft = "admin"
+			state.FromDateTime = ""
+			state.Step = conversationStepAdminBookingTime
+			if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+				return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+			}
+			return b.sendText(ctx, chatID, tr(user.Language, "admin_booking_time_correction"))
+		}
+		state.BookingDraft = "client"
+		state.DateFrom = ""
+		state.DateTo = ""
+		state.Step = conversationStepTimeChoice
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_time_correction"), timeChoiceKeyboard(user.Language))
+	case "client":
+		if state.BookingDraft != "admin" && !isAdminAppointmentState(state) {
+			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_edit_ask"), bookingEditKeyboard(user.Language, false))
+		}
+		state.BookingDraft = "admin"
+		state.ContactType = ""
+		state.Username = ""
+		state.Step = conversationStepAppointKind
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_booking_need_contact"), contactTypeKeyboard(user.Language))
+	default:
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_edit_ask"), bookingEditKeyboard(user.Language, state.BookingDraft == "admin" || isAdminAppointmentState(state)))
+	}
+}
+
+func (b *Bot) conversationAdminBookingTime(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	corrected, ok := b.correctAdminBookingTime(ctx, user, state, text)
+	if !ok {
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_booking_time_correction"))
+	}
+	return b.continueAdminBookingDraft(ctx, chatID, user, corrected)
 }
 
 func (b *Bot) completePendingBooking(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -1215,9 +1321,8 @@ func (b *Bot) conversationAppointUser(ctx context.Context, chatID int64, user Us
 			return b.sendText(ctx, chatID, tr(user.Language, "appoint_ask_phone"))
 		}
 		state.Username = phone
-		state.Step = conversationStepAppointTime
-		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
-			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		if state.BookingDraft == "admin" && len(state.ServiceIndexes) > 0 {
+			return b.continueAdminBookingDraft(ctx, chatID, user, state)
 		}
 		return b.askAdminAppointmentServices(ctx, chatID, user, state)
 	}
@@ -1227,6 +1332,9 @@ func (b *Bot) conversationAppointUser(ctx context.Context, chatID int64, user Us
 			return b.sendText(ctx, chatID, tr(user.Language, "bad_username"))
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	if state.BookingDraft == "admin" && len(state.ServiceIndexes) > 0 {
+		return b.continueAdminBookingDraft(ctx, chatID, user, state)
 	}
 	return b.askAdminAppointmentServices(ctx, chatID, user, state)
 }
@@ -2240,6 +2348,14 @@ func normalizeChoice(text string) string {
 		return "no"
 	case "найти другое", "другое", "другое время", "еще варианты", "find another", "other", "another":
 		return "other"
+	case "изменить", "исправить", "edit", "change":
+		return "edit"
+	case "услуга", "услугу", "service":
+		return "service"
+	case "дата", "время", "дату и время", "date and time", "time":
+		return "time"
+	case "клиент", "клиента", "client":
+		return "client"
 	case "ближайшее время", "ближайшее", "nearest", "soon":
 		return "nearest"
 	case "конкретные даты", "даты", "dates", "date":

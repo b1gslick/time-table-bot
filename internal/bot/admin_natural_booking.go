@@ -50,12 +50,21 @@ func (b *Bot) handleAdminNaturalBooking(ctx context.Context, chatID int64, user 
 	}
 
 	contactType, contact := normalizeAdminBookingContact(intent.ContactType, intent.Contact)
-	if contact == "" {
-		return true, b.beginConversation(ctx, chatID, user, ConversationState{Step: conversationStepAppointKind}, "admin_booking_need_contact", contactTypeKeyboard(user.Language))
+	if !strings.HasPrefix(strings.TrimSpace(intent.Contact), "@") && normalizePhone(intent.Contact) == "" {
+		aliases, aliasErr := b.store.ListContactAliases(ctx, user.TelegramID)
+		if aliasErr != nil {
+			b.logger.Printf("admin natural booking: list contact aliases failed admin=%d: %v", user.TelegramID, aliasErr)
+		} else if alias, ok := resolveContactAlias(strings.TrimSpace(intent.Contact)+" "+text, aliases); ok {
+			contactType = alias.ContactType
+			contact = alias.Contact
+			b.logger.Printf("admin natural booking: resolved contact alias admin=%d alias=%q type=%s", user.TelegramID, alias.Alias, alias.ContactType)
+		}
 	}
 	state := ConversationState{
-		ContactType: contactType,
-		Username:    contact,
+		BookingDraft: "admin",
+		ContactType:  contactType,
+		Username:     contact,
+		FromDateTime: intent.StartAt,
 	}
 	state.ServiceIndexes = resolveNaturalBookingServices(nlu.BookingIntent{
 		ServiceIndexes: intent.ServiceIndexes,
@@ -71,20 +80,30 @@ func (b *Bot) handleAdminNaturalBooking(ctx context.Context, chatID int64, user 
 			state.ServiceIndexes = nil
 		}
 	}
+	return true, b.continueAdminBookingDraft(ctx, chatID, user, state)
+}
+
+func (b *Bot) continueAdminBookingDraft(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	state.BookingDraft = "admin"
+	if strings.TrimSpace(state.Username) == "" || state.ContactType == "" {
+		state.Step = conversationStepAppointKind
+		return b.beginConversation(ctx, chatID, user, state, "admin_booking_need_contact", contactTypeKeyboard(user.Language))
+	}
 	if len(state.ServiceIndexes) == 0 {
 		if err := b.sendText(ctx, chatID, tr(user.Language, "admin_booking_need_service")); err != nil {
-			return true, err
+			return err
 		}
-		return true, b.askAdminAppointmentServices(ctx, chatID, user, state)
+		return b.askAdminAppointmentServices(ctx, chatID, user, state)
 	}
 
-	requested, err := parseAdminBookingStart(intent.StartAt, now.Location())
+	now := time.Now().In(time.Local)
+	requested, err := parseAdminBookingStart(state.FromDateTime, now.Location())
 	if err != nil || requested.Before(now) {
-		state.Step = conversationStepTimeChoice
+		state.Step = conversationStepAdminBookingTime
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
-			return true, b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
-		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_booking_need_time"), timeChoiceKeyboard(user.Language))
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_booking_time_correction"))
 	}
 
 	dayStart := time.Date(requested.Year(), requested.Month(), requested.Day(), 0, 0, 0, 0, requested.Location())
@@ -92,19 +111,61 @@ func (b *Bot) handleAdminNaturalBooking(ctx context.Context, chatID int64, user 
 	if err != nil {
 		b.logger.Printf("admin natural booking: list slots failed admin=%d services=%v: %v", user.TelegramID, state.ServiceIndexes, err)
 		if errors.Is(err, store.ErrInvalidArgument) || errors.Is(err, store.ErrNotFound) {
-			return true, b.sendText(ctx, chatID, tr(user.Language, "admin_booking_need_service"))
+			state.ServiceIndexes = nil
+			return b.continueAdminBookingDraft(ctx, chatID, user, state)
 		}
-		return true, b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
+		return b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
 	}
 	for index, slot := range slots {
 		if slot.StartAt.Equal(requested) {
-			return true, b.beginBookingConfirmation(ctx, chatID, user, state, index+1)
+			return b.beginBookingConfirmation(ctx, chatID, user, state, index+1)
 		}
 	}
 	if len(slots) == 0 {
-		return true, b.sendText(ctx, chatID, tr(user.Language, "free_empty_try_other"))
+		state.Step = conversationStepAdminBookingTime
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, "free_empty_try_other")+"\n"+tr(user.Language, "admin_booking_time_correction"))
 	}
-	return true, b.showAdminBookingAlternatives(ctx, chatID, user, state, slots, requested)
+	return b.showAdminBookingAlternatives(ctx, chatID, user, state, slots, requested)
+}
+
+func (b *Bot) correctAdminBookingTime(ctx context.Context, user UserRecord, state ConversationState, text string) (ConversationState, bool) {
+	if parsed, err := parseDateTimeInput(text); err == nil {
+		state.FromDateTime = parsed.Format(time.RFC3339)
+		return state, true
+	}
+	if b.adminBookingParser == nil {
+		return state, false
+	}
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		return state, false
+	}
+	selectedNames := make([]string, 0, len(state.ServiceIndexes))
+	for _, index := range state.ServiceIndexes {
+		if index > 0 && index <= len(services) {
+			selectedNames = append(selectedNames, services[index-1].Name)
+		}
+	}
+	now := time.Now().In(time.Local)
+	intent, err := b.adminBookingParser.ParseAdminBookingIntent(ctx, nlu.AdminBookingIntentRequest{
+		Text: "Уточнение времени для записи клиента " + formatClientContact(state.Username) +
+			" на " + strings.Join(selectedNames, ", ") + ": " + text,
+		Language: user.Language,
+		Now:      now,
+		Timezone: now.Location().String(),
+		Services: nluServices(services),
+	})
+	if err != nil {
+		return state, false
+	}
+	if _, err := parseAdminBookingStart(intent.StartAt, now.Location()); err != nil {
+		return state, false
+	}
+	state.FromDateTime = intent.StartAt
+	return state, true
 }
 
 func adminBookingDurationMatches(indexes []int, requestedMinutes int, services []ServiceView) bool {
@@ -141,6 +202,8 @@ func normalizeAdminBookingContact(contactType, contact string) (string, string) 
 		return "telegram", normalizeUsername(contact)
 	case "phone":
 		return "phone", normalizePhone(contact)
+	case "name":
+		return "name", strings.TrimSpace(contact)
 	}
 	if strings.HasPrefix(contact, "@") {
 		return "telegram", normalizeUsername(contact)

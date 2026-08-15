@@ -61,6 +61,33 @@ type AdminBookingIntentParser interface {
 	ParseAdminBookingIntent(ctx context.Context, req AdminBookingIntentRequest) (AdminBookingIntent, error)
 }
 
+type AdminScheduleImportRequest struct {
+	Text     string
+	Language string
+	Now      time.Time
+	Timezone string
+	Services []Service
+}
+
+type AdminScheduleImportEntry struct {
+	Client         string   `json:"client"`
+	ServiceIndexes []int    `json:"service_indexes"`
+	ServiceQueries []string `json:"service_queries"`
+	DurationMin    int      `json:"duration_min"`
+	StartAt        string   `json:"start_at"`
+	Confidence     float64  `json:"confidence"`
+}
+
+type AdminScheduleImportIntent struct {
+	IsSchedule bool                       `json:"is_schedule"`
+	Entries    []AdminScheduleImportEntry `json:"entries"`
+	Confidence float64                    `json:"confidence"`
+}
+
+type AdminScheduleImportParser interface {
+	ParseAdminScheduleImport(ctx context.Context, req AdminScheduleImportRequest) (AdminScheduleImportIntent, error)
+}
+
 type SpeechRequest struct {
 	Audio    []byte
 	MIMEType string
@@ -79,4 +106,10 @@ type ImageTextRequest struct {
 
 type ImageTextRecognizer interface {
 	RecognizeText(ctx context.Context, req ImageTextRequest) (string, error)
+}
+
+// ImageLayoutTextRecognizer returns both readable text and OCR lines annotated
+// with their image coordinates. Schedule imports use the layout form.
+type ImageLayoutTextRecognizer interface {
+	RecognizeTextWithLayout(ctx context.Context, req ImageTextRequest) (text, layoutText string, err error)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,5 +46,72 @@ func TestQwenParserParsesAdminBookingIntent(t *testing.T) {
 	}
 	if !intent.IsCreateBooking || intent.Contact != "@client" || intent.StartAt != "2026-08-16T18:00:00+03:00" {
 		t.Fatalf("intent = %#v", intent)
+	}
+}
+
+func TestQwenParserParsesScheduleImport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req qwenChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.MaxCompletionTokens != 4000 {
+			t.Fatalf("max_completion_tokens = %d", req.MaxCompletionTokens)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"is_schedule\":true,\"entries\":[{\"client\":\"Лиза\",\"service_indexes\":[1],\"service_queries\":[\"электро\"],\"duration_min\":60,\"start_at\":\"2026-08-17T09:30:00+03:00\",\"confidence\":0.95}],\"confidence\":0.93}"}}]}`))
+	}))
+	defer server.Close()
+	parser, err := NewQwenParser(QwenConfig{APIKey: "test-key", BaseURL: server.URL, Model: "qwen-test"})
+	if err != nil {
+		t.Fatalf("NewQwenParser: %v", err)
+	}
+	intent, err := parser.ParseAdminScheduleImport(context.Background(), AdminScheduleImportRequest{
+		Text: "Авг. 2026, неделя 34\nпн 17\n9:30 Лиза\nэлектро 1 час",
+		Now:  time.Date(2026, 8, 15, 10, 0, 0, 0, time.FixedZone("test", 3*60*60)),
+		Services: []Service{{
+			Index: 1,
+			Name:  "Эпиляция электро",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseAdminScheduleImport: %v", err)
+	}
+	if !intent.IsSchedule || len(intent.Entries) != 1 || intent.Entries[0].Client != "Лиза" {
+		t.Fatalf("intent = %#v", intent)
+	}
+}
+
+func TestAnnotatePlannerPanelsAssignsEdgeDatesToTimedLines(t *testing.T) {
+	input := `[page width=591 height=1280]
+[x=38 y=107 w=18 h=19] 15
+[x=62 y=142 w=180 h=20] 9:30 Анастасия
+[x=17 y=264 w=18 h=16] пн
+[x=16 y=289 w=20 h=19] 17
+[x=62 y=485 w=180 h=20] 9:30 Стефани
+[x=19 y=607 w=17 h=16] BT
+[x=15 y=631 w=20 h=19] 18
+[x=62 y=828 w=180 h=20] 9:45 Марина
+[x=17 y=950 w=18 h=16] cp
+[x=15 y=974 w=20 h=19] 19`
+	got := annotatePlannerPanels(input)
+	for _, want := range []string{
+		"[panel_date_day=17] [x=62 y=142",
+		"[panel_date_day=18] [x=62 y=485",
+		"[panel_date_day=19] [x=62 y=828",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("annotated text does not contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "panel_date_day=15") {
+		t.Fatalf("header date was treated as panel date:\n%s", got)
+	}
+}
+
+func TestNormalizeScheduleOCRTextCorrectsWax(t *testing.T) {
+	got := normalizeScheduleOCRText("14:40 Кейт\nBOCK")
+	if !strings.Contains(got, "воск") || strings.Contains(got, "BOCK") {
+		t.Fatalf("normalized OCR = %q", got)
 	}
 }

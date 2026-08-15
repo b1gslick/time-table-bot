@@ -57,6 +57,19 @@ CREATE TABLE IF NOT EXISTS admin_settings (
     PRIMARY KEY (admin_user_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS admin_contact_aliases (
+    admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    contact_type TEXT NOT NULL CHECK (contact_type IN ('telegram', 'phone')),
+    contact TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (admin_user_id, alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_contact_aliases_contact
+    ON admin_contact_aliases(admin_user_id, contact_type, contact);
+
 CREATE TABLE IF NOT EXISTS schedule_slots (
     id BIGSERIAL PRIMARY KEY,
     admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

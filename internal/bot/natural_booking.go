@@ -53,20 +53,22 @@ func (b *Bot) handleNaturalBooking(ctx context.Context, chatID int64, user UserR
 	}
 
 	serviceIndexes := resolveNaturalBookingServices(intent, text, services)
+	state := resetSlotBrowserState(ConversationState{
+		BookingDraft: "client",
+		DateFrom:     intent.DateFrom,
+		DateTo:       intent.DateTo,
+	})
+	state.SlotPeriod = normalizeSlotPeriod(intent.Period)
 	if len(serviceIndexes) == 0 {
 		b.logger.Printf("natural booking: no service match user=%d text=%q intent=%+v", user.TelegramID, text, intent)
 		if err := b.sendText(ctx, chatID, tr(user.Language, "natural_booking_choose_service")); err != nil {
 			return true, err
 		}
-		return true, b.askCategory(ctx, chatID, user, nil)
+		return true, b.askCategoryWithState(ctx, chatID, user, state)
 	}
 
+	state.ServiceIndexes = serviceIndexes
 	from, to := naturalBookingRange(intent, now)
-	state := resetSlotBrowserState(ConversationState{
-		Step:           conversationStepSlot,
-		ServiceIndexes: serviceIndexes,
-		SlotPeriod:     normalizeSlotPeriod(intent.Period),
-	})
 	slots, err := b.store.ListFreeSlotsForServicesRange(ctx, user.TelegramID, serviceIndexes, from, to)
 	if err != nil {
 		b.logger.Printf("natural booking: list slots failed user=%d services=%v from=%s to=%s: %v", user.TelegramID, serviceIndexes, from.Format(time.RFC3339), to.Format(time.RFC3339), err)
@@ -80,6 +82,59 @@ func (b *Bot) handleNaturalBooking(ctx context.Context, chatID int64, user UserR
 	}
 	b.logger.Printf("natural booking: user=%d services=%v from=%s to=%s period=%s slots=%d", user.TelegramID, serviceIndexes, from.Format(time.RFC3339), to.Format(time.RFC3339), state.SlotPeriod, len(slots))
 	return true, b.showInteractiveSlots(ctx, chatID, user, state, slots)
+}
+
+func (b *Bot) continueClientBookingDraft(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	if len(state.ServiceIndexes) == 0 {
+		return b.askCategoryWithState(ctx, chatID, user, state)
+	}
+	now := time.Now().In(time.Local)
+	from, to := naturalBookingRange(nlu.BookingIntent{
+		DateFrom: state.DateFrom,
+		DateTo:   state.DateTo,
+		Period:   state.SlotPeriod,
+	}, now)
+	period := normalizeSlotPeriod(state.SlotPeriod)
+	state = resetSlotBrowserState(state)
+	state.BookingDraft = "client"
+	state.SlotPeriod = period
+	slots, err := b.store.ListFreeSlotsForServicesRange(ctx, user.TelegramID, state.ServiceIndexes, from, to)
+	if err != nil {
+		b.logger.Printf("client booking draft: list slots failed user=%d services=%v: %v", user.TelegramID, state.ServiceIndexes, err)
+		return b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
+	}
+	return b.showInteractiveSlots(ctx, chatID, user, state, slots)
+}
+
+func (b *Bot) correctClientBookingTime(ctx context.Context, user UserRecord, state ConversationState, text string) (ConversationState, bool) {
+	if b.bookingParser == nil {
+		return state, false
+	}
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		return state, false
+	}
+	selectedNames := make([]string, 0, len(state.ServiceIndexes))
+	for _, index := range state.ServiceIndexes {
+		if index > 0 && index <= len(services) {
+			selectedNames = append(selectedNames, services[index-1].Name)
+		}
+	}
+	now := time.Now().In(time.Local)
+	intent, err := b.bookingParser.ParseBookingIntent(ctx, nlu.BookingIntentRequest{
+		Text:     "Уточнение даты для записи на " + strings.Join(selectedNames, ", ") + ": " + text,
+		Language: user.Language,
+		Now:      now,
+		Timezone: now.Location().String(),
+		Services: nluServices(services),
+	})
+	if err != nil || intent.DateFrom == "" && intent.DateTo == "" {
+		return state, false
+	}
+	state.DateFrom = intent.DateFrom
+	state.DateTo = intent.DateTo
+	state.SlotPeriod = normalizeSlotPeriod(intent.Period)
+	return state, true
 }
 
 func nluServices(services []ServiceView) []nlu.Service {

@@ -168,26 +168,47 @@ type BlockDateResult struct {
 	ClosedSlots int
 }
 
+type ContactAlias struct {
+	Alias       string
+	ContactType string
+	Contact     string
+}
+
+type ScheduleImportDraft struct {
+	Client         string   `json:"client"`
+	ContactType    string   `json:"contact_type,omitempty"`
+	Contact        string   `json:"contact,omitempty"`
+	ServiceIndexes []int    `json:"service_indexes,omitempty"`
+	ServiceQueries []string `json:"service_queries,omitempty"`
+	DurationMin    int      `json:"duration_min,omitempty"`
+	StartAt        string   `json:"start_at,omitempty"`
+	Confidence     float64  `json:"confidence,omitempty"`
+}
+
 type ConversationState struct {
-	Step                  string         `json:"step"`
-	Category              string         `json:"category,omitempty"`
-	Subcategory           string         `json:"subcategory,omitempty"`
-	ServiceName           string         `json:"service_name,omitempty"`
-	ServiceDescription    string         `json:"service_description,omitempty"`
-	ServiceIndex          int            `json:"service_index,omitempty"`
-	Username              string         `json:"username,omitempty"`
-	FromDateTime          string         `json:"from_datetime,omitempty"`
-	ContactType           string         `json:"contact_type,omitempty"`
-	SlotDay               string         `json:"slot_day,omitempty"`
-	SlotPeriod            string         `json:"slot_period,omitempty"`
-	PendingSlotIndex      int            `json:"pending_slot_index,omitempty"`
-	ServiceIndexes        []int          `json:"service_indexes,omitempty"`
-	VisibleServiceIndexes []int          `json:"visible_service_indexes,omitempty"`
-	VisibleSlotIndexes    []int          `json:"visible_slot_indexes,omitempty"`
-	WeekdayIndex          int            `json:"weekday_index,omitempty"`
-	WeeklyHours           []WeekdayHours `json:"weekly_hours,omitempty"`
-	GenerateMode          string         `json:"generate_mode,omitempty"`
-	GenerateWeekdays      []time.Weekday `json:"generate_weekdays,omitempty"`
+	Step                  string                `json:"step"`
+	Category              string                `json:"category,omitempty"`
+	Subcategory           string                `json:"subcategory,omitempty"`
+	ServiceName           string                `json:"service_name,omitempty"`
+	ServiceDescription    string                `json:"service_description,omitempty"`
+	ServiceIndex          int                   `json:"service_index,omitempty"`
+	Username              string                `json:"username,omitempty"`
+	FromDateTime          string                `json:"from_datetime,omitempty"`
+	ContactType           string                `json:"contact_type,omitempty"`
+	BookingDraft          string                `json:"booking_draft,omitempty"`
+	DateFrom              string                `json:"date_from,omitempty"`
+	DateTo                string                `json:"date_to,omitempty"`
+	SlotDay               string                `json:"slot_day,omitempty"`
+	SlotPeriod            string                `json:"slot_period,omitempty"`
+	PendingSlotIndex      int                   `json:"pending_slot_index,omitempty"`
+	ServiceIndexes        []int                 `json:"service_indexes,omitempty"`
+	VisibleServiceIndexes []int                 `json:"visible_service_indexes,omitempty"`
+	VisibleSlotIndexes    []int                 `json:"visible_slot_indexes,omitempty"`
+	WeekdayIndex          int                   `json:"weekday_index,omitempty"`
+	WeeklyHours           []WeekdayHours        `json:"weekly_hours,omitempty"`
+	GenerateMode          string                `json:"generate_mode,omitempty"`
+	GenerateWeekdays      []time.Weekday        `json:"generate_weekdays,omitempty"`
+	ScheduleImportEntries []ScheduleImportDraft `json:"schedule_import_entries,omitempty"`
 }
 
 type Store interface {
@@ -199,6 +220,9 @@ type Store interface {
 	SetSuperAdminView(ctx context.Context, telegramID int64, view SuperAdminView) error
 	SetUserRole(ctx context.Context, username string, role Role) error
 	SetUserLanguage(ctx context.Context, telegramID int64, language string) error
+	UpsertContactAlias(ctx context.Context, adminTelegramID int64, alias, contactType, contact string) (int64, error)
+	DeleteContactAlias(ctx context.Context, adminTelegramID int64, alias string) error
+	ListContactAliases(ctx context.Context, adminTelegramID int64) ([]ContactAlias, error)
 
 	GetProfileText(ctx context.Context, adminTelegramID int64) (string, error)
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
@@ -223,6 +247,8 @@ type Store interface {
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (BookingChangeResult, error)
 	AddBookingForContactByIndex(ctx context.Context, adminTelegramID int64, contactType, contact string, index int) (BookingChangeResult, error)
+	CanImportBooking(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) error
+	AddImportedBooking(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (BookingChangeResult, error)
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	DeleteBookingByID(ctx context.Context, adminTelegramID int64, bookingID int64) (BookingChangeResult, error)
 	RescheduleBookingByUsername(ctx context.Context, adminTelegramID int64, username string, fromStart, toStart time.Time) (BookingChangeResult, error)

@@ -16,6 +16,15 @@ func (r fakeConfidenceImageRecognizer) RecognizeTextWithConfidence(context.Conte
 	return r.text, r.confidence, r.err
 }
 
+type fakeConfidenceLayoutImageRecognizer struct {
+	fakeConfidenceImageRecognizer
+	layout string
+}
+
+func (r fakeConfidenceLayoutImageRecognizer) RecognizeTextWithLayoutAndConfidence(context.Context, ImageTextRequest) (string, string, float64, error) {
+	return r.text, r.layout, r.confidence, r.err
+}
+
 type fakeImageRecognizer struct {
 	text  string
 	calls int
@@ -32,6 +41,17 @@ func TestImageFallbackKeepsReliableLocalOCR(t *testing.T) {
 	got, err := recognizer.RecognizeText(context.Background(), ImageTextRequest{Image: []byte("image")})
 	if err != nil || got != "printed" || fallback.calls != 0 {
 		t.Fatalf("result = %q, err=%v, fallback calls=%d", got, err, fallback.calls)
+	}
+}
+
+func TestImageFallbackPreservesReliableLocalOCRLayout(t *testing.T) {
+	recognizer := NewFallbackImageTextRecognizer(fakeConfidenceLayoutImageRecognizer{
+		fakeConfidenceImageRecognizer: fakeConfidenceImageRecognizer{text: "printed", confidence: 95},
+		layout:                        "[x=10 y=20] printed",
+	}, nil)
+	text, layout, err := recognizer.RecognizeTextWithLayout(context.Background(), ImageTextRequest{Image: []byte("image")})
+	if err != nil || text != "printed" || layout != "[x=10 y=20] printed" {
+		t.Fatalf("result = %q, %q, %v", text, layout, err)
 	}
 }
 

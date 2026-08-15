@@ -169,7 +169,7 @@ func TestBookingConfirmationKeyboard(t *testing.T) {
 	if kb == nil || len(kb.InlineKeyboard) != 2 {
 		t.Fatalf("keyboard = %#v, want two rows", kb)
 	}
-	want := []string{"bookconfirm:yes", "bookconfirm:no", "bookconfirm:other"}
+	want := []string{"bookconfirm:yes", "bookconfirm:no", "bookconfirm:edit", "bookconfirm:other"}
 	var got []string
 	for _, row := range kb.InlineKeyboard {
 		for _, button := range row {
@@ -179,8 +179,25 @@ func TestBookingConfirmationKeyboard(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("callbacks = %#v, want %#v", got, want)
 	}
-	if got := kb.InlineKeyboard[1][0].Text; got != "Найти другое" {
+	if got := kb.InlineKeyboard[1][0].Text; got != "Изменить" {
+		t.Fatalf("edit text = %q", got)
+	}
+	if got := kb.InlineKeyboard[1][1].Text; got != "Найти другое" {
 		t.Fatalf("find another text = %q", got)
+	}
+}
+
+func TestBookingEditKeyboardIncludesClientOnlyForAdmin(t *testing.T) {
+	client := bookingEditKeyboard(LangRU, false)
+	if client == nil || len(client.InlineKeyboard) != 1 || len(client.InlineKeyboard[0]) != 2 {
+		t.Fatalf("client edit keyboard = %#v", client)
+	}
+	admin := bookingEditKeyboard(LangRU, true)
+	if admin == nil || len(admin.InlineKeyboard) != 2 {
+		t.Fatalf("admin edit keyboard = %#v", admin)
+	}
+	if got := admin.InlineKeyboard[1][0].CallbackData; got != "bookedit:client" {
+		t.Fatalf("client edit callback = %q", got)
 	}
 }
 
@@ -191,6 +208,10 @@ func TestNormalizeBookingConfirmationChoice(t *testing.T) {
 		"Найти другое": "other",
 		"другое время": "other",
 		"Find another": "other",
+		"Изменить":     "edit",
+		"Услугу":       "service",
+		"Дату и время": "time",
+		"Клиента":      "client",
 	}
 	for input, want := range tests {
 		if got := normalizeChoice(input); got != want {

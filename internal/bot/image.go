@@ -42,11 +42,18 @@ func (b *Bot) handleImageMessage(ctx context.Context, msg *telegram.Message, use
 		b.logger.Printf("image: telegram download failed user=%d: %v", user.TelegramID, err)
 		return b.sendText(ctx, msg.Chat.ID, tr(user.Language, "image_failed"))
 	}
-	recognized, err := b.imageRecognizer.RecognizeText(ctx, nlu.ImageTextRequest{
+	imageRequest := nlu.ImageTextRequest{
 		Image:    data,
 		MIMEType: mimeType,
 		Language: user.Language,
-	})
+	}
+	recognized := ""
+	layoutRecognized := ""
+	if layoutRecognizer, ok := b.imageRecognizer.(nlu.ImageLayoutTextRecognizer); ok {
+		recognized, layoutRecognized, err = layoutRecognizer.RecognizeTextWithLayout(ctx, imageRequest)
+	} else {
+		recognized, err = b.imageRecognizer.RecognizeText(ctx, imageRequest)
+	}
 	if err != nil {
 		b.logger.Printf("image: OCR failed user=%d: %v", user.TelegramID, err)
 		if strings.TrimSpace(msg.Caption) == "" {
@@ -59,6 +66,13 @@ func (b *Bot) handleImageMessage(ctx context.Context, msg *telegram.Message, use
 		return b.sendText(ctx, msg.Chat.ID, tr(user.Language, "image_no_text"))
 	}
 	if err := b.sendText(ctx, msg.Chat.ID, tr(user.Language, "image_recognized", text)); err != nil {
+		return err
+	}
+	importText := text
+	if strings.TrimSpace(layoutRecognized) != "" {
+		importText = joinImageText(msg.Caption, layoutRecognized)
+	}
+	if handled, err := b.handleAdminScheduleImport(ctx, msg.Chat.ID, user, importText); handled {
 		return err
 	}
 	return b.HandleMessage(ctx, &telegram.Message{

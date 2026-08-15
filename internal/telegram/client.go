@@ -152,6 +152,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeoutSec int) (
 	params := url.Values{}
 	params.Set("offset", fmt.Sprintf("%d", offset))
 	params.Set("timeout", fmt.Sprintf("%d", timeoutSec))
+	params.Set("allowed_updates", `["message","callback_query"]`)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/getUpdates?"+params.Encode(), nil)
 	if err != nil {
