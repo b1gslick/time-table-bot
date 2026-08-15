@@ -88,6 +88,31 @@ type AdminScheduleImportParser interface {
 	ParseAdminScheduleImport(ctx context.Context, req AdminScheduleImportRequest) (AdminScheduleImportIntent, error)
 }
 
+type AdminServiceImportRequest struct {
+	Text             string
+	Language         string
+	ExistingServices []Service
+}
+
+type AdminServiceImportEntry struct {
+	Category    string  `json:"category"`
+	Subcategory string  `json:"subcategory"`
+	Name        string  `json:"name"`
+	DurationMin int     `json:"duration_min"`
+	PriceText   string  `json:"price_text"`
+	Confidence  float64 `json:"confidence"`
+}
+
+type AdminServiceImportIntent struct {
+	IsServiceCatalog bool                      `json:"is_service_catalog"`
+	Entries          []AdminServiceImportEntry `json:"entries"`
+	Confidence       float64                   `json:"confidence"`
+}
+
+type AdminServiceImportParser interface {
+	ParseAdminServiceImport(ctx context.Context, req AdminServiceImportRequest) (AdminServiceImportIntent, error)
+}
+
 type SpeechRequest struct {
 	Audio    []byte
 	MIMEType string

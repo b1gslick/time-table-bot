@@ -69,6 +69,7 @@ const (
 	conversationStepBlock            = "admin_block"
 	conversationStepBlockDate        = "admin_block_date"
 	conversationStepScheduleImport   = "admin_schedule_import"
+	conversationStepServiceImport    = "admin_service_import"
 )
 
 func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
@@ -206,6 +207,9 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 			if handled, err := b.handleAdminNaturalSchedule(ctx, msg.Chat.ID, current, text); handled {
 				return err
 			}
+			if handled, err := b.handleAdminNaturalServiceImport(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
 			if handled, err := b.handleAdminNaturalBooking(ctx, msg.Chat.ID, current, text); handled {
 				return err
 			}
@@ -238,6 +242,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "scheduleimport:") {
 		return b.handleScheduleImportCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "serviceimport:") {
+		return b.handleServiceImportCallback(ctx, cb)
 	}
 	if cb.Data == "my:list" {
 		return b.handleMyBookingsCallback(ctx, cb)

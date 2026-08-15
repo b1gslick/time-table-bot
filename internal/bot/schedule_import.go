@@ -140,22 +140,24 @@ func (b *Bot) evaluateScheduleImport(ctx context.Context, user UserRecord, draft
 		if len(item.Draft.ServiceIndexes) == 0 && item.Issue == "" {
 			item.Issue = tr(user.Language, "schedule_import_issue_service")
 		}
-		if item.Issue == "" && !scheduleImportServiceSelectionUnambiguous(item.Draft.ServiceQueries, item.Draft.DurationMin, item.Draft.ServiceIndexes, services) {
-			item.Issue = tr(user.Language, "schedule_import_issue_service")
-		}
 		if !adminBookingDurationMatches(item.Draft.ServiceIndexes, item.Draft.DurationMin, services) && item.Issue == "" {
 			item.Issue = tr(user.Language, "schedule_import_issue_duration")
 		}
-		item.ServiceText = scheduleImportServiceNames(item.Draft.ServiceIndexes, item.Draft.ServiceQueries, services)
+		servicesCovered := scheduleImportServicesCoverQuery(item.Draft.ServiceQueries, item.Draft.ServiceIndexes, services)
+		if item.Issue == "" && !servicesCovered {
+			item.Issue = tr(user.Language, "schedule_import_issue_service")
+		}
+		if servicesCovered {
+			item.ServiceText = scheduleImportServiceNames(item.Draft.ServiceIndexes, item.Draft.ServiceQueries, services)
+		} else {
+			item.ServiceText = scheduleImportUnresolvedServiceText(user.Language, item.Draft.ServiceQueries)
+		}
 		item.Start, err = parseAdminBookingStart(item.Draft.StartAt, now.Location())
 		if (err != nil || item.Start.Before(now)) && item.Issue == "" {
 			item.Issue = tr(user.Language, "schedule_import_issue_time")
 		}
 		if item.Draft.Confidence > 0 && item.Draft.Confidence < scheduleImportMinConfidence && item.Issue == "" {
 			item.Issue = tr(user.Language, "schedule_import_issue_uncertain")
-		}
-		if item.Issue == "" && !scheduleImportServicesCoverQuery(item.Draft.ServiceQueries, item.Draft.ServiceIndexes, services) {
-			item.Issue = tr(user.Language, "schedule_import_issue_service")
 		}
 		if item.Issue == "" && checkAvailability {
 			if err := b.store.CanImportBooking(ctx, user.TelegramID, item.Draft.ServiceIndexes, item.Start); err != nil {
@@ -290,6 +292,15 @@ func scheduleImportServiceNames(indexes []int, queries []string, services []Serv
 	return strings.Join(queries, ", ")
 }
 
+func scheduleImportUnresolvedServiceText(lang string, queries []string) string {
+	raw := strings.TrimSpace(strings.Join(queries, ", "))
+	normalized := normalizeMatchText(raw)
+	if normalized == "bock" || normalized == "воск" {
+		return tr(lang, "schedule_import_wax_zone_missing")
+	}
+	return strings.NewReplacer("BOCK", "воск", "bock", "воск").Replace(raw)
+}
+
 func scheduleImportServicesCoverQuery(queries []string, indexes []int, services []ServiceView) bool {
 	query := normalizeMatchText(strings.Join(queries, " "))
 	query = strings.NewReplacer("bock", "воск", "воск.", "воск").Replace(query)
@@ -329,27 +340,6 @@ func scheduleImportServicesCoverQuery(queries []string, indexes []int, services 
 		return false
 	}
 	return true
-}
-
-func scheduleImportServiceSelectionUnambiguous(queries []string, durationMin int, indexes []int, services []ServiceView) bool {
-	if len(indexes) != 1 {
-		return len(indexes) > 1
-	}
-	query := strings.Join(queries, " ")
-	bestScore, bestCount, selectedScore := 0, 0, 0
-	for i, service := range services {
-		score := serviceMatchScore(query, service, durationMin)
-		if i+1 == indexes[0] {
-			selectedScore = score
-		}
-		switch {
-		case score > bestScore:
-			bestScore, bestCount = score, 1
-		case score == bestScore && score > 0:
-			bestCount++
-		}
-	}
-	return selectedScore > 0 && selectedScore == bestScore && bestCount == 1
 }
 
 func scheduleImportKeyboard(lang string, canConfirm bool) *telegram.ReplyMarkup {

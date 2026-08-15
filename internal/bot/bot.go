@@ -185,6 +185,15 @@ type ScheduleImportDraft struct {
 	Confidence     float64  `json:"confidence,omitempty"`
 }
 
+type ServiceImportDraft struct {
+	Category    string  `json:"category,omitempty"`
+	Subcategory string  `json:"subcategory,omitempty"`
+	Name        string  `json:"name,omitempty"`
+	DurationMin int     `json:"duration_min,omitempty"`
+	PriceText   string  `json:"price_text,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
+}
+
 type ConversationState struct {
 	Step                  string                `json:"step"`
 	Category              string                `json:"category,omitempty"`
@@ -209,6 +218,7 @@ type ConversationState struct {
 	GenerateMode          string                `json:"generate_mode,omitempty"`
 	GenerateWeekdays      []time.Weekday        `json:"generate_weekdays,omitempty"`
 	ScheduleImportEntries []ScheduleImportDraft `json:"schedule_import_entries,omitempty"`
+	ServiceImportEntries  []ServiceImportDraft  `json:"service_import_entries,omitempty"`
 }
 
 type Store interface {

@@ -76,15 +76,8 @@ func TestScheduleImportServicesCoverEveryRecognizedType(t *testing.T) {
 	}
 }
 
-func TestScheduleImportRejectsAmbiguousTariff(t *testing.T) {
-	services := []ServiceView{
-		{Category: "Электроэпиляция", Name: "До 30 мин", DurationMin: 30},
-		{Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
-	}
-	if scheduleImportServiceSelectionUnambiguous([]string{"электро"}, 0, []int{1}, services) {
-		t.Fatal("generic category must not select the first tariff")
-	}
-	if !scheduleImportServiceSelectionUnambiguous([]string{"электро 1 час"}, 60, []int{2}, services) {
-		t.Fatal("explicit duration must select the matching tariff")
+func TestScheduleImportDoesNotDisplayArbitraryWaxService(t *testing.T) {
+	if got := scheduleImportUnresolvedServiceText(LangRU, []string{"BOCK"}); got != "воск — зона не указана" {
+		t.Fatalf("unresolved service text = %q", got)
 	}
 }

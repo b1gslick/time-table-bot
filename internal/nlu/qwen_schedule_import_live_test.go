@@ -107,3 +107,35 @@ func TestQwenScheduleImportLive(t *testing.T) {
 		t.Logf("%s | %s | %v | %v", entry.StartAt, entry.Client, entry.ServiceIndexes, entry.ServiceQueries)
 	}
 }
+
+func TestQwenServiceImportLive(t *testing.T) {
+	if os.Getenv("QWEN_LIVE_TEST") != "1" {
+		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")
+	}
+	parser, err := NewQwenParser(QwenConfig{
+		APIKey: os.Getenv("QWEN_API_KEY"), BaseURL: os.Getenv("QWEN_BASE_URL"),
+		Model: os.Getenv("QWEN_MODEL"), Timeout: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := parser.ParseAdminServiceImport(context.Background(), AdminServiceImportRequest{
+		Text:     "Добавь услуги: электроэпиляция один час 45 евро, полтора часа 60 евро; воск, усы 10 евро 15 минут и глубокое бикини 30 евро 30 минут",
+		Language: "ru",
+		ExistingServices: []Service{{
+			Category: "Восковая депиляция", Subcategory: "Лицо", Name: "Лицо полностью", DurationMin: 15,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.IsServiceCatalog || len(intent.Entries) != 4 {
+		t.Fatalf("catalog=%v confidence=%.2f entries=%d intent=%+v", intent.IsServiceCatalog, intent.Confidence, len(intent.Entries), intent)
+	}
+	for _, entry := range intent.Entries {
+		if entry.Name == "" || entry.Category == "" || entry.DurationMin <= 0 || entry.PriceText == "" {
+			t.Fatalf("incomplete service entry: %+v", entry)
+		}
+	}
+	t.Logf("service catalog confidence=%.2f entries=%+v", intent.Confidence, intent.Entries)
+}

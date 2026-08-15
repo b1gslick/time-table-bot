@@ -125,6 +125,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationBlockDate(ctx, chatID, user, text)
 	case conversationStepScheduleImport:
 		return true, b.showScheduleImportPreview(ctx, chatID, user, state)
+	case conversationStepServiceImport:
+		return true, b.showServiceImportPreview(ctx, chatID, user, state)
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil

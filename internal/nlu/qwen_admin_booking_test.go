@@ -82,6 +82,41 @@ func TestQwenParserParsesScheduleImport(t *testing.T) {
 	}
 }
 
+func TestQwenParserParsesServiceImport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req qwenChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.MaxCompletionTokens != 3000 {
+			t.Fatalf("max_completion_tokens = %d", req.MaxCompletionTokens)
+		}
+		if len(req.Messages) != 2 || !strings.Contains(req.Messages[1].Content, "Восковая депиляция > Лицо > Усы") {
+			t.Fatalf("existing services missing from prompt: %#v", req.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"is_service_catalog\":true,\"entries\":[{\"category\":\"Электроэпиляция\",\"subcategory\":\"По времени\",\"name\":\"1,5 часа\",\"duration_min\":90,\"price_text\":\"60 €\",\"confidence\":0.97}],\"confidence\":0.96}"}}]}`))
+	}))
+	defer server.Close()
+	parser, err := NewQwenParser(QwenConfig{APIKey: "test-key", BaseURL: server.URL, Model: "qwen-test"})
+	if err != nil {
+		t.Fatalf("NewQwenParser: %v", err)
+	}
+	intent, err := parser.ParseAdminServiceImport(context.Background(), AdminServiceImportRequest{
+		Text:     "Добавь электроэпиляцию на полтора часа за 60 евро",
+		Language: "ru",
+		ExistingServices: []Service{{
+			Category: "Восковая депиляция", Subcategory: "Лицо", Name: "Усы", DurationMin: 15,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ParseAdminServiceImport: %v", err)
+	}
+	if !intent.IsServiceCatalog || len(intent.Entries) != 1 || intent.Entries[0].DurationMin != 90 || intent.Entries[0].PriceText != "60 €" {
+		t.Fatalf("intent = %#v", intent)
+	}
+}
+
 func TestAnnotatePlannerPanelsAssignsEdgeDatesToTimedLines(t *testing.T) {
 	input := `[page width=591 height=1280]
 [x=38 y=107 w=18 h=19] 15
