@@ -1435,6 +1435,15 @@ func TestAppStore_ContactAliasRelinksExistingNamedBooking(t *testing.T) {
 		t.Fatalf("AddService: %v", err)
 	}
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour).Add(10 * time.Minute)
+	for i := 0; i < 3; i++ {
+		slotStart := start.Add(-10 * time.Minute).Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID, StartAt: slotStart, EndAt: slotStart.Add(15 * time.Minute),
+			Capacity: 1, Status: domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
 	services, err := app.ListServices(ctx, 2001)
 	if err != nil || len(services) != 1 {
 		t.Fatalf("ListServices = %#v, %v", services, err)
@@ -1444,6 +1453,10 @@ func TestAppStore_ContactAliasRelinksExistingNamedBooking(t *testing.T) {
 	}
 	if _, err := app.AddImportedBooking(ctx, 2001, "name", "Анастасия Балтаджи", []int{1}, start); err != nil {
 		t.Fatalf("AddImportedBooking name: %v", err)
+	}
+	var closedOverlaps int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_slots WHERE admin_user_id = $1 AND note = '' AND status = 'closed'`, admin.ID).Scan(&closedOverlaps); err != nil || closedOverlaps != 3 {
+		t.Fatalf("closed overlapping slots = %d, %v", closedOverlaps, err)
 	}
 	if err := app.CanImportBooking(ctx, 2001, []int{1}, start.Add(15*time.Minute)); !errors.Is(err, store.ErrSlotUnavailable) {
 		t.Fatalf("CanImportBooking overlap error = %v", err)
