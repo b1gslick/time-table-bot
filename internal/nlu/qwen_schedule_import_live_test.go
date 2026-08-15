@@ -139,3 +139,38 @@ func TestQwenServiceImportLive(t *testing.T) {
 	}
 	t.Logf("service catalog confidence=%.2f entries=%+v", intent.Confidence, intent.Entries)
 }
+
+func TestQwenFinanceIntentLive(t *testing.T) {
+	if os.Getenv("QWEN_LIVE_TEST") != "1" {
+		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")
+	}
+	parser, err := NewQwenParser(QwenConfig{
+		APIKey: os.Getenv("QWEN_API_KEY"), BaseURL: os.Getenv("QWEN_BASE_URL"),
+		Model: os.Getenv("QWEN_MODEL"), Timeout: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := parser.ParseAdminFinanceIntent(context.Background(), AdminFinanceIntentRequest{
+		Text:     "Сегодня купила расходники на восемьдесят пять евро сорок центов и заплатила аренду шестьсот евро",
+		Language: "ru", Source: "voice",
+		Now:      time.Date(2026, 8, 15, 12, 0, 0, 0, time.FixedZone("Europe/Nicosia", 3*60*60)),
+		Timezone: "Europe/Nicosia", ForcedKind: "expense",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.IsFinance || len(intent.Entries) != 2 {
+		t.Fatalf("finance=%v confidence=%.2f entries=%d", intent.IsFinance, intent.Confidence, len(intent.Entries))
+	}
+	amounts := map[int64]bool{}
+	for _, entry := range intent.Entries {
+		if entry.Kind != "expense" || entry.Currency != "EUR" {
+			t.Fatalf("unexpected entry: %+v", entry)
+		}
+		amounts[entry.AmountCents] = true
+	}
+	if !amounts[8540] || !amounts[60000] {
+		t.Fatalf("amounts = %v, want 8540 and 60000 cents", amounts)
+	}
+}

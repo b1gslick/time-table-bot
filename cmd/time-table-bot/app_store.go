@@ -2415,7 +2415,10 @@ WHERE b.status = 'booked'
 	if err := s.prepareAdminScheduleReminders(ctx, now); err != nil {
 		return err
 	}
-	return s.prepareDailyAdminBookingSummaries(ctx, now)
+	if err := s.prepareDailyAdminBookingSummaries(ctx, now); err != nil {
+		return err
+	}
+	return s.prepareMonthlyFinanceReminders(ctx, now)
 }
 
 func (s *appStore) DueReminders(ctx context.Context, now time.Time, limit int) ([]scheduler.Reminder, error) {

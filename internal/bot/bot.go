@@ -194,6 +194,56 @@ type ServiceImportDraft struct {
 	Confidence  float64 `json:"confidence,omitempty"`
 }
 
+type FinanceEntryDraft struct {
+	BookingID   int64   `json:"booking_id,omitempty"`
+	Kind        string  `json:"kind,omitempty"`
+	Category    string  `json:"category,omitempty"`
+	AmountCents int64   `json:"amount_cents,omitempty"`
+	Currency    string  `json:"currency,omitempty"`
+	OccurredAt  string  `json:"occurred_at,omitempty"`
+	Description string  `json:"description,omitempty"`
+	Source      string  `json:"source,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
+}
+
+type FinanceEntryInput struct {
+	BookingID   int64
+	Kind        string
+	Category    string
+	AmountCents int64
+	Currency    string
+	OccurredAt  time.Time
+	Description string
+	Source      string
+}
+
+type FinanceUnresolved struct {
+	BookingID    int64
+	StartAt      time.Time
+	Client       string
+	ServiceNames []string
+	Reason       string
+}
+
+type FinanceBucket struct {
+	StartAt      time.Time
+	Label        string
+	IncomeCents  int64
+	ExpenseCents int64
+}
+
+type FinanceReport struct {
+	From               time.Time
+	To                 time.Time
+	Currency           string
+	BookingIncomeCents int64
+	ManualIncomeCents  int64
+	ExpenseCents       int64
+	ExpenseCategories  map[string]int64
+	Unresolved         []FinanceUnresolved
+	Buckets            []FinanceBucket
+}
+
 type ConversationState struct {
 	Step                  string                `json:"step"`
 	Category              string                `json:"category,omitempty"`
@@ -219,6 +269,10 @@ type ConversationState struct {
 	GenerateWeekdays      []time.Weekday        `json:"generate_weekdays,omitempty"`
 	ScheduleImportEntries []ScheduleImportDraft `json:"schedule_import_entries,omitempty"`
 	ServiceImportEntries  []ServiceImportDraft  `json:"service_import_entries,omitempty"`
+	FinanceEntries        []FinanceEntryDraft   `json:"finance_entries,omitempty"`
+	FinanceForcedKind     string                `json:"finance_forced_kind,omitempty"`
+	FinanceReportPeriod   string                `json:"finance_report_period,omitempty"`
+	FinanceResolveBooking int64                 `json:"finance_resolve_booking,omitempty"`
 }
 
 type Store interface {
@@ -233,6 +287,8 @@ type Store interface {
 	UpsertContactAlias(ctx context.Context, adminTelegramID int64, alias, contactType, contact string) (int64, error)
 	DeleteContactAlias(ctx context.Context, adminTelegramID int64, alias string) error
 	ListContactAliases(ctx context.Context, adminTelegramID int64) ([]ContactAlias, error)
+	AddFinanceEntry(ctx context.Context, adminTelegramID int64, entry FinanceEntryInput) error
+	FinanceReport(ctx context.Context, adminTelegramID int64, from, to time.Time, period string) (FinanceReport, error)
 
 	GetProfileText(ctx context.Context, adminTelegramID int64) (string, error)
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error

@@ -14,13 +14,14 @@ func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 		return menuKeyboard([][]string{
 			{tr(lang, "button_menu_calendar"), tr(lang, "button_menu_bookings")},
 			{tr(lang, "button_menu_services"), tr(lang, "button_menu_schedule")},
-			{tr(lang, "button_menu_settings"), tr(lang, "button_menu_admins")},
+			{tr(lang, "button_menu_finance"), tr(lang, "button_menu_settings")},
+			{tr(lang, "button_menu_admins")},
 		})
 	case RoleAdmin:
 		return menuKeyboard([][]string{
 			{tr(lang, "button_menu_calendar"), tr(lang, "button_menu_bookings")},
 			{tr(lang, "button_menu_services"), tr(lang, "button_menu_schedule")},
-			{tr(lang, "button_menu_settings")},
+			{tr(lang, "button_menu_finance"), tr(lang, "button_menu_settings")},
 		})
 	default:
 		return menuKeyboard([][]string{
@@ -28,6 +29,64 @@ func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 			{tr(lang, "button_action_my")},
 		})
 	}
+}
+
+func financeMenuKeyboard(lang string) *telegram.ReplyMarkup {
+	return menuKeyboard([][]string{
+		{tr(lang, "button_finance_month"), tr(lang, "button_finance_quarter"), tr(lang, "button_finance_year")},
+		{tr(lang, "button_finance_add_income"), tr(lang, "button_finance_add_expense")},
+		{tr(lang, "button_finance_chart")},
+		{tr(lang, "button_back")},
+	})
+}
+
+func financeInputKeyboard(lang string) *telegram.ReplyMarkup {
+	return menuKeyboard([][]string{{tr(lang, "button_back")}})
+}
+
+func financeChartPeriodKeyboard(lang string) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: tr(lang, "button_finance_month"), CallbackData: "finance:chart:month"},
+			{Text: tr(lang, "button_finance_quarter"), CallbackData: "finance:chart:quarter"},
+			{Text: tr(lang, "button_finance_year"), CallbackData: "finance:chart:year"},
+		},
+	}}
+}
+
+func financeEntryKeyboard(lang string, canConfirm bool) *telegram.ReplyMarkup {
+	rows := make([][]telegram.InlineKeyboardButton, 0, 2)
+	if canConfirm {
+		rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "finance_confirm"), CallbackData: "financeentry:yes"}})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "no"), CallbackData: "financeentry:no"}})
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func financeReportKeyboard(lang string, unresolved []FinanceUnresolved, period string) *telegram.ReplyMarkup {
+	rows := make([][]telegram.InlineKeyboardButton, 0, 12)
+	limit := len(unresolved)
+	if limit > 8 {
+		limit = 8
+	}
+	for i := 0; i < limit; i++ {
+		item := unresolved[i]
+		label := fmt.Sprintf("%s %s", item.StartAt.Format("02.01"), item.Client)
+		if len([]rune(label)) > 32 {
+			label = string([]rune(label)[:32])
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{{
+			Text: tr(lang, "finance_resolve_button", label), CallbackData: fmt.Sprintf("finance:resolve:%d:%s", item.BookingID, period),
+		}})
+	}
+	rows = append(rows,
+		[]telegram.InlineKeyboardButton{
+			{Text: tr(lang, "button_finance_add_income"), CallbackData: "finance:addincome:" + period},
+			{Text: tr(lang, "button_finance_add_expense"), CallbackData: "finance:addexpense:" + period},
+		},
+		[]telegram.InlineKeyboardButton{{Text: tr(lang, "button_finance_chart"), CallbackData: "finance:chart:" + period}},
+	)
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
 func keyboardForUser(user UserRecord) *telegram.ReplyMarkup {

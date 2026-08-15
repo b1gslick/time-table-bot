@@ -127,6 +127,12 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.showScheduleImportPreview(ctx, chatID, user, state)
 	case conversationStepServiceImport:
 		return true, b.showServiceImportPreview(ctx, chatID, user, state)
+	case conversationStepFinanceInput:
+		return true, b.conversationFinanceInput(ctx, chatID, user, state, text)
+	case conversationStepFinanceConfirm:
+		return true, b.showFinanceEntryPreview(ctx, chatID, user, state)
+	case conversationStepFinanceResolve:
+		return true, b.conversationFinanceResolve(ctx, chatID, user, state, text)
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil

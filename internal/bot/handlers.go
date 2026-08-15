@@ -70,6 +70,9 @@ const (
 	conversationStepBlockDate        = "admin_block_date"
 	conversationStepScheduleImport   = "admin_schedule_import"
 	conversationStepServiceImport    = "admin_service_import"
+	conversationStepFinanceInput     = "admin_finance_input"
+	conversationStepFinanceConfirm   = "admin_finance_confirm"
+	conversationStepFinanceResolve   = "admin_finance_resolve"
 )
 
 func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
@@ -124,6 +127,12 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 		return b.sendHelp(ctx, msg.Chat.ID, current)
 	case "/aliases":
 		return b.sendContactAliases(ctx, msg.Chat.ID, current)
+	case "/finance", "/report":
+		period := "month"
+		if len(parts) > 1 {
+			period = strings.ToLower(parts[1])
+		}
+		return b.sendFinanceReport(ctx, msg.Chat.ID, current, period)
 	case "/alias":
 		if handled, err := b.handleAdminContactAlias(ctx, msg.Chat.ID, current, text); handled {
 			return err
@@ -204,7 +213,16 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 			if handled, err := b.handleConversation(ctx, msg.Chat.ID, current, text); handled {
 				return err
 			}
+			if handled, err := b.handleAdminFinanceChartRequest(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
+			if handled, err := b.handleAdminFinanceReportRequest(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
 			if handled, err := b.handleAdminNaturalSchedule(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
+			if handled, err := b.handleAdminFinanceInput(ctx, msg.Chat.ID, current, text, "text", ""); handled {
 				return err
 			}
 			if handled, err := b.handleAdminNaturalServiceImport(ctx, msg.Chat.ID, current, text); handled {
@@ -245,6 +263,12 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "serviceimport:") {
 		return b.handleServiceImportCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "financeentry:") {
+		return b.handleFinanceEntryCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "finance:") {
+		return b.handleFinanceCallback(ctx, cb)
 	}
 	if cb.Data == "my:list" {
 		return b.handleMyBookingsCallback(ctx, cb)
@@ -670,6 +694,11 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_schedule_text"), scheduleMenuKeyboard(user.Language))
 	case "menu_settings":
 		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_settings_text"), settingsMenuKeyboard(user.Language))
+	case "menu_finance":
+		if !isAdmin(user.Role) {
+			return true, b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+		}
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "menu_finance_text"), financeMenuKeyboard(user.Language))
 	case "menu_admins":
 		if user.ActualRole != RoleSuperAdmin {
 			return true, b.sendText(ctx, chatID, tr(user.Language, "super_only_role"))
@@ -752,6 +781,21 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleReschedule(ctx, chatID, user, []string{"/reschedule"})
 	case "action_block":
 		return true, b.handleBlock(ctx, chatID, user, []string{"/block"})
+	case "finance_month":
+		return true, b.sendFinanceReport(ctx, chatID, user, "month")
+	case "finance_quarter":
+		return true, b.sendFinanceReport(ctx, chatID, user, "quarter")
+	case "finance_year":
+		return true, b.sendFinanceReport(ctx, chatID, user, "year")
+	case "finance_add_income":
+		return true, b.beginFinanceInput(ctx, chatID, user, "income", "")
+	case "finance_add_expense":
+		return true, b.beginFinanceInput(ctx, chatID, user, "expense", "")
+	case "finance_chart":
+		if !isAdmin(user.Role) {
+			return true, b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+		}
+		return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "finance_chart_choose"), financeChartPeriodKeyboard(user.Language))
 	default:
 		return false, nil
 	}
@@ -768,6 +812,7 @@ func menuButtonAction(lang, text string) string {
 		{"menu_services", "button_menu_services"},
 		{"menu_schedule", "button_menu_schedule"},
 		{"menu_settings", "button_menu_settings"},
+		{"menu_finance", "button_menu_finance"},
 		{"menu_admins", "button_menu_admins"},
 		{"back", "button_back"},
 		{"main", "button_main"},
@@ -810,6 +855,12 @@ func menuButtonAction(lang, text string) string {
 		{"action_cancel", "button_action_cancel"},
 		{"action_reschedule", "button_action_reschedule"},
 		{"action_block", "button_action_block"},
+		{"finance_month", "button_finance_month"},
+		{"finance_quarter", "button_finance_quarter"},
+		{"finance_year", "button_finance_year"},
+		{"finance_add_income", "button_finance_add_income"},
+		{"finance_add_expense", "button_finance_add_expense"},
+		{"finance_chart", "button_finance_chart"},
 	}
 	normalized := normalizeMenuButton(text)
 	for _, button := range buttons {

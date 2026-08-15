@@ -117,6 +117,35 @@ func TestQwenParserParsesServiceImport(t *testing.T) {
 	}
 }
 
+func TestQwenParserParsesFinanceIntent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req qwenChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.MaxCompletionTokens != 2500 || !strings.Contains(req.Messages[1].Content, "Input source: image") {
+			t.Fatalf("request = %#v", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"is_finance\":true,\"entries\":[{\"kind\":\"expense\",\"category\":\"supplies\",\"amount_cents\":8540,\"currency\":\"EUR\",\"occurred_at\":\"2026-08-15T12:00:00+03:00\",\"description\":\"receipt\",\"confidence\":0.97}],\"confidence\":0.96}"}}]}`))
+	}))
+	defer server.Close()
+	parser, err := NewQwenParser(QwenConfig{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := parser.ParseAdminFinanceIntent(context.Background(), AdminFinanceIntentRequest{
+		Text: "ИТОГО 85.40 EUR", Language: "ru", Source: "image",
+		Now: time.Date(2026, 8, 15, 12, 0, 0, 0, time.FixedZone("test", 3*60*60)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.IsFinance || len(intent.Entries) != 1 || intent.Entries[0].AmountCents != 8540 || intent.Entries[0].Kind != "expense" {
+		t.Fatalf("intent = %#v", intent)
+	}
+}
+
 func TestAnnotatePlannerPanelsAssignsEdgeDatesToTimedLines(t *testing.T) {
 	input := `[page width=591 height=1280]
 [x=38 y=107 w=18 h=19] 15

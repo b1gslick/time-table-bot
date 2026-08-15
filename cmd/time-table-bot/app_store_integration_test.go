@@ -751,6 +751,107 @@ func TestAppStore_AddBookingForContactByIndexUsesSelectedServiceSlot(t *testing.
 	}
 }
 
+func TestAppStore_FinanceReportIncludesBookingsExpensesAndOverrides(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Электроэпиляция > Основное > 1 час 45 €", 60, ""); err != nil {
+		t.Fatalf("AddService priced: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Восковая депиляция > Лицо > Усы", 30, ""); err != nil {
+		t.Fatalf("AddService without price: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT id FROM admin_services WHERE admin_user_id = $1 ORDER BY id", admin.ID)
+	if err != nil {
+		t.Fatalf("query services: %v", err)
+	}
+	var serviceIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			t.Fatalf("scan service: %v", err)
+		}
+		serviceIDs = append(serviceIDs, id)
+	}
+	rows.Close()
+	if len(serviceIDs) != 2 {
+		t.Fatalf("service ids = %v, want two", serviceIDs)
+	}
+
+	now := time.Now().UTC()
+	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for i, serviceID := range serviceIDs {
+		start := from.AddDate(0, 0, 2+i).Add(10 * time.Hour)
+		slot, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			ServiceID:   &serviceID,
+			StartAt:     start,
+			EndAt:       start.Add(time.Hour),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		})
+		if err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+		if _, err := repo.CreateBooking(ctx, domain.Booking{
+			SlotID: slot.ID, UserID: &client.ID, ServiceID: &serviceID,
+			Status: domain.BookingStatusBooked,
+		}); err != nil {
+			t.Fatalf("CreateBooking %d: %v", i, err)
+		}
+	}
+	if err := app.AddFinanceEntry(ctx, 2001, bot.FinanceEntryInput{
+		Kind: "expense", Category: "supplies", AmountCents: 1200, Currency: "EUR",
+		OccurredAt: from.AddDate(0, 0, 4).Add(12 * time.Hour), Description: "Расходники", Source: "text",
+	}); err != nil {
+		t.Fatalf("AddFinanceEntry expense: %v", err)
+	}
+
+	report, err := app.FinanceReport(ctx, 2001, from, from.AddDate(0, 1, 0), "month")
+	if err != nil {
+		t.Fatalf("FinanceReport: %v", err)
+	}
+	if report.BookingIncomeCents != 4500 || report.ExpenseCents != 1200 || len(report.Unresolved) != 1 {
+		t.Fatalf("report = %#v, want 45 EUR income, 12 EUR expense, one unresolved", report)
+	}
+	if report.Unresolved[0].Reason != "price_missing" {
+		t.Fatalf("unresolved reason = %q, want price_missing", report.Unresolved[0].Reason)
+	}
+
+	unresolved := report.Unresolved[0]
+	if err := app.AddFinanceEntry(ctx, 2001, bot.FinanceEntryInput{
+		BookingID: unresolved.BookingID, Kind: "income", Category: "services", AmountCents: 1000, Currency: "EUR",
+		OccurredAt: unresolved.StartAt, Description: "Усы", Source: "booking_override",
+	}); err != nil {
+		t.Fatalf("AddFinanceEntry override: %v", err)
+	}
+	report, err = app.FinanceReport(ctx, 2001, from, from.AddDate(0, 1, 0), "month")
+	if err != nil {
+		t.Fatalf("FinanceReport after override: %v", err)
+	}
+	if report.BookingIncomeCents != 5500 || len(report.Unresolved) != 0 {
+		t.Fatalf("report after override = %#v, want 55 EUR income and no unresolved", report)
+	}
+}
+
 func TestAppStore_DeleteServiceAndScheduleMonth(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)

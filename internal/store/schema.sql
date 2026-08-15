@@ -109,6 +109,27 @@ CREATE INDEX IF NOT EXISTS idx_bookings_slot_status
 CREATE INDEX IF NOT EXISTS idx_bookings_user_status
     ON bookings(user_id, status);
 
+CREATE TABLE IF NOT EXISTS admin_finance_entries (
+    id BIGSERIAL PRIMARY KEY,
+    admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    booking_id BIGINT REFERENCES bookings(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('income', 'expense')),
+    category TEXT NOT NULL DEFAULT '',
+    amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    occurred_at TIMESTAMPTZ NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'text',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_finance_entries_admin_time
+    ON admin_finance_entries(admin_user_id, occurred_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_finance_entries_booking_override
+    ON admin_finance_entries(admin_user_id, booking_id)
+    WHERE booking_id IS NOT NULL AND source = 'booking_override';
+
 CREATE TABLE IF NOT EXISTS reminders (
     id BIGSERIAL PRIMARY KEY,
     booking_id BIGINT REFERENCES bookings(id) ON DELETE CASCADE,

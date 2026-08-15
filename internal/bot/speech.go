@@ -60,6 +60,15 @@ func (b *Bot) handleSpeechMessage(ctx context.Context, msg *telegram.Message, us
 	if err := b.sendText(ctx, msg.Chat.ID, tr(user.Language, "speech_recognized", text)); err != nil {
 		return err
 	}
+	if handled, err := b.handleAdminFinanceChartRequest(ctx, msg.Chat.ID, user, text); handled {
+		return err
+	}
+	if handled, err := b.handleAdminFinanceReportRequest(ctx, msg.Chat.ID, user, text); handled {
+		return err
+	}
+	if handled, err := b.handleAdminFinanceInput(ctx, msg.Chat.ID, user, text, "voice", ""); handled {
+		return err
+	}
 	return b.HandleMessage(ctx, &telegram.Message{
 		From: msg.From,
 		Chat: msg.Chat,

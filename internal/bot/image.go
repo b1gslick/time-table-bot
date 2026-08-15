@@ -72,6 +72,9 @@ func (b *Bot) handleImageMessage(ctx context.Context, msg *telegram.Message, use
 	if strings.TrimSpace(layoutRecognized) != "" {
 		importText = joinImageText(msg.Caption, layoutRecognized)
 	}
+	if handled, err := b.handleAdminFinanceInput(ctx, msg.Chat.ID, user, text, "image", ""); handled {
+		return err
+	}
 	if handled, err := b.handleAdminScheduleImport(ctx, msg.Chat.ID, user, importText); handled {
 		return err
 	}

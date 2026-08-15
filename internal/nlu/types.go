@@ -113,6 +113,35 @@ type AdminServiceImportParser interface {
 	ParseAdminServiceImport(ctx context.Context, req AdminServiceImportRequest) (AdminServiceImportIntent, error)
 }
 
+type AdminFinanceIntentRequest struct {
+	Text       string
+	Language   string
+	Now        time.Time
+	Timezone   string
+	Source     string
+	ForcedKind string
+}
+
+type AdminFinanceIntentEntry struct {
+	Kind        string  `json:"kind"`
+	Category    string  `json:"category"`
+	AmountCents int64   `json:"amount_cents"`
+	Currency    string  `json:"currency"`
+	OccurredAt  string  `json:"occurred_at"`
+	Description string  `json:"description"`
+	Confidence  float64 `json:"confidence"`
+}
+
+type AdminFinanceIntent struct {
+	IsFinance  bool                      `json:"is_finance"`
+	Entries    []AdminFinanceIntentEntry `json:"entries"`
+	Confidence float64                   `json:"confidence"`
+}
+
+type AdminFinanceIntentParser interface {
+	ParseAdminFinanceIntent(ctx context.Context, req AdminFinanceIntentRequest) (AdminFinanceIntent, error)
+}
+
 type SpeechRequest struct {
 	Audio    []byte
 	MIMEType string
