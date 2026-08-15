@@ -69,6 +69,39 @@ func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
 	}
 }
 
+func TestStartKeyboardsDoNotExposeCommands(t *testing.T) {
+	for _, role := range []Role{RoleUser, RoleAdmin, RoleSuperAdmin} {
+		keyboard := keyboardForRole(role, LangRU)
+		for _, row := range keyboard.Keyboard {
+			for _, button := range row {
+				if strings.HasPrefix(button.Text, "/") {
+					t.Fatalf("role %s start button exposes command %q", role, button.Text)
+				}
+			}
+		}
+	}
+	clientKeyboard := keyboardForRole(RoleUser, LangRU)
+	if len(clientKeyboard.Keyboard) != 2 || clientKeyboard.Keyboard[0][0].Text != "Начать запись" || clientKeyboard.Keyboard[1][0].Text != "Мои записи" {
+		t.Fatalf("client keyboard = %#v", clientKeyboard.Keyboard)
+	}
+}
+
+func TestFormatStartServicesIsCompactAndCommandFree(t *testing.T) {
+	services := []ServiceView{
+		{Category: "Эпиляция", Subcategory: "Ноги", Name: "Голени", DurationMin: 45},
+		{Category: "Эпиляция", Name: "Полный комплекс", DurationMin: 90, AdminName: "master"},
+	}
+	got := formatStartServices(LangRU, services, 1)
+	for _, want := range []string{"Доступные услуги:", "• Эпиляция / Ноги / Голени — 45 мин.", "И еще услуг: 1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("start services = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "/schedule") || strings.Contains(got, "/book") {
+		t.Fatalf("start services exposes commands: %q", got)
+	}
+}
+
 func TestViewAdminKeyboardCallback(t *testing.T) {
 	kb := viewAdminKeyboard(LangRU, []AdminView{{Username: "master", Role: RoleAdmin}})
 	if kb == nil || len(kb.InlineKeyboard) != 1 || len(kb.InlineKeyboard[0]) != 1 {
@@ -349,7 +382,12 @@ func TestRenderScheduleWeekImageProducesPNG(t *testing.T) {
 			Status:   "closed",
 			Capacity: 1,
 		},
-	})
+	}, []BookingView{{
+		Username:     "client",
+		ServiceNames: []string{"Эпиляция"},
+		StartAt:      week.AddDate(0, 0, 1).Add(11 * time.Hour),
+		EndAt:        week.AddDate(0, 0, 1).Add(12*time.Hour + 30*time.Minute),
+	}})
 	if err != nil {
 		t.Fatalf("renderScheduleWeekImage error: %v", err)
 	}

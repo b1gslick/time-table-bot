@@ -15,18 +15,17 @@ func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 			{tr(lang, "button_menu_calendar"), tr(lang, "button_menu_bookings")},
 			{tr(lang, "button_menu_services"), tr(lang, "button_menu_schedule")},
 			{tr(lang, "button_menu_settings"), tr(lang, "button_menu_admins")},
-			{"/help"},
 		})
 	case RoleAdmin:
 		return menuKeyboard([][]string{
 			{tr(lang, "button_menu_calendar"), tr(lang, "button_menu_bookings")},
 			{tr(lang, "button_menu_services"), tr(lang, "button_menu_schedule")},
-			{tr(lang, "button_menu_settings"), "/help"},
+			{tr(lang, "button_menu_settings")},
 		})
 	default:
 		return menuKeyboard([][]string{
 			{tr(lang, "button_start_booking")},
-			{"/help"},
+			{tr(lang, "button_action_my")},
 		})
 	}
 }

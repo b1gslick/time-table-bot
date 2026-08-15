@@ -269,6 +269,7 @@ type Bot struct {
 	logger             *log.Logger
 	superAdminUsername string
 	bookingParser      nlu.BookingIntentParser
+	adminBookingParser nlu.AdminBookingIntentParser
 	speechRecognizer   nlu.SpeechRecognizer
 	imageRecognizer    nlu.ImageTextRecognizer
 }
@@ -291,6 +292,10 @@ func New(tg TelegramClient, store Store, logger *log.Logger, superAdminUsername 
 
 func (b *Bot) SetBookingIntentParser(parser nlu.BookingIntentParser) {
 	b.bookingParser = parser
+}
+
+func (b *Bot) SetAdminBookingIntentParser(parser nlu.AdminBookingIntentParser) {
+	b.adminBookingParser = parser
 }
 
 func (b *Bot) SetSpeechRecognizer(recognizer nlu.SpeechRecognizer) {

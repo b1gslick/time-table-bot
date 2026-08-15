@@ -1593,7 +1593,11 @@ WHERE b.status = 'booked'
 			query += fmt.Sprintf("  AND a.username = $%d\n", len(args))
 		}
 	}
-	query += "ORDER BY s.start_at ASC, a.username ASC LIMIT 50;"
+	limit := 50
+	if !to.IsZero() {
+		limit = 500
+	}
+	query += fmt.Sprintf("ORDER BY s.start_at ASC, a.username ASC LIMIT %d;", limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

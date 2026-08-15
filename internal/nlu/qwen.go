@@ -69,9 +69,9 @@ func (p *QwenParser) ParseBookingIntent(ctx context.Context, req BookingIntentRe
 			{Role: "system", Content: qwenBookingSystemPrompt()},
 			{Role: "user", Content: qwenBookingUserPrompt(req)},
 		},
-		Temperature:         ptrFloat64(0),
-		MaxCompletionTokens: 350,
-		ResponseFormat:      &qwenResponseFormat{Type: "json_object"},
+		Temperature:    ptrFloat64(0),
+		EnableThinking: ptrBool(false),
+		ResponseFormat: &qwenResponseFormat{Type: "json_object"},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -132,6 +132,7 @@ type qwenChatRequest struct {
 	Model               string              `json:"model"`
 	Messages            []qwenMessage       `json:"messages"`
 	Temperature         *float64            `json:"temperature,omitempty"`
+	EnableThinking      *bool               `json:"enable_thinking,omitempty"`
 	MaxCompletionTokens int                 `json:"max_completion_tokens,omitempty"`
 	ResponseFormat      *qwenResponseFormat `json:"response_format,omitempty"`
 }
@@ -216,6 +217,10 @@ func qwenBookingUserPrompt(req BookingIntentRequest) string {
 }
 
 func ptrFloat64(value float64) *float64 {
+	return &value
+}
+
+func ptrBool(value bool) *bool {
 	return &value
 }
 

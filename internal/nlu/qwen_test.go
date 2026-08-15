@@ -26,6 +26,12 @@ func TestQwenParserParsesJSONContent(t *testing.T) {
 		if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_object" {
 			t.Fatalf("response_format = %#v", req.ResponseFormat)
 		}
+		if req.EnableThinking == nil || *req.EnableThinking {
+			t.Fatalf("enable_thinking = %#v, want false", req.EnableThinking)
+		}
+		if req.MaxCompletionTokens != 0 {
+			t.Fatalf("max_completion_tokens = %d, want omitted", req.MaxCompletionTokens)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"choices": [{

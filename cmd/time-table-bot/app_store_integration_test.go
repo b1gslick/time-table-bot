@@ -3,9 +3,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"image/png"
 	"io"
 	"log"
 	"os"
@@ -20,6 +22,7 @@ import (
 
 	"time-table-bot/internal/bot"
 	"time-table-bot/internal/domain"
+	"time-table-bot/internal/nlu"
 	"time-table-bot/internal/store"
 	"time-table-bot/internal/telegram"
 )
@@ -1195,6 +1198,308 @@ func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
 	}
 }
 
+func TestBotE2E_AdminNaturalBookingFromTextVoiceAndImageRequiresConfirmation(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if _, err := repo.UpsertUser(ctx, 3001, "client", "Client"); err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Эпиляция > Основное > Эпиляция", 30, ""); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	for i := 0; i < 4; i++ {
+		slotStart := start.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
+
+	tg := &fakeTelegramClient{}
+	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	bookingBot.SetAdminBookingIntentParser(staticAdminBookingParser{intent: nlu.AdminBookingIntent{
+		IsCreateBooking: true,
+		ContactType:     "telegram",
+		Contact:         "@client",
+		ServiceIndexes:  []int{1},
+		DurationMin:     30,
+		StartAt:         start.Format(time.RFC3339),
+		Confidence:      0.98,
+	}})
+	adminUser := telegram.User{ID: 2001, Username: "master", FirstName: "Master"}
+	chat := telegram.Chat{ID: 2001}
+
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: adminUser,
+		Chat: chat,
+		Text: "запиши @client на эпиляцию",
+	}); err != nil {
+		t.Fatalf("HandleMessage text: %v", err)
+	}
+	assertAdminBookingProposalCount(t, tg, 1)
+	assertBookedCount(t, ctx, db, 0)
+	if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID:   "admin-text-no",
+		From: adminUser,
+		Message: &telegram.Message{
+			Chat: chat,
+		},
+		Data: "bookconfirm:no",
+	}); err != nil {
+		t.Fatalf("HandleCallback text no: %v", err)
+	}
+
+	bookingBot.SetSpeechRecognizer(staticSpeechRecognizer{text: "запиши @client на эпиляцию"})
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From:  adminUser,
+		Chat:  chat,
+		Voice: &telegram.Voice{FileID: "voice", FileSize: 10, Duration: 2},
+	}); err != nil {
+		t.Fatalf("HandleMessage voice: %v", err)
+	}
+	assertAdminBookingProposalCount(t, tg, 2)
+	assertBookedCount(t, ctx, db, 0)
+	if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID:   "admin-voice-no",
+		From: adminUser,
+		Message: &telegram.Message{
+			Chat: chat,
+		},
+		Data: "bookconfirm:no",
+	}); err != nil {
+		t.Fatalf("HandleCallback voice no: %v", err)
+	}
+
+	bookingBot.SetImageTextRecognizer(staticImageTextRecognizer{text: "запиши @client на эпиляцию"})
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From:  adminUser,
+		Chat:  chat,
+		Photo: []telegram.PhotoSize{{FileID: "photo", Width: 640, Height: 480, FileSize: 10}},
+	}); err != nil {
+		t.Fatalf("HandleMessage image: %v", err)
+	}
+	assertAdminBookingProposalCount(t, tg, 3)
+	assertBookedCount(t, ctx, db, 0)
+	if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID:   "admin-confirm",
+		From: adminUser,
+		Message: &telegram.Message{
+			Chat: chat,
+		},
+		Data: "bookconfirm:yes",
+	}); err != nil {
+		t.Fatalf("HandleCallback: %v", err)
+	}
+	assertBookedCount(t, ctx, db, 1)
+}
+
+func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Эпиляция > Основное > Эпиляция", 90, ""); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+	start := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 6; i++ {
+		slotStart := start.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
+	if _, err := app.ListServices(ctx, 2001); err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	available, err := app.ListFreeSlotsForServicesRange(ctx, 2001, []int{1}, start.Add(-time.Hour), start.Add(3*time.Hour))
+	if err != nil || len(available) != 1 {
+		t.Fatalf("ListFreeSlotsForServicesRange = %#v, %v", available, err)
+	}
+	if _, err := app.AddBookingForContactByIndex(ctx, 2001, "phone", "+35799999999", 1); err != nil {
+		t.Fatalf("AddBookingForContactByIndex: %v", err)
+	}
+
+	tg := &fakeTelegramClient{}
+	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: telegram.User{ID: 2001, Username: "master", FirstName: "Master"},
+		Chat: telegram.Chat{ID: 2001},
+		Text: "покажи график за 25.08.2026",
+	}); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if len(tg.photos) != 1 {
+		t.Fatalf("photos = %d, want 1", len(tg.photos))
+	}
+	cfg, err := png.DecodeConfig(bytes.NewReader(tg.photos[0].Photo))
+	if err != nil {
+		t.Fatalf("DecodeConfig: %v", err)
+	}
+	if cfg.Width != 1600 || cfg.Height < 1000 {
+		t.Fatalf("week image = %dx%d, want compact full-week PNG", cfg.Width, cfg.Height)
+	}
+	if !strings.Contains(tg.photos[0].Caption, "24.08") || !strings.Contains(tg.photos[0].Caption, "30.08") {
+		t.Fatalf("caption = %q, want selected week", tg.photos[0].Caption)
+	}
+}
+
+func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Эпиляция > Ноги > Голени", 45, ""); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+	if _, err := repo.UpsertUser(ctx, 3001, "client", "Client"); err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+	if err := app.SetUserLanguage(ctx, 3001, bot.LangRU); err != nil {
+		t.Fatalf("SetUserLanguage: %v", err)
+	}
+
+	tg := &fakeTelegramClient{}
+	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	client := telegram.User{ID: 3001, Username: "client", FirstName: "Анна"}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "/start"}); err != nil {
+		t.Fatalf("client /start: %v", err)
+	}
+	if len(tg.messages) != 1 {
+		t.Fatalf("client start messages = %d, want 1", len(tg.messages))
+	}
+	startMessage := tg.messages[0]
+	for _, want := range []string{"Здравствуйте, Анна!", "Доступные услуги:", "Эпиляция / Ноги / Голени", "голосовое сообщение"} {
+		if !strings.Contains(startMessage.Text, want) {
+			t.Fatalf("client start = %q, missing %q", startMessage.Text, want)
+		}
+	}
+	if strings.Contains(startMessage.Text, "/help") || strings.Contains(startMessage.Text, "/book") {
+		t.Fatalf("client start exposes commands: %q", startMessage.Text)
+	}
+	if startMessage.ReplyMarkup == nil || len(startMessage.ReplyMarkup.Keyboard) != 2 || startMessage.ReplyMarkup.Keyboard[0][0].Text != "Начать запись" || startMessage.ReplyMarkup.Keyboard[1][0].Text != "Мои записи" {
+		t.Fatalf("client start keyboard = %#v", startMessage.ReplyMarkup)
+	}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "Начать запись"}); err != nil {
+		t.Fatalf("start booking button: %v", err)
+	}
+	if !strings.Contains(tg.messages[len(tg.messages)-1].Text, "Выберите категорию") {
+		t.Fatalf("guided booking did not start: %#v", tg.texts())
+	}
+
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: telegram.User{ID: 2001, Username: "master", FirstName: "Мастер"},
+		Chat: telegram.Chat{ID: 2001},
+		Text: "/start",
+	}); err != nil {
+		t.Fatalf("admin /start: %v", err)
+	}
+	adminMessage := tg.messages[len(tg.messages)-1]
+	for _, want := range []string{"Основные действия доступны без команд", "запиши @client на эпиляцию", "покажи график"} {
+		if !strings.Contains(adminMessage.Text, want) {
+			t.Fatalf("admin start = %q, missing %q", adminMessage.Text, want)
+		}
+	}
+	for _, row := range adminMessage.ReplyMarkup.Keyboard {
+		for _, button := range row {
+			if strings.HasPrefix(button.Text, "/") {
+				t.Fatalf("admin start exposes command button %q", button.Text)
+			}
+		}
+	}
+}
+
+type staticAdminBookingParser struct {
+	intent nlu.AdminBookingIntent
+}
+
+func (p staticAdminBookingParser) ParseAdminBookingIntent(context.Context, nlu.AdminBookingIntentRequest) (nlu.AdminBookingIntent, error) {
+	return p.intent, nil
+}
+
+type staticSpeechRecognizer struct {
+	text string
+}
+
+func (r staticSpeechRecognizer) Transcribe(context.Context, nlu.SpeechRequest) (string, error) {
+	return r.text, nil
+}
+
+type staticImageTextRecognizer struct {
+	text string
+}
+
+func (r staticImageTextRecognizer) RecognizeText(context.Context, nlu.ImageTextRequest) (string, error) {
+	return r.text, nil
+}
+
+func assertAdminBookingProposalCount(t *testing.T, tg *fakeTelegramClient, want int) {
+	t.Helper()
+	count := 0
+	for _, message := range tg.texts() {
+		if strings.Contains(message, "Подтвердите запись") && strings.Contains(message, "@client") {
+			count++
+		}
+	}
+	if count != want {
+		t.Fatalf("admin booking proposals = %d, want %d; messages=%#v", count, want, tg.texts())
+	}
+}
+
+func assertBookedCount(t *testing.T, ctx context.Context, db *sql.DB, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM bookings WHERE status = 'booked'").Scan(&got); err != nil {
+		t.Fatalf("count bookings: %v", err)
+	}
+	if got != want {
+		t.Fatalf("bookings = %d, want %d", got, want)
+	}
+}
+
 type fakeTelegramClient struct {
 	mu       sync.Mutex
 	messages []telegram.SendMessageRequest
@@ -1221,6 +1526,14 @@ func (f *fakeTelegramClient) SendPhoto(ctx context.Context, reqBody telegram.Sen
 
 func (f *fakeTelegramClient) AnswerCallbackQuery(ctx context.Context, reqBody telegram.AnswerCallbackQueryRequest) error {
 	return nil
+}
+
+func (f *fakeTelegramClient) GetFile(context.Context, string) (telegram.File, error) {
+	return telegram.File{FilePath: "test/file", FileSize: 10}, nil
+}
+
+func (f *fakeTelegramClient) DownloadFile(context.Context, string, int64) ([]byte, error) {
+	return []byte("test media"), nil
 }
 
 func (f *fakeTelegramClient) texts() []string {

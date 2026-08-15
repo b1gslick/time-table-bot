@@ -10,42 +10,71 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/goregular"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
 )
 
 const (
-	scheduleImageWidth  = 1400
-	schedulePanelHeight = 1120
+	scheduleImageWidth  = 1600
+	schedulePanelHeight = 1060
 )
 
 var (
-	scheduleBg        = color.RGBA{R: 245, G: 247, B: 244, A: 255}
+	scheduleBg        = color.RGBA{R: 238, G: 243, B: 241, A: 255}
 	schedulePanel     = color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	scheduleGrid      = color.RGBA{R: 217, G: 224, B: 226, A: 255}
-	scheduleGridSoft  = color.RGBA{R: 238, G: 242, B: 243, A: 255}
-	scheduleText      = color.RGBA{R: 36, G: 43, B: 50, A: 255}
-	scheduleMutedText = color.RGBA{R: 111, G: 122, B: 132, A: 255}
-	scheduleFree      = color.RGBA{R: 105, G: 184, B: 125, A: 255}
-	scheduleBooked    = color.RGBA{R: 211, G: 103, B: 103, A: 255}
-	scheduleClosed    = color.RGBA{R: 142, G: 151, B: 160, A: 255}
-	schedulePartial   = color.RGBA{R: 229, G: 171, B: 79, A: 255}
+	scheduleGrid      = color.RGBA{R: 207, G: 216, B: 218, A: 255}
+	scheduleGridSoft  = color.RGBA{R: 232, G: 237, B: 238, A: 255}
+	scheduleText      = color.RGBA{R: 31, G: 41, B: 45, A: 255}
+	scheduleMutedText = color.RGBA{R: 101, G: 115, B: 121, A: 255}
+	scheduleFree      = color.RGBA{R: 224, G: 242, B: 230, A: 255}
+	scheduleClosed    = color.RGBA{R: 225, G: 229, B: 231, A: 255}
+	scheduleBlocked   = color.RGBA{R: 167, G: 176, B: 181, A: 255}
+	scheduleToday     = color.RGBA{R: 226, G: 239, B: 243, A: 255}
 	scheduleWhite     = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	bookingPalette    = []color.RGBA{
+		{R: 246, G: 191, B: 176, A: 255},
+		{R: 164, G: 207, B: 220, A: 255},
+		{R: 188, G: 216, B: 174, A: 255},
+		{R: 242, G: 213, B: 151, A: 255},
+		{R: 208, G: 190, B: 224, A: 255},
+	}
 )
 
 type scheduleSlotGroup struct {
-	Name  string
-	Slots []ScheduleGridSlot
+	Name     string
+	Slots    []ScheduleGridSlot
+	Bookings []BookingView
 }
 
-func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridSlot) ([]byte, error) {
+type scheduleFontSet struct {
+	title font.Face
+	day   font.Face
+	time  font.Face
+	body  font.Face
+	small font.Face
+}
+
+func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridSlot, bookings []BookingView) ([]byte, error) {
 	start = weekStart(start)
-	groups := groupScheduleSlots(slots)
-	height := 80 + len(groups)*schedulePanelHeight + 40
+	groups := groupScheduleSlots(slots, bookings)
+	height := 48 + len(groups)*schedulePanelHeight + 24
 	img := image.NewRGBA(image.Rect(0, 0, scheduleImageWidth, height))
 	fillRect(img, img.Bounds(), scheduleBg)
 
-	y := 48
+	fonts, err := newScheduleFontSet()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.close()
+
+	y := 24
 	for _, group := range groups {
-		drawScheduleWeekPanel(img, lang, start, group, y)
+		drawScheduleWeekPanel(img, fonts, lang, start, group, y)
 		y += schedulePanelHeight
 	}
 
@@ -56,7 +85,50 @@ func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridS
 	return buf.Bytes(), nil
 }
 
-func groupScheduleSlots(slots []ScheduleGridSlot) []scheduleSlotGroup {
+func newScheduleFontSet() (scheduleFontSet, error) {
+	regular, err := opentype.Parse(goregular.TTF)
+	if err != nil {
+		return scheduleFontSet{}, fmt.Errorf("parse schedule regular font: %w", err)
+	}
+	bold, err := opentype.Parse(gobold.TTF)
+	if err != nil {
+		return scheduleFontSet{}, fmt.Errorf("parse schedule bold font: %w", err)
+	}
+	newFace := func(parsed *opentype.Font, size float64) (font.Face, error) {
+		return opentype.NewFace(parsed, &opentype.FaceOptions{Size: size, DPI: 96, Hinting: font.HintingFull})
+	}
+	faces := scheduleFontSet{}
+	if faces.title, err = newFace(bold, 28); err != nil {
+		return scheduleFontSet{}, err
+	}
+	if faces.day, err = newFace(bold, 18); err != nil {
+		faces.close()
+		return scheduleFontSet{}, err
+	}
+	if faces.time, err = newFace(bold, 14); err != nil {
+		faces.close()
+		return scheduleFontSet{}, err
+	}
+	if faces.body, err = newFace(regular, 14); err != nil {
+		faces.close()
+		return scheduleFontSet{}, err
+	}
+	if faces.small, err = newFace(regular, 12); err != nil {
+		faces.close()
+		return scheduleFontSet{}, err
+	}
+	return faces, nil
+}
+
+func (f scheduleFontSet) close() {
+	for _, face := range []font.Face{f.title, f.day, f.time, f.body, f.small} {
+		if closer, ok := face.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
+}
+
+func groupScheduleSlots(slots []ScheduleGridSlot, bookings []BookingView) []scheduleSlotGroup {
 	hasNames := false
 	for _, slot := range slots {
 		if strings.TrimSpace(slot.AdminName) != "" {
@@ -65,28 +137,54 @@ func groupScheduleSlots(slots []ScheduleGridSlot) []scheduleSlotGroup {
 		}
 	}
 	if !hasNames {
-		return []scheduleSlotGroup{{Slots: sortedScheduleSlots(slots)}}
+		for _, booking := range bookings {
+			if strings.TrimSpace(booking.AdminName) != "" {
+				hasNames = true
+				break
+			}
+		}
+	}
+	if !hasNames {
+		return []scheduleSlotGroup{{Slots: sortedScheduleSlots(slots), Bookings: sortedScheduleBookings(bookings)}}
 	}
 
-	byName := make(map[string][]ScheduleGridSlot)
-	var names []string
+	groups := make(map[string]*scheduleSlotGroup)
 	for _, slot := range slots {
-		name := strings.TrimSpace(slot.AdminName)
-		if name == "" {
-			name = "admin"
+		name := scheduleAdminName(slot.AdminName)
+		if groups[name] == nil {
+			groups[name] = &scheduleSlotGroup{Name: name}
 		}
-		if _, ok := byName[name]; !ok {
-			names = append(names, name)
+		groups[name].Slots = append(groups[name].Slots, slot)
+	}
+	for _, booking := range bookings {
+		name := scheduleAdminName(booking.AdminName)
+		if groups[name] == nil {
+			groups[name] = &scheduleSlotGroup{Name: name}
 		}
-		byName[name] = append(byName[name], slot)
+		groups[name].Bookings = append(groups[name].Bookings, booking)
+	}
+
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
 	}
 	sort.Strings(names)
-
-	groups := make([]scheduleSlotGroup, 0, len(names))
+	out := make([]scheduleSlotGroup, 0, len(names))
 	for _, name := range names {
-		groups = append(groups, scheduleSlotGroup{Name: name, Slots: sortedScheduleSlots(byName[name])})
+		group := groups[name]
+		group.Slots = sortedScheduleSlots(group.Slots)
+		group.Bookings = sortedScheduleBookings(group.Bookings)
+		out = append(out, *group)
 	}
-	return groups
+	return out
+}
+
+func scheduleAdminName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "admin"
+	}
+	return value
 }
 
 func sortedScheduleSlots(slots []ScheduleGridSlot) []ScheduleGridSlot {
@@ -100,109 +198,179 @@ func sortedScheduleSlots(slots []ScheduleGridSlot) []ScheduleGridSlot {
 	return out
 }
 
-func drawScheduleWeekPanel(img *image.RGBA, lang string, week time.Time, group scheduleSlotGroup, top int) {
-	left := 40
-	right := scheduleImageWidth - 40
-	panelRect := image.Rect(left, top, right, top+schedulePanelHeight-28)
+func sortedScheduleBookings(bookings []BookingView) []BookingView {
+	out := append([]BookingView(nil), bookings...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].StartAt.Equal(out[j].StartAt) {
+			return out[i].StartAt.Before(out[j].StartAt)
+		}
+		return out[i].AdminName < out[j].AdminName
+	})
+	return out
+}
+
+func drawScheduleWeekPanel(img *image.RGBA, fonts scheduleFontSet, lang string, week time.Time, group scheduleSlotGroup, top int) {
+	left := 28
+	right := scheduleImageWidth - 28
+	bottom := top + schedulePanelHeight - 20
+	panelRect := image.Rect(left, top, right, bottom)
 	fillRect(img, panelRect, schedulePanel)
 	strokeRect(img, panelRect, scheduleGrid)
 
-	title := "WEEK " + week.Format("02.01") + "-" + week.AddDate(0, 0, 6).Format("02.01")
+	title := scheduleWeekTitle(lang, week)
 	if group.Name != "" {
-		title = "@" + strings.ToUpper(group.Name) + "  " + title
+		title += "  @" + group.Name
 	}
-	drawText(img, left+36, top+32, title, scheduleText, 4)
+	drawFontText(img, fonts.title, left+32, top+24, fitFontText(title, right-left-64, fonts.title), scheduleText)
 
-	minMinute, maxMinute := scheduleMinuteRange(group.Slots)
-	timeLeft := left + 34
-	gridLeft := left + 130
-	gridRight := right - 28
-	headerTop := top + 110
-	headerHeight := 74
+	minMinute, maxMinute := scheduleMinuteRange(group.Slots, group.Bookings)
+	timeLeft := left + 20
+	gridLeft := left + 104
+	gridRight := right - 20
+	headerTop := top + 82
+	headerHeight := 62
 	gridTop := headerTop + headerHeight
-	gridBottom := top + schedulePanelHeight - 150
+	gridBottom := bottom - 82
 	gridHeight := gridBottom - gridTop
 	colWidth := (gridRight - gridLeft) / 7
 
 	for i := 0; i < 7; i++ {
-		x1 := gridLeft + i*colWidth
-		x2 := x1 + colWidth
-		if i == 6 {
-			x2 = gridRight
-		}
+		x1, x2 := scheduleDayColumn(gridLeft, gridRight, colWidth, i)
+		day := week.AddDate(0, 0, i)
 		fill := scheduleWhite
-		if i >= 5 {
-			fill = color.RGBA{R: 250, G: 249, B: 245, A: 255}
+		if sameCalendarDay(day, time.Now().In(day.Location())) {
+			fill = scheduleToday
 		}
 		fillRect(img, image.Rect(x1, headerTop, x2, gridBottom), fill)
 		strokeRect(img, image.Rect(x1, headerTop, x2, gridBottom), scheduleGrid)
-
-		day := week.AddDate(0, 0, i)
-		label := strings.ToUpper(weekdayShort(lang, day.Weekday())) + " " + day.Format("02")
-		drawCenteredText(img, x1, x2, headerTop+20, label, scheduleText, 3)
+		label := weekdayShort(lang, day.Weekday()) + "  " + day.Format("02.01")
+		drawCenteredFontText(img, fonts.day, x1, x2, headerTop+18, label, scheduleText)
 	}
 
-	for minute := minMinute; minute <= maxMinute; minute += 60 {
-		y := minuteToY(minute, minMinute, maxMinute, gridTop, gridHeight)
-		drawLineH(img, gridLeft, gridRight, y, scheduleGridSoft)
-		drawText(img, timeLeft, y-11, formatMinuteLabel(minute), scheduleMutedText, 2)
-	}
-
-	if len(group.Slots) == 0 {
-		drawCenteredText(img, gridLeft, gridRight, gridTop+gridHeight/2-20, "NO SCHEDULE", scheduleMutedText, 4)
-	} else {
-		for _, slot := range group.Slots {
-			dayIndex := localDayIndex(week, slot.StartAt)
-			if dayIndex < 0 || dayIndex >= 7 {
-				continue
-			}
-			startMinute := minuteOfDay(slot.StartAt)
-			endMinute := minuteOfDay(slot.EndAt)
-			if endMinute <= startMinute {
-				endMinute = startMinute + 30
-			}
-			x1 := gridLeft + dayIndex*colWidth + 7
-			x2 := gridLeft + (dayIndex+1)*colWidth - 7
-			if dayIndex == 6 {
-				x2 = gridRight - 7
-			}
-			y1 := minuteToY(startMinute, minMinute, maxMinute, gridTop, gridHeight) + 2
-			y2 := minuteToY(endMinute, minMinute, maxMinute, gridTop, gridHeight) - 2
-			if y2-y1 < 16 {
-				y2 = y1 + 16
-			}
-			fill := scheduleSlotColor(slot)
-			rect := image.Rect(x1, y1, x2, y2)
-			fillRect(img, rect, fill)
-			strokeRect(img, rect, color.RGBA{R: 255, G: 255, B: 255, A: 210})
-			if y2-y1 >= 32 {
-				drawCenteredText(img, x1, x2, y1+8, scheduleSlotMarker(slot), scheduleWhite, 3)
-			}
+	for _, slot := range group.Slots {
+		dayIndex := localDayIndex(week, slot.StartAt)
+		if dayIndex < 0 || dayIndex >= 7 {
+			continue
 		}
+		x1, x2 := scheduleDayColumn(gridLeft, gridRight, colWidth, dayIndex)
+		y1, y2 := scheduleIntervalY(slot.StartAt, slot.EndAt, minMinute, maxMinute, gridTop, gridHeight)
+		fillRect(img, image.Rect(x1+1, y1, x2-1, y2), scheduleSlotBackground(slot))
 	}
 
-	legendY := top + schedulePanelHeight - 100
-	drawLegend(img, left+42, legendY)
+	for minute := minMinute; minute <= maxMinute; minute += 30 {
+		y := minuteToY(minute, minMinute, maxMinute, gridTop, gridHeight)
+		lineColor := scheduleGridSoft
+		if minute%60 == 0 {
+			lineColor = scheduleGrid
+			drawFontText(img, fonts.small, timeLeft, y-8, formatMinuteLabel(minute), scheduleMutedText)
+		}
+		drawLineH(img, gridLeft, gridRight, y, lineColor)
+	}
+
+	if len(group.Slots) == 0 && len(group.Bookings) == 0 {
+		message := "Расписание не создано"
+		if lang == LangEN {
+			message = "No schedule"
+		}
+		drawCenteredFontText(img, fonts.day, gridLeft, gridRight, gridTop+gridHeight/2-12, message, scheduleMutedText)
+	}
+
+	for _, booking := range group.Bookings {
+		drawScheduleBooking(img, fonts, week, booking, minMinute, maxMinute, gridLeft, gridRight, gridTop, gridHeight, colWidth)
+	}
+
+	legendY := bottom - 52
+	drawScheduleLegend(img, fonts, left+34, legendY, lang)
 }
 
-func scheduleMinuteRange(slots []ScheduleGridSlot) (int, int) {
+func drawScheduleBooking(img *image.RGBA, fonts scheduleFontSet, week time.Time, booking BookingView, minMinute, maxMinute, gridLeft, gridRight, gridTop, gridHeight, colWidth int) {
+	dayIndex := localDayIndex(week, booking.StartAt)
+	if dayIndex < 0 || dayIndex >= 7 {
+		return
+	}
+	x1, x2 := scheduleDayColumn(gridLeft, gridRight, colWidth, dayIndex)
+	y1, y2 := scheduleIntervalY(booking.StartAt, booking.EndAt, minMinute, maxMinute, gridTop, gridHeight)
+	x1 += 5
+	x2 -= 5
+	y1 += 2
+	y2 -= 2
+	if y2-y1 < 24 {
+		y2 = y1 + 24
+	}
+	if y2 > gridTop+gridHeight {
+		y2 = gridTop + gridHeight
+	}
+	rect := image.Rect(x1, y1, x2, y2)
+	fillRect(img, rect, scheduleBookingColor(booking))
+	strokeRect(img, rect, color.RGBA{R: 116, G: 128, B: 132, A: 255})
+
+	padding := 7
+	availableWidth := x2 - x1 - padding*2
+	height := y2 - y1
+	timeLabel := booking.StartAt.Format("15:04") + "-" + booking.EndAt.Format("15:04")
+	client := formatClientContact(booking.Username)
+	service := strings.Join(booking.ServiceNames, ", ")
+	if service == "" {
+		service = "Запись"
+	}
+	if height < 42 {
+		line := booking.StartAt.Format("15:04")
+		if client != "" {
+			line += " " + client
+		}
+		drawFontText(img, fonts.small, x1+padding, y1+1, fitFontText(line, availableWidth, fonts.small), scheduleText)
+		if height >= 34 {
+			drawFontText(img, fonts.small, x1+padding, y1+17, fitFontText(service, availableWidth, fonts.small), scheduleText)
+		}
+		return
+	}
+	drawFontText(img, fonts.time, x1+padding, y1+5, fitFontText(timeLabel, availableWidth, fonts.time), scheduleText)
+	secondLine := client
+	if height < 68 && client != "" {
+		secondLine = client + " | " + service
+	} else if secondLine == "" {
+		secondLine = service
+	}
+	drawFontText(img, fonts.small, x1+padding, y1+24, fitFontText(secondLine, availableWidth, fonts.small), scheduleText)
+	if height >= 68 && client != "" {
+		drawFontText(img, fonts.small, x1+padding, y1+43, fitFontText(service, availableWidth, fonts.small), scheduleText)
+	}
+}
+
+func scheduleDayColumn(gridLeft, gridRight, colWidth, dayIndex int) (int, int) {
+	x1 := gridLeft + dayIndex*colWidth
+	x2 := x1 + colWidth
+	if dayIndex == 6 {
+		x2 = gridRight
+	}
+	return x1, x2
+}
+
+func scheduleIntervalY(start, end time.Time, minMinute, maxMinute, gridTop, gridHeight int) (int, int) {
+	startMinute := minuteOfDay(start)
+	endMinute := minuteOfDay(end)
+	if endMinute <= startMinute {
+		endMinute = startMinute + 30
+	}
+	y1 := minuteToY(startMinute, minMinute, maxMinute, gridTop, gridHeight)
+	y2 := minuteToY(endMinute, minMinute, maxMinute, gridTop, gridHeight)
+	if y2 <= y1 {
+		y2 = y1 + 1
+	}
+	return y1, y2
+}
+
+func scheduleMinuteRange(slots []ScheduleGridSlot, bookings []BookingView) (int, int) {
 	minMinute := 9 * 60
 	maxMinute := 18 * 60
-	if len(slots) > 0 {
+	if len(slots) > 0 || len(bookings) > 0 {
 		minMinute = 24 * 60
 		maxMinute = 0
 		for _, slot := range slots {
-			start := minuteOfDay(slot.StartAt)
-			end := minuteOfDay(slot.EndAt)
-			if end <= start {
-				end = start + 30
-			}
-			if start < minMinute {
-				minMinute = start
-			}
-			if end > maxMinute {
-				maxMinute = end
-			}
+			minMinute, maxMinute = expandScheduleMinuteRange(minMinute, maxMinute, slot.StartAt, slot.EndAt)
+		}
+		for _, booking := range bookings {
+			minMinute, maxMinute = expandScheduleMinuteRange(minMinute, maxMinute, booking.StartAt, booking.EndAt)
 		}
 	}
 	minMinute = (minMinute / 60) * 60
@@ -221,55 +389,70 @@ func scheduleMinuteRange(slots []ScheduleGridSlot) (int, int) {
 	return minMinute, maxMinute
 }
 
-func scheduleSlotColor(slot ScheduleGridSlot) color.RGBA {
-	if strings.ToLower(slot.Status) != "open" || slot.Blocked > 0 {
+func expandScheduleMinuteRange(minMinute, maxMinute int, start, end time.Time) (int, int) {
+	startMinute := minuteOfDay(start)
+	endMinute := minuteOfDay(end)
+	if endMinute <= startMinute {
+		endMinute = startMinute + 30
+	}
+	if startMinute < minMinute {
+		minMinute = startMinute
+	}
+	if endMinute > maxMinute {
+		maxMinute = endMinute
+	}
+	return minMinute, maxMinute
+}
+
+func scheduleSlotBackground(slot ScheduleGridSlot) color.RGBA {
+	if strings.ToLower(slot.Status) != "open" {
 		return scheduleClosed
 	}
-	if slot.Available > 0 && slot.Booked > 0 {
-		return schedulePartial
+	if slot.Blocked > 0 {
+		return scheduleBlocked
 	}
-	if slot.Available > 0 {
-		return scheduleFree
-	}
-	if slot.Booked > 0 {
-		return scheduleBooked
-	}
-	return scheduleClosed
+	return scheduleFree
 }
 
-func scheduleSlotMarker(slot ScheduleGridSlot) string {
-	if strings.ToLower(slot.Status) != "open" || slot.Blocked > 0 {
-		return "X"
+func scheduleBookingColor(booking BookingView) color.RGBA {
+	key := booking.Username + strings.Join(booking.ServiceNames, "|")
+	hash := 0
+	for _, r := range key {
+		hash = (hash*31 + int(r)) & 0x7fffffff
 	}
-	if slot.Available > 0 && slot.Booked > 0 {
-		return fmt.Sprintf("%d", slot.Available)
-	}
-	if slot.Available > 0 {
-		return "+"
-	}
-	return "#"
+	return bookingPalette[hash%len(bookingPalette)]
 }
 
-func drawLegend(img *image.RGBA, x, y int) {
+func drawScheduleLegend(img *image.RGBA, fonts scheduleFontSet, x, y int, lang string) {
 	items := []struct {
-		Label string
-		Color color.RGBA
+		label string
+		fill  color.RGBA
 	}{
-		{"FREE", scheduleFree},
-		{"BOOKED", scheduleBooked},
-		{"PARTIAL", schedulePartial},
-		{"CLOSED", scheduleClosed},
+		{label: tr(lang, "week_legend_free"), fill: scheduleFree},
+		{label: tr(lang, "week_legend_booking"), fill: bookingPalette[0]},
+		{label: tr(lang, "week_legend_closed"), fill: scheduleClosed},
 	}
 	for _, item := range items {
-		fillRect(img, image.Rect(x, y, x+34, y+34), item.Color)
-		strokeRect(img, image.Rect(x, y, x+34, y+34), scheduleGrid)
-		drawText(img, x+46, y+5, item.Label, scheduleMutedText, 2)
+		fillRect(img, image.Rect(x, y, x+24, y+24), item.fill)
+		strokeRect(img, image.Rect(x, y, x+24, y+24), scheduleGrid)
+		drawFontText(img, fonts.body, x+34, y+2, item.label, scheduleMutedText)
 		x += 230
 	}
 }
 
+func scheduleWeekTitle(lang string, start time.Time) string {
+	if lang == LangEN {
+		return fmt.Sprintf("Schedule | %s-%s %d", start.Format("02 Jan"), start.AddDate(0, 0, 6).Format("02 Jan"), start.Year())
+	}
+	return fmt.Sprintf("График | %s-%s %d", start.Format("02.01"), start.AddDate(0, 0, 6).Format("02.01"), start.Year())
+}
+
 func scheduleWeekCaption(lang string, start time.Time) string {
 	return tr(lang, "week_caption", start.Format("02.01"), start.AddDate(0, 0, 6).Format("02.01"))
+}
+
+func sameCalendarDay(left, right time.Time) bool {
+	return left.Year() == right.Year() && left.YearDay() == right.YearDay()
 }
 
 func localDayIndex(weekStart, value time.Time) int {
@@ -303,7 +486,49 @@ func formatMinuteLabel(minute int) string {
 	return fmt.Sprintf("%02d:%02d", minute/60, minute%60)
 }
 
+func drawFontText(img *image.RGBA, face font.Face, x, y int, text string, col color.RGBA) {
+	if face == nil || text == "" {
+		return
+	}
+	drawer := font.Drawer{
+		Dst:  img,
+		Src:  image.NewUniform(col),
+		Face: face,
+		Dot:  fixed.P(x, y+face.Metrics().Ascent.Ceil()),
+	}
+	drawer.DrawString(text)
+}
+
+func drawCenteredFontText(img *image.RGBA, face font.Face, x1, x2, y int, text string, col color.RGBA) {
+	width := font.MeasureString(face, text).Ceil()
+	x := x1 + (x2-x1-width)/2
+	if x < x1+3 {
+		x = x1 + 3
+	}
+	drawFontText(img, face, x, y, fitFontText(text, x2-x-3, face), col)
+}
+
+func fitFontText(value string, maxWidth int, face font.Face) string {
+	value = strings.TrimSpace(value)
+	if value == "" || maxWidth <= 0 || font.MeasureString(face, value).Ceil() <= maxWidth {
+		return value
+	}
+	suffix := "..."
+	for utf8.RuneCountInString(value) > 1 {
+		_, size := utf8.DecodeLastRuneInString(value)
+		value = strings.TrimSpace(value[:len(value)-size])
+		if font.MeasureString(face, value+suffix).Ceil() <= maxWidth {
+			return value + suffix
+		}
+	}
+	return suffix
+}
+
 func fillRect(img *image.RGBA, rect image.Rectangle, fill color.RGBA) {
+	rect = rect.Intersect(img.Bounds())
+	if rect.Empty() {
+		return
+	}
 	imagedraw.Draw(img, rect, &image.Uniform{C: fill}, image.Point{}, imagedraw.Src)
 }
 
@@ -318,12 +543,8 @@ func drawLineH(img *image.RGBA, x1, x2, y int, stroke color.RGBA) {
 	if y < img.Bounds().Min.Y || y >= img.Bounds().Max.Y {
 		return
 	}
-	if x1 < img.Bounds().Min.X {
-		x1 = img.Bounds().Min.X
-	}
-	if x2 > img.Bounds().Max.X {
-		x2 = img.Bounds().Max.X
-	}
+	x1 = max(x1, img.Bounds().Min.X)
+	x2 = minInt(x2, img.Bounds().Max.X)
 	for x := x1; x < x2; x++ {
 		img.SetRGBA(x, y, stroke)
 	}
@@ -333,123 +554,9 @@ func drawLineV(img *image.RGBA, x, y1, y2 int, stroke color.RGBA) {
 	if x < img.Bounds().Min.X || x >= img.Bounds().Max.X {
 		return
 	}
-	if y1 < img.Bounds().Min.Y {
-		y1 = img.Bounds().Min.Y
-	}
-	if y2 > img.Bounds().Max.Y {
-		y2 = img.Bounds().Max.Y
-	}
+	y1 = max(y1, img.Bounds().Min.Y)
+	y2 = minInt(y2, img.Bounds().Max.Y)
 	for y := y1; y < y2; y++ {
 		img.SetRGBA(x, y, stroke)
 	}
-}
-
-func drawCenteredText(img *image.RGBA, x1, x2, y int, text string, col color.RGBA, scale int) {
-	width := textWidth(text, scale)
-	x := x1 + (x2-x1-width)/2
-	if x < x1+2 {
-		x = x1 + 2
-	}
-	drawText(img, x, y, text, col, scale)
-}
-
-func drawText(img *image.RGBA, x, y int, text string, col color.RGBA, scale int) {
-	if scale <= 0 {
-		scale = 1
-	}
-	cursor := x
-	for _, r := range strings.ToUpper(text) {
-		if r == ' ' {
-			cursor += 4 * scale
-			continue
-		}
-		pattern, ok := bitmapFont[r]
-		if !ok {
-			pattern = bitmapFont['?']
-		}
-		for row, line := range pattern {
-			for colIndex, px := range line {
-				if px != '1' {
-					continue
-				}
-				fillRect(img, image.Rect(
-					cursor+colIndex*scale,
-					y+row*scale,
-					cursor+(colIndex+1)*scale,
-					y+(row+1)*scale,
-				), col)
-			}
-		}
-		cursor += 6 * scale
-	}
-}
-
-func textWidth(text string, scale int) int {
-	if text == "" {
-		return 0
-	}
-	width := 0
-	for _, r := range text {
-		if r == ' ' {
-			width += 4 * scale
-		} else {
-			width += 6 * scale
-		}
-	}
-	return width - scale
-}
-
-var bitmapFont = map[rune][]string{
-	'0': {"111", "101", "101", "101", "101", "101", "111"},
-	'1': {"010", "110", "010", "010", "010", "010", "111"},
-	'2': {"111", "001", "001", "111", "100", "100", "111"},
-	'3': {"111", "001", "001", "111", "001", "001", "111"},
-	'4': {"101", "101", "101", "111", "001", "001", "001"},
-	'5': {"111", "100", "100", "111", "001", "001", "111"},
-	'6': {"111", "100", "100", "111", "101", "101", "111"},
-	'7': {"111", "001", "001", "010", "010", "100", "100"},
-	'8': {"111", "101", "101", "111", "101", "101", "111"},
-	'9': {"111", "101", "101", "111", "001", "001", "111"},
-	'A': {"010", "101", "101", "111", "101", "101", "101"},
-	'B': {"110", "101", "101", "110", "101", "101", "110"},
-	'C': {"111", "100", "100", "100", "100", "100", "111"},
-	'D': {"110", "101", "101", "101", "101", "101", "110"},
-	'E': {"111", "100", "100", "111", "100", "100", "111"},
-	'F': {"111", "100", "100", "111", "100", "100", "100"},
-	'G': {"111", "100", "100", "101", "101", "101", "111"},
-	'H': {"101", "101", "101", "111", "101", "101", "101"},
-	'I': {"111", "010", "010", "010", "010", "010", "111"},
-	'J': {"001", "001", "001", "001", "101", "101", "111"},
-	'K': {"101", "101", "110", "100", "110", "101", "101"},
-	'L': {"100", "100", "100", "100", "100", "100", "111"},
-	'M': {"101", "111", "111", "101", "101", "101", "101"},
-	'N': {"101", "111", "111", "111", "111", "111", "101"},
-	'O': {"111", "101", "101", "101", "101", "101", "111"},
-	'P': {"111", "101", "101", "111", "100", "100", "100"},
-	'Q': {"111", "101", "101", "101", "101", "111", "001"},
-	'R': {"110", "101", "101", "110", "101", "101", "101"},
-	'S': {"111", "100", "100", "111", "001", "001", "111"},
-	'T': {"111", "010", "010", "010", "010", "010", "010"},
-	'U': {"101", "101", "101", "101", "101", "101", "111"},
-	'V': {"101", "101", "101", "101", "101", "101", "010"},
-	'W': {"101", "101", "101", "101", "111", "111", "101"},
-	'X': {"101", "101", "101", "010", "101", "101", "101"},
-	'Y': {"101", "101", "101", "010", "010", "010", "010"},
-	'Z': {"111", "001", "001", "010", "100", "100", "111"},
-	':': {"0", "1", "0", "0", "1", "0", "0"},
-	'.': {"0", "0", "0", "0", "0", "0", "1"},
-	'-': {"0", "0", "0", "1", "0", "0", "0"},
-	'/': {"001", "001", "010", "010", "100", "100", "100"},
-	'@': {"111", "101", "111", "111", "100", "100", "111"},
-	'+': {"0", "1", "1", "1", "1", "1", "0"},
-	'#': {"101", "111", "101", "101", "111", "101", "101"},
-	'?': {"111", "001", "001", "011", "010", "000", "010"},
-	'Б': {"111", "100", "100", "111", "101", "101", "111"},
-	'В': {"110", "101", "101", "110", "101", "101", "110"},
-	'Н': {"101", "101", "101", "111", "101", "101", "101"},
-	'П': {"111", "101", "101", "101", "101", "101", "101"},
-	'Р': {"111", "101", "101", "111", "100", "100", "100"},
-	'С': {"111", "100", "100", "100", "100", "100", "111"},
-	'Т': {"111", "010", "010", "010", "010", "010", "010"},
-	'Ч': {"101", "101", "101", "011", "001", "001", "001"},
 }

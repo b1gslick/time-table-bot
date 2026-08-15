@@ -38,6 +38,29 @@ type BookingIntentParser interface {
 	ParseBookingIntent(ctx context.Context, req BookingIntentRequest) (BookingIntent, error)
 }
 
+type AdminBookingIntentRequest struct {
+	Text     string
+	Language string
+	Now      time.Time
+	Timezone string
+	Services []Service
+}
+
+type AdminBookingIntent struct {
+	IsCreateBooking bool     `json:"is_create_booking"`
+	ContactType     string   `json:"contact_type"`
+	Contact         string   `json:"contact"`
+	ServiceIndexes  []int    `json:"service_indexes"`
+	ServiceQueries  []string `json:"service_queries"`
+	DurationMin     int      `json:"duration_min"`
+	StartAt         string   `json:"start_at"`
+	Confidence      float64  `json:"confidence"`
+}
+
+type AdminBookingIntentParser interface {
+	ParseAdminBookingIntent(ctx context.Context, req AdminBookingIntentRequest) (AdminBookingIntent, error)
+}
+
 type SpeechRequest struct {
 	Audio    []byte
 	MIMEType string

@@ -183,6 +183,12 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *telegram.Message) error {
 			if handled, err := b.handleConversation(ctx, msg.Chat.ID, current, text); handled {
 				return err
 			}
+			if handled, err := b.handleAdminNaturalSchedule(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
+			if handled, err := b.handleAdminNaturalBooking(ctx, msg.Chat.ID, current, text); handled {
+				return err
+			}
 			if handled, err := b.handleNaturalBooking(ctx, msg.Chat.ID, current, text); handled {
 				return err
 			}
@@ -517,35 +523,74 @@ func callbackText(data string) (string, bool) {
 }
 
 func (b *Bot) handleStart(ctx context.Context, chatID int64, user UserRecord) error {
-	if user.Role == RoleUser {
-		if user.LanguageSet {
-			if handled, err := b.showClientActiveBookingsMenu(ctx, chatID, user); handled {
-				return err
-			}
-			return b.askCategory(ctx, chatID, user, nil)
-		}
+	if user.Role == RoleUser && !user.LanguageSet {
 		if err := b.store.SetConversationState(ctx, user.TelegramID, ConversationState{Step: conversationStepLanguage}); err != nil {
 			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "choose_language"), languageKeyboard())
 	}
-	txt := tr(user.Language, "start", user.Username, roleLabel(user.Language, user.Role), user.Language)
+	return b.showStartOverview(ctx, chatID, user)
+}
+
+func (b *Bot) showStartOverview(ctx context.Context, chatID int64, user UserRecord) error {
+	name := strings.TrimSpace(user.FirstName)
+	if name == "" {
+		name = formatClientContact(user.Username)
+	}
+	if name == "" {
+		name = tr(user.Language, "start_guest")
+	}
+	if user.Role == RoleUser {
+		text := tr(user.Language, "start_client", name)
+		services, err := b.store.ListServices(ctx, user.TelegramID)
+		if err != nil {
+			b.logger.Printf("start overview services failed user=%d: %v", user.TelegramID, err)
+			text += "\n\n" + tr(user.Language, "start_services_unavailable")
+		} else {
+			text += "\n\n" + formatStartServices(user.Language, services, 16)
+		}
+		return b.sendTextWithKeyboard(ctx, chatID, text, keyboardForUser(user))
+	}
+
+	txt := tr(user.Language, "start_admin", name)
 	if user.ActualRole == RoleSuperAdmin && user.ViewRole != "" && user.ViewRole != RoleSuperAdmin {
 		txt += "\n" + viewModeText(user.Language, user)
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, txt, keyboardForUser(user))
 }
 
-func (b *Bot) showClientActiveBookingsMenu(ctx context.Context, chatID int64, user UserRecord) (bool, error) {
-	items, err := b.store.ListMyBookings(ctx, user.TelegramID, time.Now())
-	if err != nil {
-		b.logger.Printf("client active bookings check failed user=%d: %v", user.TelegramID, err)
-		return false, nil
+func formatStartServices(lang string, services []ServiceView, limit int) string {
+	if len(services) == 0 {
+		return tr(lang, "start_services_empty")
 	}
-	if len(items) == 0 {
-		return false, nil
+	if limit <= 0 || limit > len(services) {
+		limit = len(services)
 	}
-	return true, b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "my_active_prompt"), myActionsKeyboard(user.Language))
+	var sb strings.Builder
+	sb.WriteString(tr(lang, "start_services_header"))
+	for _, service := range services[:limit] {
+		path := make([]string, 0, 3)
+		for _, part := range []string{service.Category, service.Subcategory, service.Name} {
+			if part = strings.TrimSpace(part); part != "" {
+				path = append(path, part)
+			}
+		}
+		sb.WriteString("\n• ")
+		sb.WriteString(strings.Join(path, " / "))
+		sb.WriteString(" — ")
+		sb.WriteString(strconv.Itoa(service.DurationMin))
+		sb.WriteString(" ")
+		sb.WriteString(tr(lang, "minutes_short"))
+		if service.AdminName != "" {
+			sb.WriteString(" · @")
+			sb.WriteString(service.AdminName)
+		}
+	}
+	if len(services) > limit {
+		sb.WriteString("\n")
+		sb.WriteString(tr(lang, "start_services_more", len(services)-limit))
+	}
+	return sb.String()
 }
 
 func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRecord) error {
@@ -558,10 +603,13 @@ func (b *Bot) handleBookingStart(ctx context.Context, chatID int64, user UserRec
 func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecord, text string) (bool, error) {
 	action := menuButtonAction(user.Language, text)
 	if action == "start_booking" {
-		return true, b.handleStart(ctx, chatID, user)
+		return true, b.handleBookingStart(ctx, chatID, user)
 	}
 	if action == "action_view_super" {
 		return true, b.handleViewSuper(ctx, chatID, user)
+	}
+	if action == "action_my" {
+		return true, b.handleMy(ctx, chatID, user)
 	}
 	if !isAdmin(user.Role) {
 		return false, nil
@@ -593,8 +641,6 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 		return true, b.handleFree(ctx, chatID, user, []string{"/schedule"})
 	case "action_book":
 		return true, b.handleBookingStart(ctx, chatID, user)
-	case "action_my":
-		return true, b.handleMy(ctx, chatID, user)
 	case "action_client_bookings":
 		return true, b.handleAdminBookings(ctx, chatID, user, []string{"/bookings"})
 	case "action_bookings_today":
@@ -1657,12 +1703,18 @@ func (b *Bot) handleWeek(ctx context.Context, chatID int64, actor UserRecord, pa
 		b.logger.Printf("week schedule failed user=%d role=%s from=%s: %v", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
 	}
-	b.logger.Printf("week schedule user=%d role=%s from=%s slots=%d", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), len(slots))
+	bookings, err := b.store.ListAdminBookingsRange(ctx, actor.TelegramID, weekStart, weekEnd)
+	if err != nil {
+		b.logger.Printf("week bookings failed user=%d role=%s from=%s: %v", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
+	}
+	b.logger.Printf("week schedule user=%d role=%s from=%s slots=%d bookings=%d", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), len(slots), len(bookings))
 	renderStart := weekStart
 	if len(slots) > 0 {
-		renderStart = dateOnly(weekStart.In(slots[0].StartAt.Location()))
+		loc := slots[0].StartAt.Location()
+		renderStart = time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, loc)
 	}
-	image, err := renderScheduleWeekImage(actor.Language, renderStart, slots)
+	image, err := renderScheduleWeekImage(actor.Language, renderStart, slots, bookings)
 	if err != nil {
 		b.logger.Printf("week schedule image failed user=%d from=%s: %v", actor.TelegramID, weekStart.Format("2006-01-02"), err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))

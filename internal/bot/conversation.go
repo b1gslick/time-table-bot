@@ -133,8 +133,12 @@ func (b *Bot) conversationLanguage(ctx context.Context, chatID int64, user UserR
 	if err := b.store.SetUserLanguage(ctx, user.TelegramID, lang); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "lang_failed"))
 	}
+	if err := b.store.ClearConversationState(ctx, user.TelegramID); err != nil {
+		return b.sendText(ctx, chatID, tr(lang, "conversation_failed"))
+	}
 	user.Language = lang
-	return b.askCategory(ctx, chatID, user, nil)
+	user.LanguageSet = true
+	return b.showStartOverview(ctx, chatID, user)
 }
 
 func (b *Bot) conversationCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
