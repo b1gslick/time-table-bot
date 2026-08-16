@@ -82,6 +82,53 @@ func TestQwenParserParsesScheduleImport(t *testing.T) {
 	}
 }
 
+func TestQwenParserParsesScheduleEditAsPatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req qwenChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(req.Messages) != 2 || !strings.Contains(req.Messages[1].Content, "Current appointment:") || !strings.Contains(req.Messages[1].Content, "перенеси на пятницу") {
+			t.Fatalf("schedule edit prompt = %#v", req.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"is_edit\":true,\"change_client\":false,\"client\":\"\",\"contact_type\":\"unknown\",\"contact\":\"\",\"change_service\":true,\"services\":[{\"service_indexes\":[1],\"service_queries\":[\"электро на час\"],\"duration_min\":60}],\"service_indexes\":[],\"service_queries\":[],\"duration_min\":0,\"change_start_at\":true,\"start_at\":\"2026-08-21T10:30:00+03:00\",\"confidence\":0.97}"}}]}`))
+	}))
+	defer server.Close()
+	parser, err := NewQwenParser(QwenConfig{APIKey: "test-key", BaseURL: server.URL, Model: "qwen-test"})
+	if err != nil {
+		t.Fatalf("NewQwenParser: %v", err)
+	}
+	intent, err := parser.ParseAdminScheduleEdit(context.Background(), AdminScheduleEditRequest{
+		Text:          "перенеси на пятницу в 10:30 и поставь электро на час",
+		Now:           time.Date(2026, 8, 16, 12, 0, 0, 0, time.FixedZone("test", 3*60*60)),
+		CurrentClient: "Катя", CurrentStartAt: "2026-08-18T12:00:00+03:00",
+		CurrentServices: []string{"Бикини"},
+		Services:        []Service{{Index: 1, Name: "1 час", Category: "Электроэпиляция", DurationMin: 60}},
+	})
+	if err != nil {
+		t.Fatalf("ParseAdminScheduleEdit: %v", err)
+	}
+	if !intent.IsEdit || intent.ChangeClient || !intent.ChangeService || !intent.ChangeStartAt || intent.StartAt != "2026-08-21T10:30:00+03:00" || len(intent.Services) != 1 || len(intent.Services[0].ServiceIndexes) != 1 {
+		t.Fatalf("intent = %#v", intent)
+	}
+}
+
+func TestNormalizeScheduleEditServiceDurationRepairsCombination(t *testing.T) {
+	change := AdminScheduleEditService{
+		ServiceIndexes: []int{1, 2}, ServiceQueries: []string{"электроэпиляция на полтора часа"}, DurationMin: 90,
+	}
+	normalizeScheduleEditServiceDuration(&change, []Service{
+		{Index: 1, Category: "Электроэпиляция", Name: "До 30 мин", DurationMin: 30},
+		{Index: 2, Category: "Электроэпиляция", Name: "30 мин", DurationMin: 30},
+		{Index: 3, Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
+		{Index: 4, Category: "Восковая депиляция", Name: "Бикини классика", DurationMin: 15},
+	})
+	if len(change.ServiceIndexes) != 2 || change.ServiceIndexes[0] != 1 || change.ServiceIndexes[1] != 3 {
+		t.Fatalf("service combination = %v, want [1 3]", change.ServiceIndexes)
+	}
+}
+
 func TestQwenParserParsesServiceImport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req qwenChatRequest

@@ -140,6 +140,94 @@ func TestQwenServiceImportLive(t *testing.T) {
 	t.Logf("service catalog confidence=%.2f entries=%+v", intent.Confidence, intent.Entries)
 }
 
+func TestQwenScheduleEditLive(t *testing.T) {
+	if os.Getenv("QWEN_LIVE_TEST") != "1" {
+		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")
+	}
+	parser, err := NewQwenParser(QwenConfig{
+		APIKey: os.Getenv("QWEN_API_KEY"), BaseURL: os.Getenv("QWEN_BASE_URL"),
+		Model: os.Getenv("QWEN_MODEL"), Timeout: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := parser.ParseAdminScheduleEdit(context.Background(), AdminScheduleEditRequest{
+		Text:     "перенеси на пятницу в 10:30 и поставь электро на час",
+		Language: "ru", Now: time.Date(2026, 8, 16, 12, 0, 0, 0, time.FixedZone("Europe/Nicosia", 3*60*60)), Timezone: "Europe/Nicosia",
+		CurrentClient: "Катя", CurrentStartAt: "2026-08-18T12:00:00+03:00", CurrentServices: []string{"Бикини классика"},
+		Services: []Service{
+			{Index: 1, Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
+			{Index: 2, Category: "Восковая депиляция", Name: "Бикини классика", DurationMin: 15},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, parseErr := time.Parse(time.RFC3339, intent.StartAt)
+	if parseErr != nil || !intent.IsEdit || intent.ChangeClient || !intent.ChangeService || !intent.ChangeStartAt || len(intent.Services) != 1 || len(intent.Services[0].ServiceIndexes) != 1 || intent.Services[0].ServiceIndexes[0] != 1 || start.Format("2006-01-02 15:04") != "2026-08-21 10:30" {
+		t.Fatalf("unexpected schedule edit: %+v parse_error=%v", intent, parseErr)
+	}
+}
+
+func TestQwenScheduleEditProblemPhraseLive(t *testing.T) {
+	if os.Getenv("QWEN_LIVE_TEST") != "1" {
+		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")
+	}
+	parser, err := NewQwenParser(QwenConfig{
+		APIKey: os.Getenv("QWEN_API_KEY"), BaseURL: os.Getenv("QWEN_BASE_URL"),
+		Model: os.Getenv("QWEN_MODEL"), Timeout: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := []Service{
+		{Index: 1, Category: "Электроэпиляция", Name: "До 30 мин 25€", DurationMin: 30},
+		{Index: 2, Category: "Электроэпиляция", Name: "30 мин 25€", DurationMin: 30},
+		{Index: 3, Category: "Электроэпиляция", Name: "1 час 45 €", DurationMin: 60},
+		{Index: 4, Category: "Электроэпиляция", Name: "2 часа 90€", DurationMin: 120},
+		{Index: 5, Category: "Электроэпиляция", Name: "3 часа 135€", DurationMin: 180},
+		{Index: 6, Category: "Восковая депиляция", Name: "Усы", DurationMin: 7},
+		{Index: 7, Category: "Восковая депиляция", Name: "Лицо полностью 15 €", DurationMin: 15},
+		{Index: 8, Category: "Восковая депиляция", Name: "Руки до локтя 15€", DurationMin: 20},
+		{Index: 9, Category: "Восковая депиляция", Name: "Руки полностью 20€", DurationMin: 20},
+		{Index: 10, Category: "Восковая депиляция", Name: "Бикини классика( по линии трусиков) 15€", DurationMin: 15},
+		{Index: 11, Category: "Восковая депиляция", Name: "Бикини глубокое 25€", DurationMin: 30},
+		{Index: 12, Category: "Восковая депиляция", Name: "Ноги до колена 15€", DurationMin: 15},
+		{Index: 13, Category: "Восковая депиляция", Name: "Ноги полностью 25€", DurationMin: 30},
+		{Index: 14, Category: "Восковая депиляция", Name: "Ягодицы 15€", DurationMin: 10},
+		{Index: 15, Category: "Эндосфера", Subcategory: "Разовая процедура", Name: "Только тело 55€", DurationMin: 50},
+		{Index: 16, Category: "Эндосфера", Subcategory: "Разовая процедура", Name: "Тело и лицо 65€", DurationMin: 65},
+		{Index: 17, Category: "Эндосфера", Subcategory: "Курс из 6 процедур", Name: "Тело 300€", DurationMin: 50},
+		{Index: 18, Category: "Эндосфера", Subcategory: "Курс из 6 процедур", Name: "Тело и лицо 360", DurationMin: 65},
+	}
+	intent, err := parser.ParseAdminScheduleEdit(context.Background(), AdminScheduleEditRequest{
+		Text:     "Дату на 18, услуги электроэпиляция на полтора часа и восковая эпиляция бикини",
+		Language: "ru", Now: time.Date(2026, 8, 16, 8, 23, 0, 0, time.FixedZone("Europe/Nicosia", 3*60*60)), Timezone: "Europe/Nicosia",
+		CurrentClient: "Маша бачата", CurrentStartAt: "2026-08-19T12:40:00+03:00", CurrentServices: []string{"неизвестная услуга"},
+		Services: services,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("problem phrase intent: %+v", intent)
+	start, parseErr := time.Parse(time.RFC3339, intent.StartAt)
+	electroMinutes := 0
+	classicBikini := false
+	for _, change := range intent.Services {
+		for _, index := range change.ServiceIndexes {
+			if index >= 1 && index <= 5 {
+				electroMinutes += services[index-1].DurationMin
+			}
+			if index == 10 {
+				classicBikini = true
+			}
+		}
+	}
+	if parseErr != nil || !intent.IsEdit || !intent.ChangeService || !intent.ChangeStartAt || start.Format("2006-01-02 15:04") != "2026-08-18 12:40" || len(intent.Services) != 2 || electroMinutes != 90 || !classicBikini {
+		t.Fatalf("unexpected schedule edit: %+v parse_error=%v", intent, parseErr)
+	}
+}
+
 func TestQwenFinanceIntentLive(t *testing.T) {
 	if os.Getenv("QWEN_LIVE_TEST") != "1" {
 		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")

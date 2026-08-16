@@ -69,6 +69,14 @@ type BookingView struct {
 	Status       string
 }
 
+type BookingConflict struct {
+	Username     string
+	ServiceNames []string
+	StartAt      time.Time
+	EndAt        time.Time
+	Blocked      bool
+}
+
 type ServiceView struct {
 	ID          int64
 	AdminName   string
@@ -317,7 +325,7 @@ type Store interface {
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (BookingChangeResult, error)
 	AddBookingForContactByIndex(ctx context.Context, adminTelegramID int64, contactType, contact string, index int) (BookingChangeResult, error)
-	CanImportBooking(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) error
+	FindImportBookingConflict(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) (*BookingConflict, error)
 	AddImportedBooking(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (BookingChangeResult, error)
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	DeleteBookingByID(ctx context.Context, adminTelegramID int64, bookingID int64) (BookingChangeResult, error)

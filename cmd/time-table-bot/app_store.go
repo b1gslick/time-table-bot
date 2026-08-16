@@ -1233,34 +1233,82 @@ func (s *appStore) importedBookingSpec(ctx context.Context, adminTelegramID int6
 	return spec, nil
 }
 
-func (s *appStore) CanImportBooking(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) error {
+func (s *appStore) FindImportBookingConflict(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) (*bot.BookingConflict, error) {
 	if start.IsZero() {
-		return store.ErrInvalidArgument
+		return nil, store.ErrInvalidArgument
 	}
 	spec, err := s.importedBookingSpec(ctx, adminTelegramID, serviceIndexes)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	start = start.In(s.loc)
 	end := start.In(s.loc).Add(time.Duration(spec.durationMin) * time.Minute)
-	var occupied bool
+	var (
+		conflict                  bot.BookingConflict
+		bookingID                 sql.NullInt64
+		note, fallbackServiceName string
+	)
 	err = s.db.QueryRowContext(ctx, `
-SELECT EXISTS (
-    SELECT 1
+WITH occupied AS (
+    SELECT booking.id,
+           booking.status,
+           booking.note,
+           slot.start_at,
+           slot.end_at,
+           CASE
+               WHEN booking.status = 'booked' THEN booking.id
+               WHEN booking.note ~ '^covered_by_booking:[0-9]+$'
+                   THEN substring(booking.note FROM '[0-9]+$')::bigint
+               ELSE NULL
+           END AS primary_booking_id
     FROM schedule_slots slot
     JOIN bookings booking ON booking.slot_id = slot.id
     WHERE slot.admin_user_id = $1
       AND booking.status IN ('booked', 'blocked')
       AND slot.start_at < $3
       AND slot.end_at > $2
-);
-`, spec.adminID, start.In(s.loc), end).Scan(&occupied)
+	ORDER BY slot.start_at ASC
+	LIMIT 1
+)
+SELECT primary_booking.id,
+       CASE
+           WHEN (client.username LIKE 'phone_%' OR client.username LIKE 'name_%')
+                AND COALESCE(client.full_name, '') <> '' THEN client.full_name
+           ELSE COALESCE(client.username, '')
+       END AS client_name,
+       COALESCE(primary_slot.start_at, occupied.start_at),
+       COALESCE(primary_slot.end_at, occupied.end_at),
+       COALESCE(primary_booking.note, ''),
+       COALESCE(service.name, '')
+FROM occupied
+LEFT JOIN bookings primary_booking
+       ON primary_booking.id = occupied.primary_booking_id
+      AND primary_booking.status = 'booked'
+LEFT JOIN schedule_slots primary_slot ON primary_slot.id = primary_booking.slot_id
+LEFT JOIN users client ON client.id = primary_booking.user_id
+LEFT JOIN admin_services service ON service.id = primary_booking.service_id;
+`, spec.adminID, start, end).Scan(
+		&bookingID,
+		&conflict.Username,
+		&conflict.StartAt,
+		&conflict.EndAt,
+		&note,
+		&fallbackServiceName,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if occupied {
-		return store.ErrSlotUnavailable
+	conflict.StartAt = conflict.StartAt.In(s.loc)
+	conflict.EndAt = conflict.EndAt.In(s.loc)
+	conflict.Blocked = !bookingID.Valid
+	if duration := bookingDurationFromNote(note); duration > 0 {
+		conflict.EndAt = conflict.StartAt.Add(time.Duration(duration) * time.Minute)
 	}
-	return nil
+	conflict.ServiceNames = bookingServiceNames(note, fallbackServiceName)
+	return &conflict, nil
 }
 
 func (s *appStore) AddImportedBooking(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (bot.BookingChangeResult, error) {

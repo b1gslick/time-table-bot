@@ -178,14 +178,15 @@ func (b *Bot) evaluateScheduleImport(ctx context.Context, user UserRecord, draft
 			item.Issue = tr(user.Language, "schedule_import_issue_uncertain")
 		}
 		if item.Issue == "" && checkAvailability {
-			if err := b.store.CanImportBooking(ctx, user.TelegramID, item.Draft.ServiceIndexes, item.Start); err != nil {
+			conflict, err := b.store.FindImportBookingConflict(ctx, user.TelegramID, item.Draft.ServiceIndexes, item.Start)
+			if err != nil {
 				if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 					item.Issue = tr(user.Language, "schedule_import_issue_service")
-				} else if errors.Is(err, store.ErrSlotUnavailable) {
-					item.Issue = tr(user.Language, "schedule_import_issue_unavailable")
 				} else {
 					return nil, err
 				}
+			} else if conflict != nil {
+				item.Issue = formatScheduleImportConflict(user.Language, *conflict)
 			}
 		}
 		item.Ready = item.Issue == ""
@@ -231,12 +232,7 @@ func (b *Bot) handleScheduleImportCallback(ctx context.Context, cb *telegram.Cal
 		state.ScheduleImportIndex++
 		return b.advanceScheduleImport(ctx, cb.Message.Chat.ID, user, state)
 	case "edit":
-		state.Step = conversationStepScheduleEdit
-		state.ScheduleImportEdit = ""
-		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
-			return b.sendText(ctx, cb.Message.Chat.ID, tr(user.Language, "conversation_failed"))
-		}
-		return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, tr(user.Language, "schedule_import_edit_choose"), scheduleImportEditKeyboard(user.Language, index))
+		return b.beginScheduleImportRecordEdit(ctx, cb.Message.Chat.ID, user, state)
 	case "field":
 		if len(parts) != 3 {
 			return b.showScheduleImportCurrent(ctx, cb.Message.Chat.ID, user, state)
@@ -288,6 +284,28 @@ func (b *Bot) finishScheduleImport(ctx context.Context, chatID int64, user UserR
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_import_done", state.ScheduleImportCreated, state.ScheduleImportSkipped), keyboardForUser(user))
 }
 
+func (b *Bot) beginScheduleImportRecordEdit(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
+	if state.ScheduleImportIndex < 0 || state.ScheduleImportIndex >= len(state.ScheduleImportEntries) {
+		return b.finishScheduleImport(ctx, chatID, user, state)
+	}
+	items, err := b.evaluateScheduleImport(ctx, user, []ScheduleImportDraft{state.ScheduleImportEntries[state.ScheduleImportIndex]}, false)
+	if err != nil || len(items) != 1 {
+		return b.sendText(ctx, chatID, tr(user.Language, "schedule_import_failed"))
+	}
+	state.Step = conversationStepScheduleEdit
+	state.ScheduleImportEdit = "record"
+	state.ScheduleImportEntries[state.ScheduleImportIndex] = items[0].Draft
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendTextWithKeyboard(
+		ctx,
+		chatID,
+		tr(user.Language, "schedule_import_edit_record"),
+		scheduleImportRecordEditBackKeyboard(user.Language, state.ScheduleImportIndex),
+	)
+}
+
 func (b *Bot) beginScheduleImportFieldEdit(ctx context.Context, chatID int64, user UserRecord, state ConversationState, field string) error {
 	if field != "client" && field != "service" && field != "time" {
 		return b.showScheduleImportCurrent(ctx, chatID, user, state)
@@ -314,6 +332,63 @@ func (b *Bot) conversationScheduleImportEdit(ctx context.Context, chatID int64, 
 	}
 	draft := state.ScheduleImportEntries[state.ScheduleImportIndex]
 	switch state.ScheduleImportEdit {
+	case "record":
+		now := time.Now().In(time.Local)
+		patch, ok := parseScheduleImportRecordPatch(text, now)
+		var services []ServiceView
+		if !ok {
+			var err error
+			services, err = b.store.ListServices(ctx, user.TelegramID)
+			if err != nil {
+				return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+			}
+			patch, ok, err = b.parseScheduleImportNaturalPatch(ctx, user, draft, text, now, services)
+			if err != nil {
+				b.logger.Printf("schedule import: correction parser failed admin=%d: %v", user.TelegramID, err)
+			}
+		}
+		if !ok {
+			return b.sendTextWithKeyboard(
+				ctx,
+				chatID,
+				tr(user.Language, "schedule_import_edit_record_bad"),
+				scheduleImportRecordEditBackKeyboard(user.Language, state.ScheduleImportIndex),
+			)
+		}
+		if patch.HasClient {
+			client, contactType, contact, ok := parseScheduleImportClientEdit(patch.Client, draft.Client)
+			if !ok {
+				return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_import_edit_record_bad"), scheduleImportRecordEditBackKeyboard(user.Language, state.ScheduleImportIndex))
+			}
+			draft.Client, draft.ContactType, draft.Contact = client, contactType, contact
+		}
+		if patch.HasDateTime {
+			start, err := parseScheduleImportEditDateTime(patch.DateTime, time.Now().In(time.Local))
+			if err != nil {
+				return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_import_edit_record_bad"), scheduleImportRecordEditBackKeyboard(user.Language, state.ScheduleImportIndex))
+			}
+			draft.StartAt = start.Format(time.RFC3339)
+		}
+		if patch.HasService {
+			if services == nil {
+				var err error
+				services, err = b.store.ListServices(ctx, user.TelegramID)
+				if err != nil {
+					return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
+				}
+			}
+			indexes := resolveScheduleImportServicePatch(patch, services)
+			queries := append([]string(nil), patch.ServiceQueries...)
+			for _, change := range patch.ServiceChanges {
+				queries = append(queries, change.ServiceQueries...)
+			}
+			draft.ServiceIndexes = indexes
+			draft.ServiceQueries = queries
+			if len(draft.ServiceQueries) == 0 && strings.TrimSpace(patch.Service) != "" {
+				draft.ServiceQueries = []string{patch.Service}
+			}
+			draft.DurationMin = scheduleImportDurationForIndexes(indexes, services)
+		}
 	case "client":
 		client, contactType, contact, ok := parseScheduleImportClientEdit(text, draft.Client)
 		if !ok {
@@ -339,13 +414,216 @@ func (b *Bot) conversationScheduleImportEdit(ctx context.Context, chatID int64, 
 		}
 		draft.StartAt = start.Format(time.RFC3339)
 	default:
-		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "schedule_import_edit_choose"), scheduleImportEditKeyboard(user.Language, state.ScheduleImportIndex))
+		return b.beginScheduleImportRecordEdit(ctx, chatID, user, state)
 	}
 	draft.Confidence = 1
 	state.ScheduleImportEntries[state.ScheduleImportIndex] = draft
 	state.Step = conversationStepScheduleImport
 	state.ScheduleImportEdit = ""
 	return b.showScheduleImportCurrent(ctx, chatID, user, state)
+}
+
+func resolveScheduleImportServicePatch(patch scheduleImportRecordPatch, services []ServiceView) []int {
+	indexes := make([]int, 0)
+	if len(patch.ServiceChanges) > 0 {
+		for _, change := range patch.ServiceChanges {
+			resolved := append([]int(nil), change.ServiceIndexes...)
+			if !scheduleImportIndexesMatchDuration(resolved, change.DurationMin, services) {
+				resolved = resolveNaturalBookingServices(nlu.BookingIntent{
+					ServiceIndexes: change.ServiceIndexes,
+					ServiceQueries: change.ServiceQueries,
+					DurationMin:    change.DurationMin,
+				}, strings.Join(change.ServiceQueries, ", "), services)
+			}
+			for _, index := range resolved {
+				if !intInSlice(indexes, index) {
+					indexes = append(indexes, index)
+				}
+			}
+		}
+		return indexes
+	}
+	return resolveNaturalBookingServices(nlu.BookingIntent{
+		ServiceIndexes: patch.ServiceIndexes,
+		ServiceQueries: patch.ServiceQueries,
+		DurationMin:    patch.DurationMin,
+	}, patch.Service, services)
+}
+
+type scheduleImportRecordPatch struct {
+	DateTime       string
+	Client         string
+	Service        string
+	ServiceIndexes []int
+	ServiceQueries []string
+	ServiceChanges []nlu.AdminScheduleEditService
+	DurationMin    int
+	HasDateTime    bool
+	HasClient      bool
+	HasService     bool
+}
+
+func (b *Bot) parseScheduleImportNaturalPatch(ctx context.Context, user UserRecord, draft ScheduleImportDraft, text string, now time.Time, services []ServiceView) (scheduleImportRecordPatch, bool, error) {
+	parser, ok := b.adminBookingParser.(nlu.AdminScheduleEditParser)
+	if !ok {
+		return scheduleImportRecordPatch{}, false, nil
+	}
+	currentServices := make([]string, 0, len(draft.ServiceIndexes))
+	for _, index := range draft.ServiceIndexes {
+		if index > 0 && index <= len(services) {
+			currentServices = append(currentServices, services[index-1].Name)
+		}
+	}
+	intent, err := parser.ParseAdminScheduleEdit(ctx, nlu.AdminScheduleEditRequest{
+		Text:            text,
+		Language:        user.Language,
+		Now:             now,
+		Timezone:        now.Location().String(),
+		CurrentClient:   draft.Client,
+		CurrentContact:  formatContactAlias(draft.ContactType, draft.Contact),
+		CurrentStartAt:  draft.StartAt,
+		CurrentServices: currentServices,
+		Services:        nluServices(services),
+	})
+	if err != nil {
+		return scheduleImportRecordPatch{}, false, err
+	}
+	if !intent.IsEdit || intent.Confidence < scheduleImportMinConfidence {
+		return scheduleImportRecordPatch{}, false, nil
+	}
+	patch := scheduleImportRecordPatch{}
+	if intent.ChangeStartAt && intent.StartAt != "" {
+		patch.DateTime, patch.HasDateTime = intent.StartAt, true
+	}
+	if intent.ChangeClient {
+		client := strings.TrimSpace(intent.Client)
+		contact := formatContactAlias(intent.ContactType, intent.Contact)
+		if contact != "" && !strings.Contains(normalizeMatchText(client), normalizeMatchText(contact)) {
+			client = strings.TrimSpace(client + " " + contact)
+		}
+		if client != "" {
+			patch.Client, patch.HasClient = client, true
+		}
+	}
+	if intent.ChangeService && (len(intent.Services) > 0 || len(intent.ServiceIndexes) > 0 || len(intent.ServiceQueries) > 0) {
+		patch.ServiceChanges = intent.Services
+		patch.ServiceIndexes = intent.ServiceIndexes
+		patch.ServiceQueries = intent.ServiceQueries
+		patch.Service = strings.Join(intent.ServiceQueries, ", ")
+		patch.DurationMin = intent.DurationMin
+		patch.HasService = true
+	}
+	return patch, patch.HasDateTime || patch.HasClient || patch.HasService, nil
+}
+
+func parseScheduleImportRecordPatch(text string, now time.Time) (scheduleImportRecordPatch, bool) {
+	var patch scheduleImportRecordPatch
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if text == "" {
+		return patch, false
+	}
+	if dateTime, client, service, ok := parseScheduleImportEditableRecord(text); ok {
+		return scheduleImportRecordPatch{
+			DateTime: dateTime, Client: client, Service: service, ServiceQueries: []string{service},
+			HasDateTime: true, HasClient: true, HasService: true,
+		}, true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		field, value, ok := parseScheduleImportCorrectionLine(line)
+		if !ok {
+			continue
+		}
+		switch field {
+		case "time":
+			patch.DateTime, patch.HasDateTime = value, true
+		case "client":
+			patch.Client, patch.HasClient = value, true
+		case "service":
+			patch.Service, patch.ServiceQueries, patch.HasService = value, []string{value}, true
+		}
+	}
+	if patch.HasDateTime {
+		if _, err := parseScheduleImportEditDateTime(patch.DateTime, now); err != nil {
+			patch.DateTime, patch.HasDateTime = "", false
+		}
+	}
+	if patch.HasDateTime || patch.HasClient || patch.HasService {
+		return patch, true
+	}
+	if _, err := parseScheduleImportEditDateTime(text, now); err == nil {
+		patch.DateTime, patch.HasDateTime = text, true
+		return patch, true
+	}
+	return patch, false
+}
+
+func parseScheduleImportCorrectionLine(line string) (field, value string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", false
+	}
+	if key, candidate, found := strings.Cut(line, ":"); found {
+		if field = scheduleImportCorrectionField(key); field != "" {
+			value = strings.TrimSpace(candidate)
+			return field, value, value != ""
+		}
+	}
+	lower := strings.ToLower(line)
+	for _, candidate := range []struct {
+		prefix string
+		field  string
+	}{
+		{"дата и время ", "time"}, {"дату на ", "time"}, {"дата ", "time"}, {"время ", "time"},
+		{"date and time ", "time"}, {"date ", "time"}, {"time ", "time"},
+		{"клиент ", "client"}, {"client ", "client"},
+		{"услуга ", "service"}, {"service ", "service"},
+	} {
+		if strings.HasPrefix(lower, candidate.prefix) {
+			value = strings.TrimSpace(line[len(candidate.prefix):])
+			return candidate.field, value, value != ""
+		}
+	}
+	return "", "", false
+}
+
+func scheduleImportCorrectionField(key string) string {
+	switch normalizeMatchText(key) {
+	case "дата", "дата и время", "время", "date", "date and time", "time":
+		return "time"
+	case "клиент", "client":
+		return "client"
+	case "услуга", "service":
+		return "service"
+	default:
+		return ""
+	}
+}
+
+func parseScheduleImportEditableRecord(text string) (dateTime, client, service string, ok bool) {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	parts := strings.Split(text, "|")
+	if len(parts) >= 3 {
+		dateTime = strings.TrimSpace(parts[0])
+		client = strings.TrimSpace(parts[1])
+		service = strings.TrimSpace(strings.Join(parts[2:], "|"))
+		return dateTime, client, service, dateTime != "" && client != "" && service != ""
+	}
+	values := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		key, value, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		switch normalizeMatchText(key) {
+		case "дата", "дата и время", "date", "date and time":
+			values["time"] = strings.TrimSpace(value)
+		case "клиент", "client":
+			values["client"] = strings.TrimSpace(value)
+		case "услуга", "service":
+			values["service"] = strings.TrimSpace(value)
+		}
+	}
+	return values["time"], values["client"], values["service"], values["time"] != "" && values["client"] != "" && values["service"] != ""
 }
 
 func parseScheduleImportClientEdit(text, existingClient string) (client, contactType, contact string, ok bool) {
@@ -434,6 +712,22 @@ func scheduleImportDurationForIndexes(indexes []int, services []ServiceView) int
 		}
 	}
 	return total
+}
+
+func scheduleImportIndexesMatchDuration(indexes []int, durationMin int, services []ServiceView) bool {
+	if len(indexes) == 0 {
+		return false
+	}
+	total := 0
+	seen := make(map[int]bool, len(indexes))
+	for _, index := range indexes {
+		if index <= 0 || index > len(services) || seen[index] || services[index-1].DurationMin <= 0 {
+			return false
+		}
+		seen[index] = true
+		total += services[index-1].DurationMin
+	}
+	return durationMin <= 0 || total == durationMin
 }
 
 func formatScheduleImportServiceChoices(lang string, services []ServiceView) string {
@@ -526,6 +820,24 @@ func formatScheduleImportCurrent(lang string, item evaluatedScheduleImport, inde
 	sb.WriteString("\n")
 	sb.WriteString(tr(lang, "schedule_import_progress", created, skipped))
 	return sb.String()
+}
+
+func formatScheduleImportConflict(lang string, conflict BookingConflict) string {
+	interval := conflict.StartAt.Format("02.01.2006 15:04") + "–" + conflict.EndAt.Format("15:04")
+	if conflict.Blocked {
+		return tr(lang, "schedule_import_issue_blocked", interval)
+	}
+	client := strings.TrimSpace(conflict.Username)
+	if client == "" {
+		client = tr(lang, "schedule_import_unknown_client")
+	} else if !strings.HasPrefix(client, "+") && !strings.HasPrefix(client, "@") && !strings.Contains(client, " ") {
+		client = "@" + client
+	}
+	services := strings.Join(conflict.ServiceNames, ", ")
+	if services == "" {
+		services = tr(lang, "schedule_import_unknown_service")
+	}
+	return tr(lang, "schedule_import_issue_conflict", interval, client, services)
 }
 
 func scheduleImportServiceNames(indexes []int, queries []string, services []ServiceView) string {
@@ -623,4 +935,10 @@ func scheduleImportEditKeyboard(lang string, index int) *telegram.ReplyMarkup {
 func scheduleImportEditBackKeyboard(lang string, index int) *telegram.ReplyMarkup {
 	rows := [][]telegram.InlineKeyboardButton{{{Text: tr(lang, "button_back"), CallbackData: fmt.Sprintf("scheduleimport:edit:%d", index)}}}
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func scheduleImportRecordEditBackKeyboard(lang string, index int) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{{
+		{Text: tr(lang, "button_back"), CallbackData: fmt.Sprintf("scheduleimport:back:%d", index)},
+	}}}
 }

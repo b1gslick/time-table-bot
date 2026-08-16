@@ -88,6 +88,44 @@ type AdminScheduleImportParser interface {
 	ParseAdminScheduleImport(ctx context.Context, req AdminScheduleImportRequest) (AdminScheduleImportIntent, error)
 }
 
+type AdminScheduleEditRequest struct {
+	Text            string
+	Language        string
+	Now             time.Time
+	Timezone        string
+	CurrentClient   string
+	CurrentContact  string
+	CurrentStartAt  string
+	CurrentServices []string
+	Services        []Service
+}
+
+type AdminScheduleEditIntent struct {
+	IsEdit         bool                       `json:"is_edit"`
+	ChangeClient   bool                       `json:"change_client"`
+	Client         string                     `json:"client"`
+	ContactType    string                     `json:"contact_type"`
+	Contact        string                     `json:"contact"`
+	ChangeService  bool                       `json:"change_service"`
+	Services       []AdminScheduleEditService `json:"services"`
+	ServiceIndexes []int                      `json:"service_indexes"`
+	ServiceQueries []string                   `json:"service_queries"`
+	DurationMin    int                        `json:"duration_min"`
+	ChangeStartAt  bool                       `json:"change_start_at"`
+	StartAt        string                     `json:"start_at"`
+	Confidence     float64                    `json:"confidence"`
+}
+
+type AdminScheduleEditService struct {
+	ServiceIndexes []int    `json:"service_indexes"`
+	ServiceQueries []string `json:"service_queries"`
+	DurationMin    int      `json:"duration_min"`
+}
+
+type AdminScheduleEditParser interface {
+	ParseAdminScheduleEdit(ctx context.Context, req AdminScheduleEditRequest) (AdminScheduleEditIntent, error)
+}
+
 type AdminServiceImportRequest struct {
 	Text             string
 	Language         string

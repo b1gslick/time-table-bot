@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"time-table-bot/internal/nlu"
 )
 
 func TestLooksLikeScheduleImport(t *testing.T) {
@@ -54,6 +56,20 @@ func TestFormatScheduleImportPreviewMarksTemporaryClientName(t *testing.T) {
 	}
 }
 
+func TestFormatScheduleImportConflictShowsExistingBooking(t *testing.T) {
+	conflict := BookingConflict{
+		Username: "Анастасия Балтаджи", ServiceNames: []string{"Электроэпиляция — 1 час"},
+		StartAt: time.Date(2026, 8, 17, 9, 30, 0, 0, time.Local),
+		EndAt:   time.Date(2026, 8, 17, 10, 30, 0, 0, time.Local),
+	}
+	got := formatScheduleImportConflict(LangRU, conflict)
+	for _, want := range []string{"17.08.2026 09:30–10:30", "Анастасия Балтаджи", "Электроэпиляция — 1 час"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("conflict %q does not contain %q", got, want)
+		}
+	}
+}
+
 func TestParseScheduleImportClientEditKeepsNameWithTelegram(t *testing.T) {
 	client, contactType, contact, ok := parseScheduleImportClientEdit("Анастасия Балтаджи @hasti69", "")
 	if !ok || client != "Анастасия Балтаджи" || contactType != "telegram" || contact != "hasti69" {
@@ -90,6 +106,68 @@ func TestParseScheduleImportEditDateTime(t *testing.T) {
 		if err != nil || got.Format(time.RFC3339) != want {
 			t.Fatalf("parse %q = %s, %v; want %s", input, got, err, want)
 		}
+	}
+}
+
+func TestParseScheduleImportEditableRecord(t *testing.T) {
+	dateTime, client, service, ok := parseScheduleImportEditableRecord("19.08.2026 16:50 | Анастасия @hasti69 | Электроэпиляция — Подмышки")
+	if !ok || dateTime != "19.08.2026 16:50" || client != "Анастасия @hasti69" || service != "Электроэпиляция — Подмышки" {
+		t.Fatalf("editable record = %q, %q, %q, %v", dateTime, client, service, ok)
+	}
+	dateTime, client, service, ok = parseScheduleImportEditableRecord("Дата и время: 20.08.2026 10:00\nКлиент: Лиза\nУслуга: Электроэпиляция")
+	if !ok || dateTime != "20.08.2026 10:00" || client != "Лиза" || service != "Электроэпиляция" {
+		t.Fatalf("labeled editable record = %q, %q, %q, %v", dateTime, client, service, ok)
+	}
+}
+
+func TestParseScheduleImportRecordPatchAcceptsMinimalCorrections(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.Local)
+	patch, ok := parseScheduleImportRecordPatch("20.08.2026 10:00", now)
+	if !ok || !patch.HasDateTime || patch.HasClient || patch.HasService || patch.DateTime != "20.08.2026 10:00" {
+		t.Fatalf("date-only patch = %#v, %v", patch, ok)
+	}
+	patch, ok = parseScheduleImportRecordPatch("дата 20.08.2026 10:00\nуслуга электроэпиляция 1 час", now)
+	if !ok || !patch.HasDateTime || !patch.HasService || patch.HasClient || patch.Service != "электроэпиляция 1 час" {
+		t.Fatalf("multi-field patch = %#v, %v", patch, ok)
+	}
+}
+
+func TestParseScheduleImportRecordPatchRejectsDateThatConsumesOtherCorrections(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.Local)
+	patch, ok := parseScheduleImportRecordPatch("Дату на 18, услуги электроэпиляция на полтора часа и восковая эпиляция бикини", now)
+	if ok || patch.HasDateTime || patch.HasService {
+		t.Fatalf("ambiguous local patch must fall back to Qwen: %#v, %v", patch, ok)
+	}
+}
+
+func TestScheduleImportServiceChangesDoNotAddExtraService(t *testing.T) {
+	services := []ServiceView{
+		{Category: "Электроэпиляция", Name: "До 30 мин 25€", DurationMin: 30},
+		{Category: "Электроэпиляция", Name: "30 мин 25€", DurationMin: 30},
+		{Category: "Электроэпиляция", Name: "1 час 45 €", DurationMin: 60},
+		{Category: "Электроэпиляция", Name: "2 часа 90€", DurationMin: 120},
+		{Category: "Восковая депиляция", Name: "Бикини классика", DurationMin: 15},
+	}
+	changes := []nlu.AdminScheduleEditService{
+		{ServiceIndexes: []int{1, 3}, ServiceQueries: []string{"электроэпиляция на полтора часа"}, DurationMin: 90},
+		{ServiceIndexes: []int{5}, ServiceQueries: []string{"восковая эпиляция бикини"}, DurationMin: 15},
+	}
+	var indexes []int
+	for _, change := range changes {
+		resolved := append([]int(nil), change.ServiceIndexes...)
+		if !scheduleImportIndexesMatchDuration(resolved, change.DurationMin, services) {
+			resolved = resolveNaturalBookingServices(nlu.BookingIntent{
+				ServiceIndexes: change.ServiceIndexes, ServiceQueries: change.ServiceQueries, DurationMin: change.DurationMin,
+			}, strings.Join(change.ServiceQueries, ", "), services)
+		}
+		for _, index := range resolved {
+			if !intInSlice(indexes, index) {
+				indexes = append(indexes, index)
+			}
+		}
+	}
+	if len(indexes) != 3 || indexes[0] != 1 || indexes[1] != 3 || indexes[2] != 5 {
+		t.Fatalf("resolved service indexes = %v, want [1 3 5]", indexes)
 	}
 }
 

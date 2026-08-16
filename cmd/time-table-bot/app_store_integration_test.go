@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -1434,16 +1433,24 @@ func TestBotE2E_ScheduleImageImportReviewsEntriesOneByOne(t *testing.T) {
 	}
 
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	correctedStart := start.Add(2 * time.Hour)
+	correctedLocalStart := time.Date(correctedStart.Year(), correctedStart.Month(), correctedStart.Day(), correctedStart.Hour(), correctedStart.Minute(), 0, 0, time.Local)
 	tg := &fakeTelegramClient{}
 	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
-	bookingBot.SetAdminBookingIntentParser(staticAdminBookingParser{scheduleIntent: nlu.AdminScheduleImportIntent{
-		IsSchedule: true,
-		Confidence: 0.98,
-		Entries: []nlu.AdminScheduleImportEntry{
-			{Client: "Лиза", ServiceIndexes: []int{1}, ServiceQueries: []string{"электро"}, DurationMin: 30, StartAt: start.Format(time.RFC3339), Confidence: 0.98},
-			{Client: "Катя", ServiceQueries: []string{"неизвестная услуга"}, DurationMin: 30, StartAt: start.Add(time.Hour).Format(time.RFC3339), Confidence: 0.98},
+	bookingBot.SetAdminBookingIntentParser(staticAdminBookingParser{
+		scheduleIntent: nlu.AdminScheduleImportIntent{
+			IsSchedule: true,
+			Confidence: 0.98,
+			Entries: []nlu.AdminScheduleImportEntry{
+				{Client: "Лиза", ServiceIndexes: []int{1}, ServiceQueries: []string{"электро"}, DurationMin: 30, StartAt: start.Format(time.RFC3339), Confidence: 0.98},
+				{Client: "Катя", ServiceQueries: []string{"неизвестная услуга"}, DurationMin: 30, StartAt: start.Add(time.Hour).Format(time.RFC3339), Confidence: 0.98},
+			},
 		},
-	}})
+		editIntent: nlu.AdminScheduleEditIntent{
+			IsEdit: true, ChangeService: true, Services: []nlu.AdminScheduleEditService{{ServiceIndexes: []int{1}, ServiceQueries: []string{"электро"}, DurationMin: 30}},
+			ChangeStartAt: true, StartAt: correctedLocalStart.Format(time.RFC3339), Confidence: 0.98,
+		},
+	})
 	bookingBot.SetImageTextRecognizer(staticImageTextRecognizer{text: "Неделя 34\nпн 9:30 Лиза электро\n10:30 Катя услуга"})
 	adminUser := telegram.User{ID: 2001, Username: "master", FirstName: "Master"}
 	chat := telegram.Chat{ID: 2001}
@@ -1482,13 +1489,38 @@ func TestBotE2E_ScheduleImageImportReviewsEntriesOneByOne(t *testing.T) {
 	}
 
 	callback("scheduleimport:edit:1")
-	callback("scheduleimport:field:service:1")
-	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: adminUser, Chat: chat, Text: "1"}); err != nil {
-		t.Fatalf("edit service: %v", err)
+	messages = tg.texts()
+	if !strings.Contains(messages[len(messages)-1], "обычной фразой") || strings.Contains(messages[len(messages)-1], "|") {
+		t.Fatalf("editable record prompt = %q", messages[len(messages)-1])
+	}
+	corrected := "перенеси на два часа позже и поставь электро"
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: adminUser, Chat: chat, Text: corrected}); err != nil {
+		t.Fatalf("edit whole record: %v", err)
 	}
 	messages = tg.texts()
 	if !strings.Contains(messages[len(messages)-1], "Запись готова к сохранению") {
 		t.Fatalf("edited review message = %q", messages[len(messages)-1])
+	}
+	state, err = app.GetConversationState(ctx, 2001)
+	correctedStateStart, parseErr := time.Parse(time.RFC3339, state.ScheduleImportEntries[1].StartAt)
+	if err != nil || parseErr != nil || correctedStateStart.Format("02.01.2006 15:04") != correctedStart.Format("02.01.2006 15:04") || len(state.ScheduleImportEntries[1].ServiceIndexes) != 1 {
+		t.Fatalf("corrected import state = %#v, %v", state, err)
+	}
+
+	bookingBot.SetAdminBookingIntentParser(staticAdminBookingParser{editIntent: nlu.AdminScheduleEditIntent{
+		IsEdit: true, ChangeClient: true, Client: "Екатерина", Confidence: 0.98,
+	}})
+	bookingBot.SetSpeechRecognizer(staticSpeechRecognizer{text: "это Екатерина"})
+	callback("scheduleimport:edit:1")
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: adminUser, Chat: chat,
+		Voice: &telegram.Voice{FileID: "voice-correction", FileSize: 10, Duration: 2},
+	}); err != nil {
+		t.Fatalf("edit record by voice: %v", err)
+	}
+	state, err = app.GetConversationState(ctx, 2001)
+	if err != nil || state.ScheduleImportEntries[1].Client != "Екатерина" || state.ScheduleImportEntries[1].StartAt != correctedStateStart.Format(time.RFC3339) || len(state.ScheduleImportEntries[1].ServiceIndexes) != 1 {
+		t.Fatalf("voice-corrected import state = %#v, %v", state, err)
 	}
 	callback("scheduleimport:skip:1")
 	assertBookedCount(t, ctx, db, 1)
@@ -1538,13 +1570,18 @@ func TestBotE2E_NaturalBookingDraftKeepsRecognizedFields(t *testing.T) {
 
 	adminTG := &fakeTelegramClient{}
 	adminBot := bot.New(adminTG, app, log.New(io.Discard, "", 0), "tim1106")
-	adminBot.SetAdminBookingIntentParser(staticAdminBookingParser{intent: nlu.AdminBookingIntent{
-		IsCreateBooking: true,
-		ContactType:     "unknown",
-		Contact:         "Лиза",
-		StartAt:         start.Format(time.RFC3339),
-		Confidence:      0.95,
-	}})
+	adminBot.SetAdminBookingIntentParser(staticAdminBookingParser{
+		intent: nlu.AdminBookingIntent{
+			IsCreateBooking: true,
+			ContactType:     "unknown",
+			Contact:         "Лиза",
+			StartAt:         start.Format(time.RFC3339),
+			Confidence:      0.95,
+		},
+		editIntent: nlu.AdminScheduleEditIntent{
+			IsEdit: true, ChangeStartAt: true, StartAt: start.Add(15 * time.Minute).Format(time.RFC3339), Confidence: 0.95,
+		},
+	})
 	adminUser := telegram.User{ID: 2001, Username: "master", FirstName: "Master"}
 	adminChat := telegram.Chat{ID: 2001}
 	if err := adminBot.HandleMessage(ctx, &telegram.Message{From: adminUser, Chat: adminChat, Text: "запиши Лизу завтра"}); err != nil {
@@ -1570,6 +1607,19 @@ func TestBotE2E_NaturalBookingDraftKeepsRecognizedFields(t *testing.T) {
 	if err != nil || adminState.Step != "booking_edit" || len(adminState.ServiceIndexes) != 1 {
 		t.Fatalf("admin edit state = %#v, err=%v", adminState, err)
 	}
+	adminBot.SetSpeechRecognizer(staticSpeechRecognizer{text: "на пятнадцать минут позже"})
+	if err := adminBot.HandleMessage(ctx, &telegram.Message{
+		From: adminUser, Chat: adminChat,
+		Voice: &telegram.Voice{FileID: "admin-booking-correction", FileSize: 10, Duration: 2},
+	}); err != nil {
+		t.Fatalf("admin voice booking correction: %v", err)
+	}
+	adminState, err = app.GetConversationState(ctx, 2001)
+	adminCorrectedStart, parseErr := time.Parse(time.RFC3339, adminState.FromDateTime)
+	if err != nil || parseErr != nil || adminState.Step != "booking_confirm" || !adminCorrectedStart.Equal(start.Add(15*time.Minute)) {
+		t.Fatalf("admin corrected state = %#v, err=%v", adminState, err)
+	}
+	assertAdminBookingProposalCount(t, adminTG, 2)
 
 	clientTG := &fakeTelegramClient{}
 	clientBot := bot.New(clientTG, app, log.New(io.Discard, "", 0), "tim1106")
@@ -1579,6 +1629,9 @@ func TestBotE2E_NaturalBookingDraftKeepsRecognizedFields(t *testing.T) {
 		DateTo:     start.AddDate(0, 0, 1).Format("2006-01-02"),
 		Period:     "all",
 		Confidence: 0.95,
+	}})
+	clientBot.SetAdminBookingIntentParser(staticAdminBookingParser{editIntent: nlu.AdminScheduleEditIntent{
+		IsEdit: true, ChangeStartAt: true, StartAt: start.Add(15 * time.Minute).Format(time.RFC3339), Confidence: 0.95,
 	}})
 	clientUser := telegram.User{ID: 3001, Username: "client", FirstName: "Client"}
 	clientChat := telegram.Chat{ID: 3001}
@@ -1598,6 +1651,28 @@ func TestBotE2E_NaturalBookingDraftKeepsRecognizedFields(t *testing.T) {
 	clientState, err = app.GetConversationState(ctx, 3001)
 	if err != nil || clientState.Step != "slot" || clientState.DateFrom != start.Format("2006-01-02") || len(clientState.ServiceIndexes) != 1 {
 		t.Fatalf("client slot state = %#v, err=%v", clientState, err)
+	}
+	if err := clientBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID: "client-slot", From: clientUser, Message: &telegram.Message{Chat: clientChat}, Data: "slot:1",
+	}); err != nil {
+		t.Fatalf("client choose slot: %v", err)
+	}
+	if err := clientBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID: "client-edit", From: clientUser, Message: &telegram.Message{Chat: clientChat}, Data: "bookconfirm:edit",
+	}); err != nil {
+		t.Fatalf("client edit booking: %v", err)
+	}
+	clientBot.SetSpeechRecognizer(staticSpeechRecognizer{text: "на пятнадцать минут позже"})
+	if err := clientBot.HandleMessage(ctx, &telegram.Message{
+		From: clientUser, Chat: clientChat,
+		Voice: &telegram.Voice{FileID: "client-booking-correction", FileSize: 10, Duration: 2},
+	}); err != nil {
+		t.Fatalf("client voice booking correction: %v", err)
+	}
+	clientState, err = app.GetConversationState(ctx, 3001)
+	clientCorrectedStart, parseErr := time.Parse(time.RFC3339, clientState.FromDateTime)
+	if err != nil || parseErr != nil || clientState.Step != "booking_confirm" || !clientCorrectedStart.Equal(start.Add(15*time.Minute)) {
+		t.Fatalf("client corrected state = %#v, err=%v", clientState, err)
 	}
 }
 
@@ -1633,8 +1708,9 @@ func TestAppStore_ContactAliasRelinksExistingNamedBooking(t *testing.T) {
 	if err != nil || len(services) != 1 {
 		t.Fatalf("ListServices = %#v, %v", services, err)
 	}
-	if err := app.CanImportBooking(ctx, 2001, []int{1}, start); err != nil {
-		t.Fatalf("CanImportBooking before import: %v", err)
+	conflict, err := app.FindImportBookingConflict(ctx, 2001, []int{1}, start)
+	if err != nil || conflict != nil {
+		t.Fatalf("FindImportBookingConflict before import = %#v, %v", conflict, err)
 	}
 	if _, err := app.AddImportedBooking(ctx, 2001, "name", "Анастасия Балтаджи", []int{1}, start); err != nil {
 		t.Fatalf("AddImportedBooking name: %v", err)
@@ -1643,8 +1719,15 @@ func TestAppStore_ContactAliasRelinksExistingNamedBooking(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedule_slots WHERE admin_user_id = $1 AND note = '' AND status = 'closed'`, admin.ID).Scan(&closedOverlaps); err != nil || closedOverlaps != 3 {
 		t.Fatalf("closed overlapping slots = %d, %v", closedOverlaps, err)
 	}
-	if err := app.CanImportBooking(ctx, 2001, []int{1}, start.Add(15*time.Minute)); !errors.Is(err, store.ErrSlotUnavailable) {
-		t.Fatalf("CanImportBooking overlap error = %v", err)
+	conflict, err = app.FindImportBookingConflict(ctx, 2001, []int{1}, start.Add(15*time.Minute))
+	if err != nil || conflict == nil {
+		t.Fatalf("FindImportBookingConflict overlap = %#v, %v", conflict, err)
+	}
+	if conflict.Username != "Анастасия Балтаджи" || conflict.StartAt != start || conflict.EndAt != start.Add(30*time.Minute) || conflict.Blocked {
+		t.Fatalf("conflict details = %#v", conflict)
+	}
+	if len(conflict.ServiceNames) != 1 || conflict.ServiceNames[0] != services[0].Name {
+		t.Fatalf("conflict services = %v", conflict.ServiceNames)
 	}
 	before, err := app.ListAdminBookingsRange(ctx, 2001, start.Add(-time.Minute), start.Add(time.Hour))
 	if err != nil || len(before) != 1 || before[0].Username != "Анастасия Балтаджи" {
@@ -1804,6 +1887,7 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 type staticAdminBookingParser struct {
 	intent         nlu.AdminBookingIntent
 	scheduleIntent nlu.AdminScheduleImportIntent
+	editIntent     nlu.AdminScheduleEditIntent
 }
 
 type staticBookingParser struct {
@@ -1820,6 +1904,10 @@ func (p staticAdminBookingParser) ParseAdminBookingIntent(context.Context, nlu.A
 
 func (p staticAdminBookingParser) ParseAdminScheduleImport(context.Context, nlu.AdminScheduleImportRequest) (nlu.AdminScheduleImportIntent, error) {
 	return p.scheduleIntent, nil
+}
+
+func (p staticAdminBookingParser) ParseAdminScheduleEdit(context.Context, nlu.AdminScheduleEditRequest) (nlu.AdminScheduleEditIntent, error) {
+	return p.editIntent, nil
 }
 
 type staticSpeechRecognizer struct {

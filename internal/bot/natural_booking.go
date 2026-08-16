@@ -103,7 +103,86 @@ func (b *Bot) continueClientBookingDraft(ctx context.Context, chatID int64, user
 		b.logger.Printf("client booking draft: list slots failed user=%d services=%v: %v", user.TelegramID, state.ServiceIndexes, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
 	}
+	if requested, parseErr := parseAdminBookingStart(state.FromDateTime, now.Location()); parseErr == nil {
+		for index, slot := range slots {
+			if slot.StartAt.Equal(requested) {
+				return b.beginBookingConfirmation(ctx, chatID, user, state, index+1)
+			}
+		}
+	}
 	return b.showInteractiveSlots(ctx, chatID, user, state, slots)
+}
+
+func (b *Bot) applyNaturalBookingCorrection(ctx context.Context, user UserRecord, state ConversationState, text string) (ConversationState, bool, error) {
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		return state, false, err
+	}
+	draft := ScheduleImportDraft{
+		Client:         state.Username,
+		ContactType:    state.ContactType,
+		Contact:        state.Username,
+		StartAt:        state.FromDateTime,
+		ServiceIndexes: append([]int(nil), state.ServiceIndexes...),
+	}
+	patch, ok, err := b.parseScheduleImportNaturalPatch(ctx, user, draft, text, time.Now().In(time.Local), services)
+	if err != nil || !ok {
+		return state, false, err
+	}
+	admin := state.BookingDraft == "admin" || isAdminAppointmentState(state)
+	if admin && patch.HasClient {
+		_, contactType, contact, parsed := parseScheduleImportClientEdit(patch.Client, state.Username)
+		if !parsed || strings.TrimSpace(contact) == "" {
+			return state, false, nil
+		}
+		if contactType == "name" {
+			aliases, aliasErr := b.store.ListContactAliases(ctx, user.TelegramID)
+			if aliasErr == nil {
+				if alias, found := resolveContactAlias(patch.Client, aliases); found {
+					contactType, contact = alias.ContactType, alias.Contact
+				}
+			}
+		}
+		state.ContactType = contactType
+		state.Username = contact
+	}
+	period := state.SlotPeriod
+	if patch.HasDateTime {
+		start, parseErr := parseScheduleImportEditDateTime(patch.DateTime, time.Now().In(time.Local))
+		if parseErr != nil {
+			return state, false, nil
+		}
+		state.FromDateTime = start.Format(time.RFC3339)
+		if !admin {
+			state.DateFrom = start.Format("2006-01-02")
+			state.DateTo = dateOnly(start).AddDate(0, 0, 1).Format("2006-01-02")
+			period = slotPeriodForTime(start)
+		}
+	}
+	if patch.HasService {
+		state.ServiceIndexes = resolveScheduleImportServicePatch(patch, services)
+	}
+	state = resetSlotBrowserState(state)
+	state.SlotPeriod = period
+	state.PendingSlotIndex = 0
+	state.Step = ""
+	if admin {
+		state.BookingDraft = "admin"
+	} else {
+		state.BookingDraft = "client"
+	}
+	return state, true, nil
+}
+
+func slotPeriodForTime(value time.Time) string {
+	switch {
+	case value.Hour() < 12:
+		return "morning"
+	case value.Hour() < 17:
+		return "day"
+	default:
+		return "evening"
+	}
 }
 
 func (b *Bot) correctClientBookingTime(ctx context.Context, user UserRecord, state ConversationState, text string) (ConversationState, bool) {

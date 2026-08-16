@@ -365,9 +365,9 @@ func (b *Bot) conversationBookingConfirm(ctx context.Context, chatID int64, user
 		slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
 		if err == nil && state.PendingSlotIndex > 0 && state.PendingSlotIndex <= len(slots) {
 			slot := slots[state.PendingSlotIndex-1]
+			state.FromDateTime = slot.StartAt.Format(time.RFC3339)
 			if isAdminAppointmentState(state) {
 				state.BookingDraft = "admin"
-				state.FromDateTime = slot.StartAt.Format(time.RFC3339)
 			} else {
 				state.BookingDraft = "client"
 				state.DateFrom = slot.StartAt.Format("2006-01-02")
@@ -378,7 +378,11 @@ func (b *Bot) conversationBookingConfirm(ctx context.Context, chatID int64, user
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
-		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_edit_ask"), bookingEditKeyboard(user.Language, isAdminAppointmentState(state)))
+		key := "booking_edit_ask_client"
+		if state.BookingDraft == "admin" || isAdminAppointmentState(state) {
+			key = "booking_edit_ask_admin"
+		}
+		return b.sendText(ctx, chatID, tr(user.Language, key))
 	default:
 		slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
 		if err != nil || state.PendingSlotIndex <= 0 || state.PendingSlotIndex > len(slots) {
@@ -429,7 +433,17 @@ func (b *Bot) conversationBookingEdit(ctx context.Context, chatID int64, user Us
 		}
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "admin_booking_need_contact"), contactTypeKeyboard(user.Language))
 	default:
-		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "booking_edit_ask"), bookingEditKeyboard(user.Language, state.BookingDraft == "admin" || isAdminAppointmentState(state)))
+		corrected, ok, err := b.applyNaturalBookingCorrection(ctx, user, state, text)
+		if err != nil {
+			b.logger.Printf("booking correction: parser failed user=%d: %v", user.TelegramID, err)
+		}
+		if !ok {
+			return b.sendText(ctx, chatID, tr(user.Language, "booking_edit_bad"))
+		}
+		if corrected.BookingDraft == "admin" || isAdminAppointmentState(corrected) {
+			return b.continueAdminBookingDraft(ctx, chatID, user, corrected)
+		}
+		return b.continueClientBookingDraft(ctx, chatID, user, corrected)
 	}
 }
 
