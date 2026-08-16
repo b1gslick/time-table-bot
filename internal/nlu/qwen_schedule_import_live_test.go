@@ -228,6 +228,51 @@ func TestQwenScheduleEditProblemPhraseLive(t *testing.T) {
 	}
 }
 
+func TestQwenScheduleEditServicesOnlyProblemPhraseLive(t *testing.T) {
+	if os.Getenv("QWEN_LIVE_TEST") != "1" {
+		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")
+	}
+	parser, err := NewQwenParser(QwenConfig{
+		APIKey: os.Getenv("QWEN_API_KEY"), BaseURL: os.Getenv("QWEN_BASE_URL"),
+		Model: os.Getenv("QWEN_MODEL"), Timeout: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	services := []Service{
+		{Index: 1, Category: "Электроэпиляция", Name: "До 30 мин 25€", DurationMin: 30},
+		{Index: 2, Category: "Электроэпиляция", Name: "30 мин 25€", DurationMin: 30},
+		{Index: 3, Category: "Электроэпиляция", Name: "1 час 45 €", DurationMin: 60},
+		{Index: 4, Category: "Электроэпиляция", Name: "2 часа 90€", DurationMin: 120},
+		{Index: 5, Category: "Восковая депиляция", Name: "Бикини классика( по линии трусиков) 15€", DurationMin: 15},
+	}
+	intent, err := parser.ParseAdminScheduleEdit(context.Background(), AdminScheduleEditRequest{
+		Text:     "Услуги только, Электроэпиляция на 1 час 30 минут, и Бикини классика",
+		Language: "ru", Now: time.Date(2026, 8, 16, 9, 34, 0, 0, time.FixedZone("Europe/Nicosia", 3*60*60)), Timezone: "Europe/Nicosia",
+		CurrentClient: "Маша бачата", CurrentStartAt: "2026-08-18T12:40:00+03:00", CurrentServices: []string{"неизвестная услуга"},
+		Services: services,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("services-only problem phrase intent: %+v", intent)
+	minutes := 0
+	classicBikini := false
+	for _, change := range intent.Services {
+		for _, index := range change.ServiceIndexes {
+			if index >= 1 && index <= 4 {
+				minutes += services[index-1].DurationMin
+			}
+			if index == 5 {
+				classicBikini = true
+			}
+		}
+	}
+	if !intent.IsEdit || !intent.ChangeService || minutes != 90 || !classicBikini {
+		t.Fatalf("unexpected services-only correction: %+v", intent)
+	}
+}
+
 func TestQwenFinanceIntentLive(t *testing.T) {
 	if os.Getenv("QWEN_LIVE_TEST") != "1" {
 		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")

@@ -129,6 +129,47 @@ func TestNormalizeScheduleEditServiceDurationRepairsCombination(t *testing.T) {
 	}
 }
 
+func TestQwenScheduleEditUsesExplicitCombinedDuration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"is_edit\":true,\"change_service\":true,\"services\":[{\"service_indexes\":[1,2],\"service_queries\":[\"Электроэпиляция на 1 час 30 минут\"],\"duration_min\":60}],\"confidence\":0.98}"}}]}`))
+	}))
+	defer server.Close()
+	parser, err := NewQwenParser(QwenConfig{APIKey: "test-key", BaseURL: server.URL, Model: "qwen-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := parser.ParseAdminScheduleEdit(context.Background(), AdminScheduleEditRequest{
+		Text: "Услуги только, Электроэпиляция на 1 час 30 минут",
+		Services: []Service{
+			{Index: 1, Category: "Электроэпиляция", Name: "До 30 мин", DurationMin: 30},
+			{Index: 2, Category: "Электроэпиляция", Name: "30 мин", DurationMin: 30},
+			{Index: 3, Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(intent.Services) != 1 || intent.Services[0].DurationMin != 90 || len(intent.Services[0].ServiceIndexes) != 2 || intent.Services[0].ServiceIndexes[1] != 3 || intent.Services[0].ServiceIndexes[0] < 1 || intent.Services[0].ServiceIndexes[0] > 2 {
+		t.Fatalf("normalized services = %+v", intent.Services)
+	}
+}
+
+func TestExplicitServiceDuration(t *testing.T) {
+	for text, want := range map[string]int{
+		"электро на полтора часа":            90,
+		"электро на 1 час 30 минут":          90,
+		"электро на 1,5 часа":                90,
+		"электро на 90 минут":                90,
+		"electrolysis for 1 hour 30 minutes": 90,
+	} {
+		got, ok := explicitServiceDuration(text)
+		if !ok || got != want {
+			t.Errorf("explicitServiceDuration(%q) = %d, %v; want %d", text, got, ok, want)
+		}
+	}
+}
+
 func TestQwenParserParsesServiceImport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req qwenChatRequest

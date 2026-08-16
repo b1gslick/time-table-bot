@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -73,6 +75,9 @@ func (p *QwenParser) ParseAdminScheduleEdit(ctx context.Context, req AdminSchedu
 		if service.DurationMin < 0 {
 			service.DurationMin = 0
 		}
+		if duration, ok := explicitServiceDuration(strings.Join(service.ServiceQueries, " ")); ok {
+			service.DurationMin = duration
+		}
 		normalizeScheduleEditServiceDuration(service, req.Services)
 	}
 	intent.StartAt = strings.TrimSpace(intent.StartAt)
@@ -81,6 +86,46 @@ func (p *QwenParser) ParseAdminScheduleEdit(ctx context.Context, req AdminSchedu
 	}
 	intent.Confidence = clampConfidence(intent.Confidence)
 	return intent, nil
+}
+
+var (
+	explicitHoursRE   = regexp.MustCompile(`(?i)(?:(\d+(?:[.,]\d+)?)\s*)?(?:час(?:а|ов)?|hours?|hrs?)`)
+	explicitMinutesRE = regexp.MustCompile(`(?i)(\d+)\s*(?:мин(?:ут(?:а|ы)?)?|minutes?|mins?)`)
+)
+
+func explicitServiceDuration(text string) (int, bool) {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), "ё", "е"))
+	if normalized == "" {
+		return 0, false
+	}
+	if strings.Contains(normalized, "полтора час") || strings.Contains(normalized, "полторы час") {
+		return 90, true
+	}
+	hours := 0.0
+	foundHours := false
+	if match := explicitHoursRE.FindStringSubmatch(normalized); len(match) > 0 {
+		foundHours = true
+		hours = 1
+		if match[1] != "" {
+			parsed, err := strconv.ParseFloat(strings.ReplaceAll(match[1], ",", "."), 64)
+			if err == nil {
+				hours = parsed
+			}
+		}
+	}
+	minutes := 0
+	foundMinutes := false
+	if match := explicitMinutesRE.FindStringSubmatch(normalized); len(match) > 1 {
+		parsed, err := strconv.Atoi(match[1])
+		if err == nil {
+			minutes, foundMinutes = parsed, true
+		}
+	}
+	if !foundHours && !foundMinutes {
+		return 0, false
+	}
+	total := int(hours*60+0.5) + minutes
+	return total, total > 0
 }
 
 func normalizeScheduleEditServiceDuration(change *AdminScheduleEditService, available []Service) {
@@ -183,6 +228,7 @@ func qwenScheduleEditSystemPrompt() string {
 		"When change_start_at=true, return an RFC3339 datetime with the supplied timezone offset. Preserve the current date when only time changes, and preserve current time when only date changes.",
 		"When change_client=true, preserve a spoken client name in client. Extract @username or phone into contact and set contact_type. A client-facing caller may not change the client, but still extract only explicitly requested changes.",
 		"When services change, put each separately requested service or category in its own services item. A duration modifies only the service it is spoken next to, not the combined appointment.",
+		"Add hours and minutes in one phrase: 1 hour 30 minutes and one-and-a-half hours both mean duration_min=90, never 60.",
 		"Use only service indexes from the supplied list. If a timed category duration requires multiple catalog items, select a combination from that category whose durations sum to the requested duration.",
 		"For example, electrolysis for 90 minutes plus wax bikini must contain one 90-minute electrolysis services item and a separate wax bikini item.",
 		"For unqualified bikini, choose classic bikini; choose deep bikini only when deep is explicit.",
