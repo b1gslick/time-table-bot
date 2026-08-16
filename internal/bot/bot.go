@@ -268,6 +268,10 @@ type ConversationState struct {
 	GenerateMode          string                `json:"generate_mode,omitempty"`
 	GenerateWeekdays      []time.Weekday        `json:"generate_weekdays,omitempty"`
 	ScheduleImportEntries []ScheduleImportDraft `json:"schedule_import_entries,omitempty"`
+	ScheduleImportIndex   int                   `json:"schedule_import_index,omitempty"`
+	ScheduleImportCreated int                   `json:"schedule_import_created,omitempty"`
+	ScheduleImportSkipped int                   `json:"schedule_import_skipped,omitempty"`
+	ScheduleImportEdit    string                `json:"schedule_import_edit,omitempty"`
 	ServiceImportEntries  []ServiceImportDraft  `json:"service_import_entries,omitempty"`
 	FinanceEntries        []FinanceEntryDraft   `json:"finance_entries,omitempty"`
 	FinanceForcedKind     string                `json:"finance_forced_kind,omitempty"`

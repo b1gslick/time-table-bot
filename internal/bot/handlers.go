@@ -69,6 +69,7 @@ const (
 	conversationStepBlock            = "admin_block"
 	conversationStepBlockDate        = "admin_block_date"
 	conversationStepScheduleImport   = "admin_schedule_import"
+	conversationStepScheduleEdit     = "admin_schedule_import_edit"
 	conversationStepServiceImport    = "admin_service_import"
 	conversationStepFinanceInput     = "admin_finance_input"
 	conversationStepFinanceConfirm   = "admin_finance_confirm"

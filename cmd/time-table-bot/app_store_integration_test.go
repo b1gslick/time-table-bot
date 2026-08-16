@@ -1414,6 +1414,90 @@ func TestBotE2E_AdminNaturalBookingFromTextVoiceAndImageRequiresConfirmation(t *
 	assertBookedCount(t, ctx, db, 1)
 }
 
+func TestBotE2E_ScheduleImageImportReviewsEntriesOneByOne(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Эпиляция > Основное > Электроэпиляция", 30, "25 €"); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	tg := &fakeTelegramClient{}
+	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	bookingBot.SetAdminBookingIntentParser(staticAdminBookingParser{scheduleIntent: nlu.AdminScheduleImportIntent{
+		IsSchedule: true,
+		Confidence: 0.98,
+		Entries: []nlu.AdminScheduleImportEntry{
+			{Client: "Лиза", ServiceIndexes: []int{1}, ServiceQueries: []string{"электро"}, DurationMin: 30, StartAt: start.Format(time.RFC3339), Confidence: 0.98},
+			{Client: "Катя", ServiceQueries: []string{"неизвестная услуга"}, DurationMin: 30, StartAt: start.Add(time.Hour).Format(time.RFC3339), Confidence: 0.98},
+		},
+	}})
+	bookingBot.SetImageTextRecognizer(staticImageTextRecognizer{text: "Неделя 34\nпн 9:30 Лиза электро\n10:30 Катя услуга"})
+	adminUser := telegram.User{ID: 2001, Username: "master", FirstName: "Master"}
+	chat := telegram.Chat{ID: 2001}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: adminUser, Chat: chat,
+		Photo: []telegram.PhotoSize{{FileID: "schedule", Width: 640, Height: 480, FileSize: 10}},
+	}); err != nil {
+		t.Fatalf("HandleMessage image: %v", err)
+	}
+	messages := tg.texts()
+	if !strings.Contains(messages[len(messages)-1], "Проверка записи 1 из 2") || strings.Contains(messages[len(messages)-1], "Катя") {
+		t.Fatalf("first review message = %q", messages[len(messages)-1])
+	}
+	assertBookedCount(t, ctx, db, 0)
+
+	callback := func(data string) {
+		t.Helper()
+		if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+			ID: data, From: adminUser, Message: &telegram.Message{Chat: chat}, Data: data,
+		}); err != nil {
+			t.Fatalf("HandleCallback(%q): %v", data, err)
+		}
+	}
+	callback("scheduleimport:save:0")
+	assertBookedCount(t, ctx, db, 1)
+	messages = tg.texts()
+	if !strings.Contains(messages[len(messages)-1], "Проверка записи 2 из 2") || !strings.Contains(messages[len(messages)-1], "Катя") {
+		t.Fatalf("second review message = %q", messages[len(messages)-1])
+	}
+
+	callback("scheduleimport:save:0")
+	assertBookedCount(t, ctx, db, 1)
+	state, err := app.GetConversationState(ctx, 2001)
+	if err != nil || state.ScheduleImportIndex != 1 {
+		t.Fatalf("state after stale callback = %#v, %v", state, err)
+	}
+
+	callback("scheduleimport:edit:1")
+	callback("scheduleimport:field:service:1")
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: adminUser, Chat: chat, Text: "1"}); err != nil {
+		t.Fatalf("edit service: %v", err)
+	}
+	messages = tg.texts()
+	if !strings.Contains(messages[len(messages)-1], "Запись готова к сохранению") {
+		t.Fatalf("edited review message = %q", messages[len(messages)-1])
+	}
+	callback("scheduleimport:skip:1")
+	assertBookedCount(t, ctx, db, 1)
+	messages = tg.texts()
+	if !strings.Contains(messages[len(messages)-1], "добавлено 1, пропущено 1") {
+		t.Fatalf("completion message = %q", messages[len(messages)-1])
+	}
+}
+
 func TestBotE2E_NaturalBookingDraftKeepsRecognizedFields(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
@@ -1718,7 +1802,8 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 }
 
 type staticAdminBookingParser struct {
-	intent nlu.AdminBookingIntent
+	intent         nlu.AdminBookingIntent
+	scheduleIntent nlu.AdminScheduleImportIntent
 }
 
 type staticBookingParser struct {
@@ -1731,6 +1816,10 @@ func (p staticBookingParser) ParseBookingIntent(context.Context, nlu.BookingInte
 
 func (p staticAdminBookingParser) ParseAdminBookingIntent(context.Context, nlu.AdminBookingIntentRequest) (nlu.AdminBookingIntent, error) {
 	return p.intent, nil
+}
+
+func (p staticAdminBookingParser) ParseAdminScheduleImport(context.Context, nlu.AdminScheduleImportRequest) (nlu.AdminScheduleImportIntent, error) {
+	return p.scheduleIntent, nil
 }
 
 type staticSpeechRecognizer struct {

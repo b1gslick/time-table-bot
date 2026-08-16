@@ -16,44 +16,80 @@ func TestLooksLikeScheduleImport(t *testing.T) {
 	}
 }
 
-func TestFormatScheduleImportPreviewShowsSkippedReason(t *testing.T) {
-	items := []evaluatedScheduleImport{
-		{
-			Draft: ScheduleImportDraft{Client: "Лиза", ContactType: "telegram", Contact: "liza", ServiceIndexes: []int{1}},
-			Start: time.Date(2026, 8, 17, 9, 30, 0, 0, time.Local), ServiceText: "Электро", Ready: true,
-		},
-		{
-			Draft: ScheduleImportDraft{Client: "Катя"}, Start: time.Date(2026, 8, 17, 10, 40, 0, 0, time.Local),
-			Issue: "нет алиаса клиента",
-		},
+func TestFormatScheduleImportCurrentShowsOneItemAndProgress(t *testing.T) {
+	item := evaluatedScheduleImport{
+		Draft: ScheduleImportDraft{Client: "Лиза", ContactType: "telegram", Contact: "liza", ServiceIndexes: []int{1}},
+		Start: time.Date(2026, 8, 17, 9, 30, 0, 0, time.Local), ServiceText: "Электро", Ready: true,
 	}
-	got := formatScheduleImportPreview(LangRU, items)
-	for _, want := range []string{"+ 17.08 09:30 - Лиза (@liza) - Электро", "! 17.08 10:40 - Катя: нет алиаса клиента"} {
+	got := formatScheduleImportCurrent(LangRU, item, 1, 4, 1, 0)
+	for _, want := range []string{"Проверка записи 2 из 4", "17.08.2026 09:30", "Лиза (@liza)", "Услуга: Электро", "Уже сохранено: 1"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("preview %q does not contain %q", got, want)
+			t.Fatalf("current item %q does not contain %q", got, want)
 		}
 	}
 }
 
-func TestScheduleImportKeyboardRequiresReadyEntry(t *testing.T) {
-	withoutConfirm := scheduleImportKeyboard(LangRU, false)
-	if got := withoutConfirm.InlineKeyboard[0][0].CallbackData; got != "scheduleimport:retry" {
-		t.Fatalf("first callback = %q", got)
+func TestScheduleImportKeyboardUsesCurrentIndex(t *testing.T) {
+	withoutSave := scheduleImportItemKeyboard(LangRU, 3, false)
+	if got := withoutSave.InlineKeyboard[0][0].CallbackData; got != "scheduleimport:edit:3" {
+		t.Fatalf("first callback without save = %q", got)
 	}
-	withConfirm := scheduleImportKeyboard(LangRU, true)
-	if got := withConfirm.InlineKeyboard[0][0].CallbackData; got != "scheduleimport:yes" {
-		t.Fatalf("first callback = %q", got)
+	withSave := scheduleImportItemKeyboard(LangRU, 3, true)
+	if got := withSave.InlineKeyboard[0][0].CallbackData; got != "scheduleimport:save:3" {
+		t.Fatalf("first callback with save = %q", got)
+	}
+	if got := withSave.InlineKeyboard[1][0].CallbackData; got != "scheduleimport:skip:3" {
+		t.Fatalf("skip callback = %q", got)
 	}
 }
 
 func TestFormatScheduleImportPreviewMarksTemporaryClientName(t *testing.T) {
-	items := []evaluatedScheduleImport{{
+	item := evaluatedScheduleImport{
 		Draft: ScheduleImportDraft{Client: "Анастасия Балтаджи", ContactType: "name", Contact: "Анастасия Балтаджи"},
 		Start: time.Date(2026, 8, 19, 16, 50, 0, 0, time.Local), ServiceText: "Подмышки", Ready: true,
-	}}
-	got := formatScheduleImportPreview(LangRU, items)
-	if !strings.Contains(got, "+ 19.08 16:50 - Анастасия Балтаджи [без алиаса] - Подмышки") {
+	}
+	got := formatScheduleImportCurrent(LangRU, item, 0, 1, 0, 0)
+	if !strings.Contains(got, "Клиент: Анастасия Балтаджи [без алиаса]") {
 		t.Fatalf("preview = %q", got)
+	}
+}
+
+func TestParseScheduleImportClientEditKeepsNameWithTelegram(t *testing.T) {
+	client, contactType, contact, ok := parseScheduleImportClientEdit("Анастасия Балтаджи @hasti69", "")
+	if !ok || client != "Анастасия Балтаджи" || contactType != "telegram" || contact != "hasti69" {
+		t.Fatalf("client edit = %q %q %q %v", client, contactType, contact, ok)
+	}
+}
+
+func TestResolveScheduleImportEditServices(t *testing.T) {
+	services := []ServiceView{
+		{Category: "Электроэпиляция", Name: "1 час", DurationMin: 60},
+		{Category: "Восковая депиляция", Name: "Бикини", DurationMin: 30},
+	}
+	indexes := resolveScheduleImportEditServices("1, 2", services)
+	if len(indexes) != 2 || indexes[0] != 1 || indexes[1] != 2 {
+		t.Fatalf("indexes = %v, want [1 2]", indexes)
+	}
+	if got := scheduleImportDurationForIndexes(indexes, services); got != 90 {
+		t.Fatalf("duration = %d, want 90", got)
+	}
+	choices := formatScheduleImportServiceChoices(LangRU, services)
+	if !strings.Contains(choices, "1. Электроэпиляция / 1 час — 60 мин") || strings.Contains(choices, "/schedule") {
+		t.Fatalf("service choices = %q", choices)
+	}
+}
+
+func TestParseScheduleImportEditDateTime(t *testing.T) {
+	loc := time.FixedZone("test", 3*60*60)
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, loc)
+	for input, want := range map[string]string{
+		"19.08.2026 16:50": "2026-08-19T16:50:00+03:00",
+		"завтра в 10:30":   "2026-08-17T10:30:00+03:00",
+	} {
+		got, err := parseScheduleImportEditDateTime(input, now)
+		if err != nil || got.Format(time.RFC3339) != want {
+			t.Fatalf("parse %q = %s, %v; want %s", input, got, err, want)
+		}
 	}
 }
 
