@@ -273,6 +273,40 @@ func TestQwenScheduleEditServicesOnlyProblemPhraseLive(t *testing.T) {
 	}
 }
 
+func TestQwenMonthlySchedulePlanLive(t *testing.T) {
+	if os.Getenv("QWEN_LIVE_TEST") != "1" {
+		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")
+	}
+	parser, err := NewQwenParser(QwenConfig{
+		APIKey: os.Getenv("QWEN_API_KEY"), BaseURL: os.Getenv("QWEN_BASE_URL"),
+		Model: os.Getenv("QWEN_MODEL"), Timeout: 45 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 10, 0, 0, 0, time.FixedZone("Europe/Nicosia", 3*60*60))
+	intent, err := parser.ParseAdminSchedulePlan(context.Background(), AdminSchedulePlanRequest{
+		Text:     "сделай расписание на следующий месяц каждый будний день с 10 до 17 и субботы 5 и 19 сделай рабочими",
+		Language: "ru", Now: now, Timezone: "Europe/Nicosia",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.IsSchedulePlan || intent.TargetMonth != "2026-09" || len(intent.Rules) != 1 || len(intent.Rules[0].Weekdays) != 5 || len(intent.ExtraDays) != 2 {
+		t.Fatalf("unexpected monthly schedule plan: %+v", intent)
+	}
+	copyIntent, err := parser.ParseAdminSchedulePlan(context.Background(), AdminSchedulePlanRequest{
+		Text:     "сделай следующий месяц как в этом",
+		Language: "ru", Now: now, Timezone: "Europe/Nicosia",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !copyIntent.IsSchedulePlan || copyIntent.TargetMonth != "2026-09" || copyIntent.CopyFromMonth != "2026-08" {
+		t.Fatalf("unexpected copied schedule plan: %+v", copyIntent)
+	}
+}
+
 func TestQwenFinanceIntentLive(t *testing.T) {
 	if os.Getenv("QWEN_LIVE_TEST") != "1" {
 		t.Skip("set QWEN_LIVE_TEST=1 to run against Qwen Cloud")

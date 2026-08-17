@@ -85,6 +85,79 @@ func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridS
 	return buf.Bytes(), nil
 }
 
+func renderSchedulePlanMonthImage(lang string, plan SchedulePlanDraft) ([]byte, error) {
+	month, err := time.Parse(monthLayout, plan.TargetMonth)
+	if err != nil {
+		return nil, err
+	}
+	const (
+		width      = 1120
+		margin     = 28
+		titleH     = 72
+		headerH    = 42
+		cellHeight = 88
+	)
+	firstOffset := (int(month.Weekday()) + 6) % 7
+	daysInMonth := month.AddDate(0, 1, -1).Day()
+	weekRows := (firstOffset + daysInMonth + 6) / 7
+	height := titleH + headerH + weekRows*cellHeight + 46
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	fillRect(img, img.Bounds(), scheduleBg)
+	fonts, err := newScheduleFontSet()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.close()
+	drawFontText(img, fonts.title, margin, 47, tr(lang, "schedule_plan_image_title", plan.TargetMonth), scheduleText)
+
+	cellWidth := (width - margin*2) / 7
+	for column, weekday := range schedulePlanWeekdayOrder {
+		x1 := margin + column*cellWidth
+		x2 := x1 + cellWidth
+		drawCenteredFontText(img, fonts.day, x1, x2, titleH+28, weekdayShort(lang, weekday), scheduleMutedText)
+	}
+	working := make(map[string]SchedulePlanDay, len(plan.Days))
+	for _, day := range plan.Days {
+		working[day.Date] = day
+	}
+	closed := make(map[string]bool, len(plan.ClosedDates))
+	for _, date := range plan.ClosedDates {
+		closed[date] = true
+	}
+	monthEnd := month.AddDate(0, 1, 0)
+	for day := month; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
+		index := firstOffset + day.Day() - 1
+		row, column := index/7, index%7
+		x1 := margin + column*cellWidth
+		y1 := titleH + headerH + row*cellHeight
+		rect := image.Rect(x1, y1, x1+cellWidth, y1+cellHeight)
+		key := day.Format("2006-01-02")
+		entry, isWorking := working[key]
+		switch {
+		case entry.Extra:
+			fillRect(img, rect, color.RGBA{R: 250, G: 231, B: 177, A: 255})
+		case isWorking:
+			fillRect(img, rect, scheduleFree)
+		case closed[key]:
+			fillRect(img, rect, scheduleBlocked)
+		default:
+			fillRect(img, rect, schedulePanel)
+		}
+		strokeRect(img, rect, scheduleGrid)
+		drawFontText(img, fonts.day, x1+10, y1+25, fmt.Sprintf("%d", day.Day()), scheduleText)
+		if isWorking {
+			drawCenteredFontText(img, fonts.time, x1+4, x1+cellWidth-4, y1+58, entry.Start+"-"+entry.End, scheduleText)
+		}
+	}
+	legendY := titleH + headerH + weekRows*cellHeight + 14
+	drawFontText(img, fonts.small, margin, legendY, tr(lang, "schedule_plan_image_legend"), scheduleMutedText)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func newScheduleFontSet() (scheduleFontSet, error) {
 	regular, err := opentype.Parse(goregular.TTF)
 	if err != nil {

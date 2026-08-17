@@ -70,6 +70,8 @@ const (
 	conversationStepBlockDate        = "admin_block_date"
 	conversationStepScheduleImport   = "admin_schedule_import"
 	conversationStepScheduleEdit     = "admin_schedule_import_edit"
+	conversationStepSchedulePlan     = "admin_schedule_plan_confirm"
+	conversationStepSchedulePlanEdit = "admin_schedule_plan_edit"
 	conversationStepServiceImport    = "admin_service_import"
 	conversationStepFinanceInput     = "admin_finance_input"
 	conversationStepFinanceConfirm   = "admin_finance_confirm"
@@ -261,6 +263,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "scheduleimport:") {
 		return b.handleScheduleImportCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "scheduleplan:") {
+		return b.handleSchedulePlanCallback(ctx, cb)
 	}
 	if strings.HasPrefix(cb.Data, "serviceimport:") {
 		return b.handleServiceImportCallback(ctx, cb)

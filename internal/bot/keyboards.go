@@ -63,6 +63,16 @@ func financeEntryKeyboard(lang string, canConfirm bool) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
+func schedulePlanKeyboard(lang string) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: tr(lang, "schedule_plan_confirm"), CallbackData: "scheduleplan:yes"},
+			{Text: tr(lang, "booking_edit"), CallbackData: "scheduleplan:edit"},
+		},
+		{{Text: tr(lang, "no"), CallbackData: "scheduleplan:no"}},
+	}}
+}
+
 func financeReportKeyboard(lang string, unresolved []FinanceUnresolved, period string) *telegram.ReplyMarkup {
 	rows := make([][]telegram.InlineKeyboardButton, 0, 12)
 	limit := len(unresolved)

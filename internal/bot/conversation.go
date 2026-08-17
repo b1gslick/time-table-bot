@@ -127,6 +127,10 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.showScheduleImportCurrent(ctx, chatID, user, state)
 	case conversationStepScheduleEdit:
 		return true, b.conversationScheduleImportEdit(ctx, chatID, user, state, text)
+	case conversationStepSchedulePlan:
+		return true, b.conversationSchedulePlanConfirm(ctx, chatID, user, state, text)
+	case conversationStepSchedulePlanEdit:
+		return true, b.conversationSchedulePlanEdit(ctx, chatID, user, state, text)
 	case conversationStepServiceImport:
 		return true, b.showServiceImportPreview(ctx, chatID, user, state)
 	case conversationStepFinanceInput:

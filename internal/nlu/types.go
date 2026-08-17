@@ -126,6 +126,42 @@ type AdminScheduleEditParser interface {
 	ParseAdminScheduleEdit(ctx context.Context, req AdminScheduleEditRequest) (AdminScheduleEditIntent, error)
 }
 
+type AdminSchedulePlanRequest struct {
+	Text        string
+	Language    string
+	Now         time.Time
+	Timezone    string
+	CurrentPlan string
+}
+
+type AdminSchedulePlanRule struct {
+	Weekdays []int  `json:"weekdays"`
+	Start    string `json:"start"`
+	End      string `json:"end"`
+}
+
+type AdminSchedulePlanDay struct {
+	Date    string `json:"date"`
+	Weekday int    `json:"weekday"`
+	Start   string `json:"start"`
+	End     string `json:"end"`
+}
+
+type AdminSchedulePlanIntent struct {
+	IsSchedulePlan  bool                    `json:"is_schedule_plan"`
+	TargetMonth     string                  `json:"target_month"`
+	CopyFromMonth   string                  `json:"copy_from_month"`
+	Rules           []AdminSchedulePlanRule `json:"rules"`
+	ExtraDays       []AdminSchedulePlanDay  `json:"extra_days"`
+	ClosedDates     []string                `json:"closed_dates"`
+	SlotDurationMin int                     `json:"slot_duration_min"`
+	Confidence      float64                 `json:"confidence"`
+}
+
+type AdminSchedulePlanParser interface {
+	ParseAdminSchedulePlan(ctx context.Context, req AdminSchedulePlanRequest) (AdminSchedulePlanIntent, error)
+}
+
 type AdminServiceImportRequest struct {
 	Text             string
 	Language         string

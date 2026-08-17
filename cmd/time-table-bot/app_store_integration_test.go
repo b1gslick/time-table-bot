@@ -1413,6 +1413,59 @@ func TestBotE2E_AdminNaturalBookingFromTextVoiceAndImageRequiresConfirmation(t *
 	assertBookedCount(t, ctx, db, 1)
 }
 
+func TestBotE2E_AdminNaturalMonthlyScheduleFromVoiceRequiresConfirmation(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.SetSessionDuration(ctx, 2001, 30); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().In(time.Local)
+	target := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, now.Location())
+	tg := &fakeTelegramClient{}
+	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	bookingBot.SetAdminBookingIntentParser(staticAdminBookingParser{schedulePlanIntent: nlu.AdminSchedulePlanIntent{
+		IsSchedulePlan: true, TargetMonth: target.Format("2006-01"), Confidence: 0.98,
+		Rules: []nlu.AdminSchedulePlanRule{{Weekdays: []int{1, 2, 3, 4, 5}, Start: "10:00", End: "17:00"}},
+	}})
+	bookingBot.SetSpeechRecognizer(staticSpeechRecognizer{text: "сделай расписание на следующий месяц по будням с 10 до 17"})
+	adminUser := telegram.User{ID: 2001, Username: "master", FirstName: "Master"}
+	chat := telegram.Chat{ID: 2001}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: adminUser, Chat: chat, Voice: &telegram.Voice{FileID: "schedule-plan", FileSize: 10, Duration: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.GetConversationState(ctx, 2001)
+	if err != nil || state.Step != "admin_schedule_plan_confirm" || len(state.SchedulePlan.Days) < 20 || len(tg.photos) != 1 {
+		t.Fatalf("schedule plan state=%#v photos=%d err=%v", state, len(tg.photos), err)
+	}
+	var before int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schedule_slots WHERE admin_user_id=$1", admin.ID).Scan(&before); err != nil || before != 0 {
+		t.Fatalf("slots before confirmation=%d err=%v", before, err)
+	}
+	if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID: "schedule-plan-confirm", From: adminUser, Message: &telegram.Message{Chat: chat}, Data: "scheduleplan:yes",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var after int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schedule_slots WHERE admin_user_id=$1", admin.ID).Scan(&after); err != nil || after == 0 {
+		t.Fatalf("slots after confirmation=%d err=%v", after, err)
+	}
+}
+
 func TestBotE2E_ScheduleImageImportReviewsEntriesOneByOne(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
@@ -1885,9 +1938,10 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 }
 
 type staticAdminBookingParser struct {
-	intent         nlu.AdminBookingIntent
-	scheduleIntent nlu.AdminScheduleImportIntent
-	editIntent     nlu.AdminScheduleEditIntent
+	intent             nlu.AdminBookingIntent
+	scheduleIntent     nlu.AdminScheduleImportIntent
+	editIntent         nlu.AdminScheduleEditIntent
+	schedulePlanIntent nlu.AdminSchedulePlanIntent
 }
 
 type staticBookingParser struct {
@@ -1908,6 +1962,10 @@ func (p staticAdminBookingParser) ParseAdminScheduleImport(context.Context, nlu.
 
 func (p staticAdminBookingParser) ParseAdminScheduleEdit(context.Context, nlu.AdminScheduleEditRequest) (nlu.AdminScheduleEditIntent, error) {
 	return p.editIntent, nil
+}
+
+func (p staticAdminBookingParser) ParseAdminSchedulePlan(context.Context, nlu.AdminSchedulePlanRequest) (nlu.AdminSchedulePlanIntent, error) {
+	return p.schedulePlanIntent, nil
 }
 
 type staticSpeechRecognizer struct {

@@ -193,6 +193,28 @@ type ScheduleImportDraft struct {
 	Confidence     float64  `json:"confidence,omitempty"`
 }
 
+type SchedulePlanRule struct {
+	Weekdays []int  `json:"weekdays,omitempty"`
+	Start    string `json:"start,omitempty"`
+	End      string `json:"end,omitempty"`
+}
+
+type SchedulePlanDay struct {
+	Date  string `json:"date,omitempty"`
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
+	Extra bool   `json:"extra,omitempty"`
+}
+
+type SchedulePlanDraft struct {
+	TargetMonth     string             `json:"target_month,omitempty"`
+	CopyFromMonth   string             `json:"copy_from_month,omitempty"`
+	Rules           []SchedulePlanRule `json:"rules,omitempty"`
+	Days            []SchedulePlanDay  `json:"days,omitempty"`
+	ClosedDates     []string           `json:"closed_dates,omitempty"`
+	SlotDurationMin int                `json:"slot_duration_min,omitempty"`
+}
+
 type ServiceImportDraft struct {
 	Category    string  `json:"category,omitempty"`
 	Subcategory string  `json:"subcategory,omitempty"`
@@ -280,6 +302,7 @@ type ConversationState struct {
 	ScheduleImportCreated int                   `json:"schedule_import_created,omitempty"`
 	ScheduleImportSkipped int                   `json:"schedule_import_skipped,omitempty"`
 	ScheduleImportEdit    string                `json:"schedule_import_edit,omitempty"`
+	SchedulePlan          SchedulePlanDraft     `json:"schedule_plan,omitempty"`
 	ServiceImportEntries  []ServiceImportDraft  `json:"service_import_entries,omitempty"`
 	FinanceEntries        []FinanceEntryDraft   `json:"finance_entries,omitempty"`
 	FinanceForcedKind     string                `json:"finance_forced_kind,omitempty"`

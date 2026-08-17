@@ -114,6 +114,35 @@ func TestQwenParserParsesScheduleEditAsPatch(t *testing.T) {
 	}
 }
 
+func TestQwenParserParsesMonthlySchedulePlan(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req qwenChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if len(req.Messages) != 2 || !strings.Contains(req.Messages[0].Content, "Monday=1") || !strings.Contains(req.Messages[1].Content, "следующий месяц") {
+			t.Fatalf("schedule plan prompt = %#v", req.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"is_schedule_plan\":true,\"target_month\":\"2026-09\",\"copy_from_month\":\"\",\"rules\":[{\"weekdays\":[1,2,3,4,5],\"start\":\"10:00\",\"end\":\"17:00\"}],\"extra_days\":[{\"date\":\"2026-09-05\",\"weekday\":6,\"start\":\"\",\"end\":\"\"}],\"closed_dates\":[],\"slot_duration_min\":0,\"confidence\":0.98}"}}]}`))
+	}))
+	defer server.Close()
+	parser, err := NewQwenParser(QwenConfig{APIKey: "test-key", BaseURL: server.URL, Model: "qwen-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := parser.ParseAdminSchedulePlan(context.Background(), AdminSchedulePlanRequest{
+		Text: "сделай следующий месяц по будням с 10 до 17 и субботу 5 рабочей",
+		Now:  time.Date(2026, 8, 17, 10, 0, 0, 0, time.FixedZone("test", 3*60*60)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !intent.IsSchedulePlan || intent.TargetMonth != "2026-09" || len(intent.Rules) != 1 || len(intent.Rules[0].Weekdays) != 5 || len(intent.ExtraDays) != 1 {
+		t.Fatalf("intent = %#v", intent)
+	}
+}
+
 func TestNormalizeScheduleEditServiceDurationRepairsCombination(t *testing.T) {
 	change := AdminScheduleEditService{
 		ServiceIndexes: []int{1, 2}, ServiceQueries: []string{"электроэпиляция на полтора часа"}, DurationMin: 90,
