@@ -63,8 +63,6 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationDeleteService(ctx, chatID, user, text)
 	case conversationStepSetProfile:
 		return true, b.conversationSetProfile(ctx, chatID, user, text)
-	case conversationStepSetServices:
-		return true, b.conversationSetServices(ctx, chatID, user, text)
 	case conversationStepCategoryOrd:
 		return true, b.conversationCategoryOrder(ctx, chatID, user, text)
 	case conversationStepSetHours:
@@ -133,6 +131,8 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationSchedulePlanEdit(ctx, chatID, user, state, text)
 	case conversationStepServiceImport:
 		return true, b.showServiceImportPreview(ctx, chatID, user, state)
+	case conversationStepServiceReplace:
+		return true, b.handleServiceCatalogText(ctx, chatID, user, text, true)
 	case conversationStepFinanceInput:
 		return true, b.conversationFinanceInput(ctx, chatID, user, state, text)
 	case conversationStepFinanceConfirm:
@@ -743,22 +743,6 @@ func (b *Bot) conversationSetProfile(ctx context.Context, chatID int64, user Use
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "profile_ok"), keyboardForUser(user))
-}
-
-func (b *Bot) conversationSetServices(ctx context.Context, chatID int64, user UserRecord, text string) error {
-	if !isAdmin(user.Role) {
-		_ = b.store.ClearConversationState(ctx, user.TelegramID)
-		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
-	}
-	value := strings.TrimSpace(text)
-	if value == "" {
-		return b.sendText(ctx, chatID, tr(user.Language, "services_ask_text"))
-	}
-	if err := b.store.SetServicesText(ctx, user.TelegramID, value); err != nil {
-		return b.sendText(ctx, chatID, tr(user.Language, "services_failed"))
-	}
-	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "services_ok"), keyboardForUser(user))
 }
 
 func (b *Bot) conversationCategoryOrder(ctx context.Context, chatID int64, user UserRecord, text string) error {

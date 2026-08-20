@@ -38,6 +38,17 @@ type BookingIntentParser interface {
 	ParseBookingIntent(ctx context.Context, req BookingIntentRequest) (BookingIntent, error)
 }
 
+type ClientGreetingRequest struct {
+	ClientName        string
+	Language          string
+	MasterDescription string
+	Services          []Service
+}
+
+type ClientGreetingGenerator interface {
+	GenerateClientGreeting(ctx context.Context, req ClientGreetingRequest) (string, error)
+}
+
 type AdminBookingIntentRequest struct {
 	Text     string
 	Language string

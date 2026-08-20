@@ -368,28 +368,6 @@ WHERE user_id = $1;
 	return strings.TrimSpace(description), nil
 }
 
-func (s *appStore) SetServicesText(ctx context.Context, adminTelegramID int64, text string) error {
-	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return store.ErrInvalidArgument
-	}
-	return s.repo.SetAdminSetting(ctx, adminID, "services_text", strings.TrimSpace(text))
-}
-
-func (s *appStore) GetServicesText(ctx context.Context, adminTelegramID int64) (string, error) {
-	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", store.ErrInvalidArgument
-	}
-	return s.stringSetting(ctx, adminID, "services_text", "")
-}
-
 func (s *appStore) SetCategoryOrder(ctx context.Context, adminTelegramID int64, categories []string) error {
 	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
 	if err != nil {
@@ -427,6 +405,91 @@ func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name s
 		IsActive:    true,
 	})
 	return err
+}
+
+func (s *appStore) ReplaceServices(ctx context.Context, adminTelegramID int64, services []bot.ServiceCatalogEntry) error {
+	if len(services) == 0 {
+		return store.ErrInvalidArgument
+	}
+	type catalogRow struct {
+		category, subcategory, name, description string
+		durationMin                              int
+	}
+	rows := make([]catalogRow, 0, len(services))
+	categories := make([]string, 0)
+	seenCategories := make(map[string]struct{})
+	seenServices := make(map[string]struct{})
+	for _, service := range services {
+		category, subcategory, name := parseServicePath(service.Path)
+		if strings.TrimSpace(name) == "" || service.DurationMin <= 0 {
+			return store.ErrInvalidArgument
+		}
+		key := strings.ToLower(strings.Join([]string{category, subcategory, name, fmt.Sprint(service.DurationMin)}, "\x00"))
+		if _, exists := seenServices[key]; exists {
+			return store.ErrInvalidArgument
+		}
+		seenServices[key] = struct{}{}
+		rows = append(rows, catalogRow{
+			category: category, subcategory: subcategory, name: name,
+			description: strings.TrimSpace(service.PriceText), durationMin: service.DurationMin,
+		})
+		if category != "" {
+			categoryKey := strings.ToLower(category)
+			if _, exists := seenCategories[categoryKey]; !exists {
+				seenCategories[categoryKey] = struct{}{}
+				categories = append(categories, category)
+			}
+		}
+	}
+	adminID, ok, err := s.targetAdminIDForServiceScope(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return store.ErrInvalidArgument
+	}
+	categoryOrder, err := json.Marshal(categories)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+UPDATE admin_services
+SET is_active = FALSE, updated_at = NOW()
+WHERE admin_user_id = $1 AND is_active = TRUE;
+`, adminID); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO admin_services (admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active)
+VALUES ($1, $2, $3, $4, $5, $6, 0, TRUE)
+ON CONFLICT(admin_user_id, category, subcategory, name, duration_min) DO UPDATE SET
+	description = EXCLUDED.description,
+	price_cents = EXCLUDED.price_cents,
+	is_active = TRUE,
+	updated_at = NOW();
+`, adminID, row.category, row.subcategory, row.name, row.description, row.durationMin); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO admin_settings (admin_user_id, key, value)
+VALUES ($1, 'category_order', $2)
+ON CONFLICT(admin_user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+`, adminID, string(categoryOrder)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_services")
+	_ = s.clearSettingForUser(ctx, adminTelegramID, "last_availability_slots")
+	return nil
 }
 
 func (s *appStore) DeleteServiceByIndex(ctx context.Context, adminTelegramID int64, index int) error {
@@ -563,11 +626,9 @@ func (s *appStore) MasterIntro(ctx context.Context, telegramID int64) (string, e
 	}
 	query := `
 SELECT u.username,
-       COALESCE(p.description, '') AS description,
-       COALESCE(st.value, '') AS services_text
+       COALESCE(p.description, '') AS description
 FROM users u
 LEFT JOIN admin_profiles p ON p.user_id = u.id
-LEFT JOIN admin_settings st ON st.admin_user_id = u.id AND st.key = 'services_text'
 WHERE u.role IN ('admin', 'super_admin')
 `
 	args := []any{}
@@ -587,8 +648,8 @@ LIMIT 5;
 
 	var parts []string
 	for rows.Next() {
-		var username, description, servicesText string
-		if err := rows.Scan(&username, &description, &servicesText); err != nil {
+		var username, description string
+		if err := rows.Scan(&username, &description); err != nil {
 			return "", err
 		}
 		var sb strings.Builder
@@ -597,10 +658,6 @@ LIMIT 5;
 		if strings.TrimSpace(description) != "" {
 			sb.WriteString("\n")
 			sb.WriteString(strings.TrimSpace(description))
-		}
-		if strings.TrimSpace(servicesText) != "" {
-			sb.WriteString("\n")
-			sb.WriteString(masterServicesText(servicesText, username))
 		}
 		parts = append(parts, sb.String())
 	}
@@ -611,24 +668,6 @@ LIMIT 5;
 		return "", nil
 	}
 	return strings.Join(parts, "\n\n"), nil
-}
-
-func masterServicesText(text, username string) string {
-	text = strings.TrimSpace(text)
-	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
-	if text == "" || username == "" {
-		return text
-	}
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		normalized := strings.ToLower(strings.TrimSpace(line))
-		if strings.Contains(normalized, "если вас интерес") &&
-			strings.Contains(normalized, "услуг") &&
-			strings.Contains(normalized, "обращ") {
-			lines[i] = "Если вас интересует какая-либо из услуг, обращайтесь: @" + username
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (s *appStore) SetWorkHoursText(ctx context.Context, adminTelegramID int64, text string) error {

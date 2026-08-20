@@ -224,6 +224,12 @@ type ServiceImportDraft struct {
 	Confidence  float64 `json:"confidence,omitempty"`
 }
 
+type ServiceCatalogEntry struct {
+	Path        string
+	DurationMin int
+	PriceText   string
+}
+
 type FinanceEntryDraft struct {
 	BookingID   int64   `json:"booking_id,omitempty"`
 	Kind        string  `json:"kind,omitempty"`
@@ -304,6 +310,7 @@ type ConversationState struct {
 	ScheduleImportEdit    string                `json:"schedule_import_edit,omitempty"`
 	SchedulePlan          SchedulePlanDraft     `json:"schedule_plan,omitempty"`
 	ServiceImportEntries  []ServiceImportDraft  `json:"service_import_entries,omitempty"`
+	ServiceImportReplace  bool                  `json:"service_import_replace,omitempty"`
 	FinanceEntries        []FinanceEntryDraft   `json:"finance_entries,omitempty"`
 	FinanceForcedKind     string                `json:"finance_forced_kind,omitempty"`
 	FinanceReportPeriod   string                `json:"finance_report_period,omitempty"`
@@ -327,10 +334,9 @@ type Store interface {
 
 	GetProfileText(ctx context.Context, adminTelegramID int64) (string, error)
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
-	GetServicesText(ctx context.Context, adminTelegramID int64) (string, error)
-	SetServicesText(ctx context.Context, adminTelegramID int64, text string) error
 	SetCategoryOrder(ctx context.Context, adminTelegramID int64, categories []string) error
 	AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error
+	ReplaceServices(ctx context.Context, adminTelegramID int64, services []ServiceCatalogEntry) error
 	EditServiceByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, priceText string) error
 	DeleteServiceByIndex(ctx context.Context, adminTelegramID int64, index int) error
 	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
@@ -397,6 +403,7 @@ type Bot struct {
 	superAdminUsername string
 	bookingParser      nlu.BookingIntentParser
 	adminBookingParser nlu.AdminBookingIntentParser
+	greetingGenerator  nlu.ClientGreetingGenerator
 	speechRecognizer   nlu.SpeechRecognizer
 	imageRecognizer    nlu.ImageTextRecognizer
 }
@@ -423,6 +430,10 @@ func (b *Bot) SetBookingIntentParser(parser nlu.BookingIntentParser) {
 
 func (b *Bot) SetAdminBookingIntentParser(parser nlu.AdminBookingIntentParser) {
 	b.adminBookingParser = parser
+}
+
+func (b *Bot) SetClientGreetingGenerator(generator nlu.ClientGreetingGenerator) {
+	b.greetingGenerator = generator
 }
 
 func (b *Bot) SetSpeechRecognizer(recognizer nlu.SpeechRecognizer) {

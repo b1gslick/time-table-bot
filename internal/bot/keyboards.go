@@ -179,9 +179,9 @@ func bookingMenuKeyboard(lang string) *telegram.ReplyMarkup {
 
 func servicesMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
-		{tr(lang, "button_action_service_list"), tr(lang, "button_action_service_add")},
-		{tr(lang, "button_action_service_edit"), tr(lang, "button_action_service_delete")},
-		{tr(lang, "button_action_services_text"), tr(lang, "button_action_category_order")},
+		{tr(lang, "button_action_service_list"), tr(lang, "button_action_service_replace")},
+		{tr(lang, "button_action_service_add"), tr(lang, "button_action_service_edit")},
+		{tr(lang, "button_action_service_delete"), tr(lang, "button_action_category_order")},
 		{tr(lang, "button_back")},
 	})
 }

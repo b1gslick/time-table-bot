@@ -90,7 +90,8 @@ func qwenServiceImportSystemPrompt() string {
 		"Put services into concise semantic categories and subcategories. Reuse exact category and subcategory spelling from existing services when appropriate.",
 		"Do not include the category or subcategory again in the service name unless it is naturally part of that name.",
 		"Preserve the stated price, currency, and useful pricing notes in price_text. Keep it empty if no price was stated.",
-		"Set is_service_catalog=true only when the administrator asks to add, import, create, or update one or more services or clearly dictates a price list.",
+		"Set is_service_catalog=true only when the administrator asks to add, import, create, update, or replace one or more services or clearly dictates a price list.",
+		"When the administrator asks to replace the full service list, extract every service stated in the new list and do not copy omitted existing services into entries.",
 		"A client appointment request, a request to show services, or ordinary conversation is not a service catalog.",
 	}, "\n")
 }

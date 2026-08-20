@@ -64,6 +64,23 @@ func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
 	if got := menuButtonAction(LangEN, "Изменить один день"); got != "action_generate_day" {
 		t.Fatalf("cross-language generate day action = %q", got)
 	}
+	servicesKeyboard := servicesMenuKeyboard(LangRU)
+	if got := servicesKeyboard.Keyboard[0][1].Text; got != "Изменить список услуг" {
+		t.Fatalf("service replacement button = %q", got)
+	}
+	if got := menuButtonAction(LangRU, "Изменить список услуг"); got != "action_service_replace" {
+		t.Fatalf("service replacement action = %q", got)
+	}
+	for _, row := range servicesKeyboard.Keyboard {
+		for _, button := range row {
+			if button.Text == "Описание услуг" {
+				t.Fatalf("legacy services description is still in menu: %#v", servicesKeyboard.Keyboard)
+			}
+		}
+	}
+	if got := menuButtonAction(LangRU, "Описание услуг"); got != "" {
+		t.Fatalf("legacy services description action = %q", got)
+	}
 	if mode, ok := parseGenerateMode(LangRU, "4"); !ok || mode != "weekday" {
 		t.Fatalf("parseGenerateMode = %q, %v; want weekday, true", mode, ok)
 	}
@@ -88,11 +105,11 @@ func TestStartKeyboardsDoNotExposeCommands(t *testing.T) {
 
 func TestFormatStartServicesIsCompactAndCommandFree(t *testing.T) {
 	services := []ServiceView{
-		{Category: "Эпиляция", Subcategory: "Ноги", Name: "Голени", DurationMin: 45},
+		{Category: "Эпиляция", Subcategory: "Ноги", Name: "Голени", DurationMin: 45, Description: "35 EUR"},
 		{Category: "Эпиляция", Name: "Полный комплекс", DurationMin: 90, AdminName: "master"},
 	}
 	got := formatStartServices(LangRU, services, 1)
-	for _, want := range []string{"Доступные услуги:", "• Эпиляция / Ноги / Голени — 45 мин.", "И еще услуг: 1"} {
+	for _, want := range []string{"Доступные услуги:", "• Эпиляция / Ноги / Голени — 45 мин. — 35 EUR", "И еще услуг: 1"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("start services = %q, missing %q", got, want)
 		}

@@ -69,6 +69,7 @@ func main() {
 		}
 		bookingBot.SetBookingIntentParser(qwenParser)
 		bookingBot.SetAdminBookingIntentParser(qwenParser)
+		bookingBot.SetClientGreetingGenerator(qwenParser)
 		logger.Printf("qwen nlu enabled model=%s", cfg.QwenModel)
 	}
 	if cfg.WhisperModelPath != "" {

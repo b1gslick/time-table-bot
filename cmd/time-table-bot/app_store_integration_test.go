@@ -683,6 +683,16 @@ func TestAppStore_ProfileTextUsesSuperAdminView(t *testing.T) {
 	if got != "Target profile" {
 		t.Fatalf("profile through view = %q, want Target profile", got)
 	}
+	if err := repo.SetAdminSetting(ctx, admin.ID, "services_text", "legacy duplicate service description"); err != nil {
+		t.Fatalf("seed legacy services text: %v", err)
+	}
+	intro, err := app.MasterIntro(ctx, 2001)
+	if err != nil {
+		t.Fatalf("MasterIntro: %v", err)
+	}
+	if !strings.Contains(intro, "Target profile") || strings.Contains(intro, "legacy duplicate") {
+		t.Fatalf("master intro includes legacy services description: %q", intro)
+	}
 	var superProfiles int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admin_profiles WHERE user_id = $1", super.ID).Scan(&superProfiles); err != nil {
 		t.Fatalf("count super profiles: %v", err)
@@ -883,6 +893,19 @@ func TestAppStore_DeleteServiceAndScheduleMonth(t *testing.T) {
 	}
 	if len(services) != 1 || services[0].Name != "Classic" {
 		t.Fatalf("services after delete = %#v, want only Classic", services)
+	}
+	if err := app.ReplaceServices(ctx, 2001, []bot.ServiceCatalogEntry{
+		{Path: "Hair > Cut", DurationMin: 60, PriceText: "50 EUR"},
+		{Path: "Hair > Color", DurationMin: 90, PriceText: "80 EUR"},
+	}); err != nil {
+		t.Fatalf("ReplaceServices: %v", err)
+	}
+	services, err = app.ListServices(ctx, 2001)
+	if err != nil {
+		t.Fatalf("ListServices after replace: %v", err)
+	}
+	if len(services) != 2 || services[0].Name != "Cut" || services[1].Name != "Color" || services[0].Description != "50 EUR" {
+		t.Fatalf("services after replace = %#v", services)
 	}
 
 	juneStart := time.Date(2026, 6, 1, 10, 0, 0, 0, loc)
@@ -1877,7 +1900,10 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
 		t.Fatalf("promote admin: %v", err)
 	}
-	if err := app.AddService(ctx, 2001, "Эпиляция > Ноги > Голени", 45, ""); err != nil {
+	if err := app.SetProfileText(ctx, 2001, "Работаю бережно в центре города"); err != nil {
+		t.Fatalf("SetProfileText: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Эпиляция > Ноги > Голени", 45, "35 EUR"); err != nil {
 		t.Fatalf("AddService: %v", err)
 	}
 	if _, err := repo.UpsertUser(ctx, 3001, "client", "Client"); err != nil {
@@ -1889,6 +1915,8 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 
 	tg := &fakeTelegramClient{}
 	bookingBot := bot.New(tg, app, log.New(io.Discard, "", 0), "tim1106")
+	greetingGenerator := &staticClientGreetingGenerator{text: "Анна, добро пожаловать! Подберём подходящую процедуру и удобное время."}
+	bookingBot.SetClientGreetingGenerator(greetingGenerator)
 	client := telegram.User{ID: 3001, Username: "client", FirstName: "Анна"}
 	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "/start"}); err != nil {
 		t.Fatalf("client /start: %v", err)
@@ -1897,16 +1925,28 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 		t.Fatalf("client start messages = %d, want 1", len(tg.messages))
 	}
 	startMessage := tg.messages[0]
-	for _, want := range []string{"Здравствуйте, Анна!", "Доступные услуги:", "Эпиляция / Ноги / Голени", "голосовое сообщение"} {
+	for _, want := range []string{"Анна, добро пожаловать!", "Доступные услуги:", "Эпиляция / Ноги / Голени", "35 EUR"} {
 		if !strings.Contains(startMessage.Text, want) {
 			t.Fatalf("client start = %q, missing %q", startMessage.Text, want)
 		}
+	}
+	if !strings.Contains(greetingGenerator.request.MasterDescription, "Работаю бережно") || len(greetingGenerator.request.Services) != 1 || greetingGenerator.request.Services[0].Name != "Голени" {
+		t.Fatalf("greeting request = %#v", greetingGenerator.request)
 	}
 	if strings.Contains(startMessage.Text, "/help") || strings.Contains(startMessage.Text, "/book") {
 		t.Fatalf("client start exposes commands: %q", startMessage.Text)
 	}
 	if startMessage.ReplyMarkup == nil || len(startMessage.ReplyMarkup.Keyboard) != 2 || startMessage.ReplyMarkup.Keyboard[0][0].Text != "Начать запись" || startMessage.ReplyMarkup.Keyboard[1][0].Text != "Мои записи" {
 		t.Fatalf("client start keyboard = %#v", startMessage.ReplyMarkup)
+	}
+	bookingBot.SetClientGreetingGenerator(&staticClientGreetingGenerator{err: fmt.Errorf("generator unavailable")})
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "/start"}); err != nil {
+		t.Fatalf("client /start with greeting fallback: %v", err)
+	}
+	fallbackMessage := tg.messages[len(tg.messages)-1].Text
+	fallbackGreeting := strings.SplitN(fallbackMessage, "Доступные услуги:", 2)[0]
+	if !strings.Contains(fallbackGreeting, "Здесь можно выбрать услугу") || strings.Contains(strings.ToLower(fallbackGreeting), "эпиляц") {
+		t.Fatalf("client fallback greeting = %q", fallbackMessage)
 	}
 	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "Начать запись"}); err != nil {
 		t.Fatalf("start booking button: %v", err)
@@ -1946,6 +1986,17 @@ type staticAdminBookingParser struct {
 
 type staticBookingParser struct {
 	intent nlu.BookingIntent
+}
+
+type staticClientGreetingGenerator struct {
+	text    string
+	err     error
+	request nlu.ClientGreetingRequest
+}
+
+func (g *staticClientGreetingGenerator) GenerateClientGreeting(_ context.Context, req nlu.ClientGreetingRequest) (string, error) {
+	g.request = req
+	return g.text, g.err
 }
 
 func (p staticBookingParser) ParseBookingIntent(context.Context, nlu.BookingIntentRequest) (nlu.BookingIntent, error) {
