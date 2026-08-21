@@ -1970,10 +1970,13 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("admin self-booking date callback: %v", err)
 	}
-	timeMessage := tg.messages[len(tg.messages)-1]
+	if len(tg.photos) != 4 || !strings.Contains(tg.photos[3].Caption, "Выберите время под картинкой") {
+		t.Fatalf("admin self-booking time image = %#v", tg.photos)
+	}
+	timePhoto := tg.photos[3]
 	timeButtons := 0
 	foundNextPage := false
-	for _, row := range timeMessage.ReplyMarkup.InlineKeyboard {
+	for _, row := range timePhoto.ReplyMarkup.InlineKeyboard {
 		for _, button := range row {
 			if strings.HasPrefix(button.CallbackData, "slot:") {
 				timeButtons++
@@ -1984,7 +1987,7 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 		}
 	}
 	if timeButtons > 9 || !foundNextPage {
-		t.Fatalf("admin self-booking time keyboard has %d time buttons, next=%v: %#v", timeButtons, foundNextPage, timeMessage.ReplyMarkup)
+		t.Fatalf("admin self-booking time keyboard has %d time buttons, next=%v: %#v", timeButtons, foundNextPage, timePhoto.ReplyMarkup)
 	}
 }
 

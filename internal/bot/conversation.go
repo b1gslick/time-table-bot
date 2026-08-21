@@ -1639,17 +1639,25 @@ func (b *Bot) bookingAvailabilityOverview(ctx context.Context, user UserRecord, 
 	if !ok {
 		return nil, "", nil, store.ErrNotFound
 	}
-	grid, err := b.store.AdminSchedule(ctx, user.TelegramID, start, end)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	grid = scheduleGridForAvailability(grid, availability, start, end)
-	image, err := renderScheduleDaysImageForAudience(user.Language, start, grid, nil, true)
+	image, err := b.bookingAvailabilityImage(ctx, user, availability, start, end)
 	if err != nil {
 		return nil, "", nil, err
 	}
 	caption := tr(user.Language, "booking_availability_caption", start.Format("02.01"), end.AddDate(0, 0, -1).Format("02.01"))
 	return image, caption, availabilityDateKeyboard(user.Language, availability, start, end), nil
+}
+
+func (b *Bot) bookingAvailabilityImage(ctx context.Context, user UserRecord, availability []AvailabilitySlot, start, end time.Time) ([]byte, error) {
+	grid, err := b.store.AdminSchedule(ctx, user.TelegramID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	grid = scheduleGridForAvailability(grid, availability, start, end)
+	image, err := renderScheduleDaysImageForAudience(user.Language, start, grid, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	return image, nil
 }
 
 func availabilityOverviewRange(slots []AvailabilitySlot) (time.Time, time.Time, bool) {

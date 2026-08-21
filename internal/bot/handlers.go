@@ -371,7 +371,8 @@ func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.Callbac
 		b.logger.Printf("slot browse: cached availability failed user=%d: %v", current.TelegramID, err)
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
 	}
-	if strings.HasPrefix(cb.Data, "slotdate:") {
+	selectedDate := strings.HasPrefix(cb.Data, "slotdate:")
+	if selectedDate {
 		day := strings.TrimPrefix(cb.Data, "slotdate:")
 		if !availabilityHasDay(slots, day) {
 			return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
@@ -398,7 +399,27 @@ func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.Callbac
 	if err := b.store.SetConversationState(ctx, current.TelegramID, nextState); err != nil {
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "conversation_failed"))
 	}
+	if selectedDate {
+		if start, ok := availabilityDayStart(slots, nextState.SlotDay); ok {
+			end := start.AddDate(0, 0, 7)
+			image, imageErr := b.bookingAvailabilityImage(ctx, current, slots, start, end)
+			if imageErr == nil {
+				caption := tr(current.Language, "booking_time_image_caption") + "\n\n" + text
+				return b.sendPhoto(ctx, cb.Message.Chat.ID, image, caption, kb)
+			}
+			b.logger.Printf("booking time image failed user=%d role=%s day=%s: %v", current.TelegramID, current.Role, nextState.SlotDay, imageErr)
+		}
+	}
 	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, text, kb)
+}
+
+func availabilityDayStart(slots []AvailabilitySlot, day string) (time.Time, bool) {
+	for _, slot := range slots {
+		if slot.StartAt.Format("2006-01-02") == day {
+			return dateOnly(slot.StartAt), true
+		}
+	}
+	return time.Time{}, false
 }
 
 func (b *Bot) handleTimeChoiceCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
