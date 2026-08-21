@@ -295,6 +295,7 @@ type ConversationState struct {
 	DateTo                string                `json:"date_to,omitempty"`
 	SlotDay               string                `json:"slot_day,omitempty"`
 	SlotPeriod            string                `json:"slot_period,omitempty"`
+	SlotPage              int                   `json:"slot_page,omitempty"`
 	PendingSlotIndex      int                   `json:"pending_slot_index,omitempty"`
 	ServiceIndexes        []int                 `json:"service_indexes,omitempty"`
 	VisibleServiceIndexes []int                 `json:"visible_service_indexes,omitempty"`

@@ -368,8 +368,8 @@ func TestAvailabilityDateKeyboardShowsAvailableDays(t *testing.T) {
 func TestScheduleGridForAvailabilityMarksUnavailableTimeBusy(t *testing.T) {
 	start := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
 	grid := []ScheduleGridSlot{
-		{AdminName: "master", StartAt: start, EndAt: start.Add(30 * time.Minute), Status: "open", Capacity: 1, Available: 1},
-		{AdminName: "master", StartAt: start.Add(30 * time.Minute), EndAt: start.Add(time.Hour), Status: "open", Capacity: 1, Available: 1},
+		{StartAt: start, EndAt: start.Add(30 * time.Minute), Status: "open", Capacity: 1, Available: 1},
+		{StartAt: start.Add(30 * time.Minute), EndAt: start.Add(time.Hour), Status: "open", Capacity: 1, Available: 1},
 		{AdminName: "other", StartAt: start, EndAt: start.Add(30 * time.Minute), Status: "open", Capacity: 1, Available: 1},
 	}
 	availability := []AvailabilitySlot{{
@@ -384,6 +384,40 @@ func TestScheduleGridForAvailabilityMarksUnavailableTimeBusy(t *testing.T) {
 	}
 	if got[1].Available != 0 || got[1].Booked != 1 {
 		t.Fatalf("unavailable slot = %#v", got[1])
+	}
+}
+
+func TestSlotBrowserPaginatesLargeDay(t *testing.T) {
+	start := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	slots := make([]AvailabilitySlot, 0, 20)
+	for i := 0; i < 20; i++ {
+		slotStart := start.Add(time.Duration(i*15) * time.Minute)
+		slots = append(slots, AvailabilitySlot{StartAt: slotStart, EndAt: slotStart.Add(30 * time.Minute)})
+	}
+	text, kb, first := renderSlotBrowser(LangRU, ConversationState{SlotDay: "2026-08-26", SlotPeriod: "all"}, slots)
+	if len(first.VisibleSlotIndexes) != 9 || first.VisibleSlotIndexes[0] != 1 || first.VisibleSlotIndexes[8] != 9 {
+		t.Fatalf("first page indexes = %#v", first.VisibleSlotIndexes)
+	}
+	if !strings.Contains(text, "Страница 1/3") {
+		t.Fatalf("first page text = %q", text)
+	}
+	foundNext := false
+	for _, row := range kb.InlineKeyboard {
+		for _, button := range row {
+			if button.CallbackData == "slotpage:next" {
+				foundNext = true
+			}
+		}
+	}
+	if !foundNext {
+		t.Fatalf("first page keyboard has no next button: %#v", kb)
+	}
+	text, _, last := renderSlotBrowser(LangRU, ConversationState{SlotDay: "2026-08-26", SlotPeriod: "all", SlotPage: 2}, slots)
+	if len(last.VisibleSlotIndexes) != 2 || last.VisibleSlotIndexes[0] != 19 || last.VisibleSlotIndexes[1] != 20 {
+		t.Fatalf("last page indexes = %#v", last.VisibleSlotIndexes)
+	}
+	if !strings.Contains(text, "Страница 3/3") {
+		t.Fatalf("last page text = %q", text)
 	}
 }
 

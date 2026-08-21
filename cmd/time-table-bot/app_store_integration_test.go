@@ -1924,7 +1924,7 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 		t.Fatalf("free time image = %dx%d, want seven-day PNG", freeCfg.Width, freeCfg.Height)
 	}
 	selfBookingStart := start.AddDate(0, 0, 1)
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 20; i++ {
 		slotStart := selfBookingStart.Add(time.Duration(i*15) * time.Minute)
 		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
 			AdminUserID: admin.ID, StartAt: slotStart, EndAt: slotStart.Add(15 * time.Minute),
@@ -1950,6 +1950,41 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	}
 	if len(tg.photos) != 3 || !strings.Contains(tg.photos[2].Caption, "Выберите дату") {
 		t.Fatalf("admin self-booking availability photos = %#v", tg.photos)
+	}
+	dateCallback := ""
+	for _, row := range tg.photos[2].ReplyMarkup.InlineKeyboard {
+		for _, button := range row {
+			if strings.HasPrefix(button.CallbackData, "slotdate:") {
+				dateCallback = button.CallbackData
+				break
+			}
+		}
+	}
+	if dateCallback == "" {
+		t.Fatalf("admin self-booking date keyboard = %#v", tg.photos[2].ReplyMarkup)
+	}
+	if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+		ID:      dateCallback,
+		From:    telegram.User{ID: 2001, Username: "master", FirstName: "Master"},
+		Message: &telegram.Message{Chat: telegram.Chat{ID: 2001}}, Data: dateCallback,
+	}); err != nil {
+		t.Fatalf("admin self-booking date callback: %v", err)
+	}
+	timeMessage := tg.messages[len(tg.messages)-1]
+	timeButtons := 0
+	foundNextPage := false
+	for _, row := range timeMessage.ReplyMarkup.InlineKeyboard {
+		for _, button := range row {
+			if strings.HasPrefix(button.CallbackData, "slot:") {
+				timeButtons++
+			}
+			if button.CallbackData == "slotpage:next" {
+				foundNextPage = true
+			}
+		}
+	}
+	if timeButtons > 9 || !foundNextPage {
+		t.Fatalf("admin self-booking time keyboard has %d time buttons, next=%v: %#v", timeButtons, foundNextPage, timeMessage.ReplyMarkup)
 	}
 }
 

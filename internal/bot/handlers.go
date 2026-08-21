@@ -249,7 +249,7 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if err := b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryRequest{CallbackQueryID: cb.ID}); err != nil {
 		b.logger.Printf("answer callback failed id=%q: %v", cb.ID, err)
 	}
-	if strings.HasPrefix(cb.Data, "slotdate:") || strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") {
+	if strings.HasPrefix(cb.Data, "slotdate:") || strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") || strings.HasPrefix(cb.Data, "slotpage:") {
 		return b.handleSlotBrowseCallback(ctx, cb)
 	}
 	if strings.HasPrefix(cb.Data, "time:") {
@@ -378,11 +378,21 @@ func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.Callbac
 		}
 		state.SlotDay = day
 		state.SlotPeriod = "all"
+		state.SlotPage = 0
 	} else if strings.HasPrefix(cb.Data, "slotperiod:") {
 		state.SlotPeriod = strings.TrimPrefix(cb.Data, "slotperiod:")
 		state.SlotDay = chooseSlotDayForPeriod(slots, state.SlotDay, state.SlotPeriod)
+		state.SlotPage = 0
+	} else if strings.HasPrefix(cb.Data, "slotpage:") {
+		switch strings.TrimPrefix(cb.Data, "slotpage:") {
+		case "prev":
+			state.SlotPage--
+		case "next":
+			state.SlotPage++
+		}
 	} else {
 		state.SlotDay = moveSlotDay(slots, state.SlotDay, state.SlotPeriod, strings.TrimPrefix(cb.Data, "slotday:"))
+		state.SlotPage = 0
 	}
 	text, kb, nextState := renderSlotBrowser(current.Language, state, slots)
 	if err := b.store.SetConversationState(ctx, current.TelegramID, nextState); err != nil {

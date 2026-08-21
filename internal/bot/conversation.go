@@ -310,6 +310,7 @@ func (b *Bot) conversationTimeChoice(ctx context.Context, chatID int64, user Use
 func resetSlotBrowserState(state ConversationState) ConversationState {
 	state.SlotDay = ""
 	state.SlotPeriod = ""
+	state.SlotPage = 0
 	state.PendingSlotIndex = 0
 	state.VisibleSlotIndexes = nil
 	return state
@@ -1612,6 +1613,7 @@ func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserR
 	state.Step = conversationStepSlot
 	state.SlotPeriod = "all"
 	state.SlotDay, _ = firstSlotDay(slots)
+	state.SlotPage = 0
 	state.VisibleSlotIndexes = nil
 	image, caption, keyboard, overviewErr := b.bookingAvailabilityOverview(ctx, user, slots)
 	if overviewErr == nil {
@@ -1676,7 +1678,8 @@ func scheduleGridForAvailability(grid []ScheduleGridSlot, availability []Availab
 	}
 	out := make([]ScheduleGridSlot, 0, len(grid))
 	for _, slot := range grid {
-		if len(admins) > 0 && !admins[normalizeScheduleAdmin(slot.AdminName)] {
+		gridAdmin := normalizeScheduleAdmin(slot.AdminName)
+		if len(admins) > 0 && gridAdmin != "" && !admins[gridAdmin] {
 			continue
 		}
 		if strings.EqualFold(slot.Status, "open") && !availabilityCoversGridSlot(availability, slot) {
@@ -1967,6 +1970,7 @@ func formatAvailabilitySlots(lang string, slots []AvailabilitySlot, limit int) s
 }
 
 func renderSlotBrowser(lang string, state ConversationState, slots []AvailabilitySlot) (string, *telegram.ReplyMarkup, ConversationState) {
+	const pageSize = 9
 	state.Step = conversationStepSlot
 	if state.SlotPeriod == "" {
 		state.SlotPeriod = firstSlotPeriod(slots)
@@ -1975,7 +1979,20 @@ func renderSlotBrowser(lang string, state ConversationState, slots []Availabilit
 		state.SlotDay = chooseSlotDayForPeriod(slots, "", state.SlotPeriod)
 	}
 	state.SlotDay = clampSlotDay(slots, state.SlotDay)
-	visible := visibleSlotsForDayPeriod(slots, state.SlotDay, state.SlotPeriod)
+	allVisible := visibleSlotsForDayPeriod(slots, state.SlotDay, state.SlotPeriod)
+	pageCount := 1
+	if len(allVisible) > 0 {
+		pageCount = (len(allVisible) + pageSize - 1) / pageSize
+	}
+	if state.SlotPage < 0 {
+		state.SlotPage = 0
+	}
+	if state.SlotPage >= pageCount {
+		state.SlotPage = pageCount - 1
+	}
+	pageFrom := state.SlotPage * pageSize
+	pageTo := minInt(pageFrom+pageSize, len(allVisible))
+	visible := allVisible[pageFrom:pageTo]
 	state.VisibleSlotIndexes = make([]int, 0, len(visible))
 
 	var sb strings.Builder
@@ -2007,7 +2024,11 @@ func renderSlotBrowser(lang string, state ConversationState, slots []Availabilit
 			sb.WriteString("\n")
 		}
 	}
-	return sb.String(), slotBrowserKeyboard(lang, len(visible)), state
+	if pageCount > 1 {
+		sb.WriteString(tr(lang, "slot_page", state.SlotPage+1, pageCount))
+		sb.WriteString("\n")
+	}
+	return sb.String(), slotBrowserKeyboard(lang, len(visible), state.SlotPage, pageCount), state
 }
 
 type indexedSlot struct {
@@ -2179,13 +2200,23 @@ func firstSlotPeriod(slots []AvailabilitySlot) string {
 	}
 }
 
-func slotBrowserKeyboard(lang string, count int) *telegram.ReplyMarkup {
+func slotBrowserKeyboard(lang string, count, page, pageCount int) *telegram.ReplyMarkup {
 	var rows [][]telegram.InlineKeyboardButton
 	for i := 1; i <= count; i += 3 {
 		var row []telegram.InlineKeyboardButton
 		for j := i; j < i+3 && j <= count; j++ {
 			value := strconv.Itoa(j)
 			row = append(row, telegram.InlineKeyboardButton{Text: value, CallbackData: "slot:" + value})
+		}
+		rows = append(rows, row)
+	}
+	if pageCount > 1 {
+		row := make([]telegram.InlineKeyboardButton, 0, 2)
+		if page > 0 {
+			row = append(row, telegram.InlineKeyboardButton{Text: tr(lang, "slot_page_prev"), CallbackData: "slotpage:prev"})
+		}
+		if page+1 < pageCount {
+			row = append(row, telegram.InlineKeyboardButton{Text: tr(lang, "slot_page_next"), CallbackData: "slotpage:next"})
 		}
 		rows = append(rows, row)
 	}
