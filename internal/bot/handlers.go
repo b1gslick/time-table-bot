@@ -249,7 +249,7 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if err := b.tg.AnswerCallbackQuery(ctx, telegram.AnswerCallbackQueryRequest{CallbackQueryID: cb.ID}); err != nil {
 		b.logger.Printf("answer callback failed id=%q: %v", cb.ID, err)
 	}
-	if strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") {
+	if strings.HasPrefix(cb.Data, "slotdate:") || strings.HasPrefix(cb.Data, "slotday:") || strings.HasPrefix(cb.Data, "slotperiod:") {
 		return b.handleSlotBrowseCallback(ctx, cb)
 	}
 	if strings.HasPrefix(cb.Data, "time:") {
@@ -296,6 +296,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "week:") {
 		return b.handleWeekCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "monthcal:") {
+		return b.handleCalendarCallback(ctx, cb)
 	}
 	if cb.Data == "bookstart" {
 		return b.handleBookingStartCallback(ctx, cb)
@@ -368,7 +371,14 @@ func (b *Bot) handleSlotBrowseCallback(ctx context.Context, cb *telegram.Callbac
 		b.logger.Printf("slot browse: cached availability failed user=%d: %v", current.TelegramID, err)
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
 	}
-	if strings.HasPrefix(cb.Data, "slotperiod:") {
+	if strings.HasPrefix(cb.Data, "slotdate:") {
+		day := strings.TrimPrefix(cb.Data, "slotdate:")
+		if !availabilityHasDay(slots, day) {
+			return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_need_schedule"))
+		}
+		state.SlotDay = day
+		state.SlotPeriod = "all"
+	} else if strings.HasPrefix(cb.Data, "slotperiod:") {
 		state.SlotPeriod = strings.TrimPrefix(cb.Data, "slotperiod:")
 		state.SlotDay = chooseSlotDayForPeriod(slots, state.SlotDay, state.SlotPeriod)
 	} else {
@@ -689,6 +699,9 @@ func (b *Bot) handleMenuButton(ctx context.Context, chatID int64, user UserRecor
 	}
 	if action == "action_my" {
 		return true, b.handleMy(ctx, chatID, user)
+	}
+	if action == "menu_calendar" && !isAdmin(user.Role) {
+		return true, b.handleCalendar(ctx, chatID, user, []string{"/calendar"})
 	}
 	if !isAdmin(user.Role) {
 		return false, nil
@@ -1670,9 +1683,11 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	var monthStart time.Time
 	var err error
 	var serviceIndexes []int
+	explicitMonth := false
 	for _, part := range parts[1:] {
 		if month, parseErr := time.Parse(monthLayout, part); parseErr == nil {
 			monthStart = month
+			explicitMonth = true
 			continue
 		}
 		for _, token := range strings.Split(part, ",") {
@@ -1697,6 +1712,13 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 	} else {
 		now := time.Now()
 		monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	}
+	if isAdmin(actor.Role) && len(serviceIndexes) == 0 {
+		start := time.Now()
+		if explicitMonth {
+			start = monthStart
+		}
+		return b.handleWeek(ctx, chatID, actor, []string{"/week", start.Format("2006-01-02")})
 	}
 
 	if len(serviceIndexes) > 0 {
@@ -1736,9 +1758,6 @@ func (b *Bot) handleFree(ctx context.Context, chatID int64, actor UserRecord, pa
 }
 
 func (b *Bot) handleCalendar(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
-	if !isAdmin(actor.Role) {
-		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
-	}
 	var monthStart time.Time
 	if len(parts) >= 2 {
 		parsed, err := time.Parse(monthLayout, parts[1])
@@ -1756,13 +1775,15 @@ func (b *Bot) handleCalendar(ctx context.Context, chatID int64, actor UserRecord
 		return b.sendText(ctx, chatID, tr(actor.Language, "calendar_failed"))
 	}
 	b.logger.Printf("calendar user=%d role=%s month=%s days=%d", actor.TelegramID, actor.Role, monthStart.Format(monthLayout), len(days))
-	return b.sendText(ctx, chatID, formatCalendar(actor.Language, monthStart, days))
+	image, err := renderCalendarMonthImage(actor.Language, monthStart, days, !isAdmin(actor.Role))
+	if err != nil {
+		b.logger.Printf("calendar image failed user=%d month=%s: %v", actor.TelegramID, monthStart.Format(monthLayout), err)
+		return b.sendText(ctx, chatID, tr(actor.Language, "calendar_failed"))
+	}
+	return b.sendPhoto(ctx, chatID, image, tr(actor.Language, "calendar_caption", monthStart.Format(monthLayout)), calendarNavigationKeyboard(actor.Language, monthStart))
 }
 
 func (b *Bot) handleWeek(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
-	if !isAdmin(actor.Role) {
-		return b.sendText(ctx, chatID, tr(actor.Language, "admin_only"))
-	}
 	weekStart, err := parseWeekStart(parts)
 	if err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "week_usage"))
@@ -1773,10 +1794,13 @@ func (b *Bot) handleWeek(ctx context.Context, chatID int64, actor UserRecord, pa
 		b.logger.Printf("week schedule failed user=%d role=%s from=%s: %v", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
 	}
-	bookings, err := b.store.ListAdminBookingsRange(ctx, actor.TelegramID, weekStart, weekEnd)
-	if err != nil {
-		b.logger.Printf("week bookings failed user=%d role=%s from=%s: %v", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), err)
-		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
+	var bookings []BookingView
+	if isAdmin(actor.Role) {
+		bookings, err = b.store.ListAdminBookingsRange(ctx, actor.TelegramID, weekStart, weekEnd)
+		if err != nil {
+			b.logger.Printf("week bookings failed user=%d role=%s from=%s: %v", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), err)
+			return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
+		}
 	}
 	b.logger.Printf("week schedule user=%d role=%s from=%s slots=%d bookings=%d", actor.TelegramID, actor.Role, weekStart.Format("2006-01-02"), len(slots), len(bookings))
 	renderStart := weekStart
@@ -1784,12 +1808,29 @@ func (b *Bot) handleWeek(ctx context.Context, chatID int64, actor UserRecord, pa
 		loc := slots[0].StartAt.Location()
 		renderStart = time.Date(weekStart.Year(), weekStart.Month(), weekStart.Day(), 0, 0, 0, 0, loc)
 	}
-	image, err := renderScheduleWeekImage(actor.Language, renderStart, slots, bookings)
+	private := !isAdmin(actor.Role)
+	image, err := renderScheduleWeekImageForAudience(actor.Language, renderStart, slots, bookings, private)
 	if err != nil {
 		b.logger.Printf("week schedule image failed user=%d from=%s: %v", actor.TelegramID, weekStart.Format("2006-01-02"), err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "week_failed"))
 	}
-	return b.sendPhoto(ctx, chatID, image, scheduleWeekCaption(actor.Language, renderStart), weekNavigationKeyboard(actor.Language, renderStart))
+	captionKey := "week_caption"
+	if private {
+		captionKey = "week_caption_client"
+	}
+	return b.sendPhoto(ctx, chatID, image, tr(actor.Language, captionKey, renderStart.Format("02.01"), renderStart.AddDate(0, 0, 6).Format("02.01")), weekNavigationKeyboard(actor.Language, renderStart))
+}
+
+func (b *Bot) handleCalendarCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	month, err := time.Parse(monthLayout, strings.TrimPrefix(cb.Data, "monthcal:"))
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "calendar_usage"))
+	}
+	return b.handleCalendar(ctx, cb.Message.Chat.ID, current, []string{"/calendar", month.Format(monthLayout)})
 }
 
 func (b *Bot) handleWeekCallback(ctx context.Context, cb *telegram.CallbackQuery) error {

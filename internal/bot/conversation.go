@@ -1610,6 +1610,17 @@ func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserR
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "free_empty_try_other"), timeChoiceKeyboard(user.Language))
 	}
 	state.Step = conversationStepSlot
+	state.SlotPeriod = "all"
+	state.SlotDay, _ = firstSlotDay(slots)
+	state.VisibleSlotIndexes = nil
+	image, caption, keyboard, overviewErr := b.bookingAvailabilityOverview(ctx, user, slots)
+	if overviewErr == nil {
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendPhoto(ctx, chatID, image, caption, keyboard)
+	}
+	b.logger.Printf("booking availability overview failed user=%d role=%s: %v", user.TelegramID, user.Role, overviewErr)
 	if state.SlotPeriod == "" {
 		state.SlotPeriod = firstSlotPeriod(slots)
 	}
@@ -1619,6 +1630,84 @@ func (b *Bot) showInteractiveSlots(ctx context.Context, chatID int64, user UserR
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, text, kb)
+}
+
+func (b *Bot) bookingAvailabilityOverview(ctx context.Context, user UserRecord, availability []AvailabilitySlot) ([]byte, string, *telegram.ReplyMarkup, error) {
+	start, end, ok := availabilityOverviewRange(availability)
+	if !ok {
+		return nil, "", nil, store.ErrNotFound
+	}
+	grid, err := b.store.AdminSchedule(ctx, user.TelegramID, start, end)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	grid = scheduleGridForAvailability(grid, availability, start, end)
+	image, err := renderScheduleDaysImageForAudience(user.Language, start, grid, nil, true)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	caption := tr(user.Language, "booking_availability_caption", start.Format("02.01"), end.AddDate(0, 0, -1).Format("02.01"))
+	return image, caption, availabilityDateKeyboard(user.Language, availability, start, end), nil
+}
+
+func availabilityOverviewRange(slots []AvailabilitySlot) (time.Time, time.Time, bool) {
+	if len(slots) == 0 {
+		return time.Time{}, time.Time{}, false
+	}
+	earliest := slots[0].StartAt
+	for _, slot := range slots[1:] {
+		if slot.StartAt.Before(earliest) {
+			earliest = slot.StartAt
+		}
+	}
+	start := dateOnly(earliest)
+	return start, start.AddDate(0, 0, 7), true
+}
+
+func scheduleGridForAvailability(grid []ScheduleGridSlot, availability []AvailabilitySlot, from, to time.Time) []ScheduleGridSlot {
+	admins := make(map[string]bool)
+	for _, slot := range availability {
+		if slot.StartAt.Before(from) || !slot.StartAt.Before(to) {
+			continue
+		}
+		if name := normalizeScheduleAdmin(slot.AdminName); name != "" {
+			admins[name] = true
+		}
+	}
+	out := make([]ScheduleGridSlot, 0, len(grid))
+	for _, slot := range grid {
+		if len(admins) > 0 && !admins[normalizeScheduleAdmin(slot.AdminName)] {
+			continue
+		}
+		if strings.EqualFold(slot.Status, "open") && !availabilityCoversGridSlot(availability, slot) {
+			slot.Available = 0
+			if slot.Capacity <= 0 {
+				slot.Capacity = 1
+			}
+			slot.Booked = slot.Capacity
+			slot.Blocked = 0
+		}
+		out = append(out, slot)
+	}
+	return out
+}
+
+func availabilityCoversGridSlot(availability []AvailabilitySlot, grid ScheduleGridSlot) bool {
+	gridAdmin := normalizeScheduleAdmin(grid.AdminName)
+	for _, slot := range availability {
+		availableAdmin := normalizeScheduleAdmin(slot.AdminName)
+		if gridAdmin != "" && availableAdmin != "" && gridAdmin != availableAdmin {
+			continue
+		}
+		if !grid.StartAt.Before(slot.StartAt) && !grid.EndAt.After(slot.EndAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeScheduleAdmin(value string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(value), "@"))
 }
 
 func formatServices(lang string, services []ServiceView) string {
@@ -2021,6 +2110,46 @@ func slotDaysForPeriod(slots []AvailabilitySlot, period string) []string {
 	return days
 }
 
+func availabilityHasDay(slots []AvailabilitySlot, day string) bool {
+	for _, slot := range slots {
+		if slot.StartAt.Format("2006-01-02") == day {
+			return true
+		}
+	}
+	return false
+}
+
+func availabilityDateKeyboard(lang string, slots []AvailabilitySlot, from, to time.Time) *telegram.ReplyMarkup {
+	seen := make(map[string]bool)
+	var days []time.Time
+	for _, slot := range slots {
+		day := dateOnly(slot.StartAt)
+		if day.Before(from) || !day.Before(to) {
+			continue
+		}
+		key := day.Format("2006-01-02")
+		if !seen[key] {
+			seen[key] = true
+			days = append(days, day)
+		}
+	}
+	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
+	rows := make([][]telegram.InlineKeyboardButton, 0, (len(days)+2)/3+1)
+	for i := 0; i < len(days); i += 3 {
+		row := make([]telegram.InlineKeyboardButton, 0, 3)
+		for j := i; j < i+3 && j < len(days); j++ {
+			day := days[j]
+			row = append(row, telegram.InlineKeyboardButton{
+				Text:         weekdayShort(lang, day.Weekday()) + " " + day.Format("02.01"),
+				CallbackData: "slotdate:" + day.Format("2006-01-02"),
+			})
+		}
+		rows = append(rows, row)
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "button_back"), CallbackData: "back:slot"}})
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
 func slotMatchesPeriod(value time.Time, period string) bool {
 	hour := value.Hour()
 	switch period {
@@ -2220,120 +2349,6 @@ func displayCategory(lang, category string) string {
 		return tr(lang, "without_category")
 	}
 	return category
-}
-
-func formatCalendar(lang string, monthStart time.Time, items []CalendarDay) string {
-	if hasAdminCalendarNames(items) {
-		return formatCalendarByAdmin(lang, monthStart, items)
-	}
-	return formatCalendarSingle(lang, monthStart, items)
-}
-
-func formatCalendarByAdmin(lang string, monthStart time.Time, items []CalendarDay) string {
-	grouped := make(map[string][]CalendarDay)
-	var names []string
-	for _, item := range items {
-		name := strings.TrimSpace(item.AdminName)
-		if name == "" {
-			name = "admin"
-		}
-		if _, ok := grouped[name]; !ok {
-			names = append(names, name)
-		}
-		item.AdminName = ""
-		grouped[name] = append(grouped[name], item)
-	}
-	sort.Strings(names)
-
-	var sb strings.Builder
-	for i, name := range names {
-		if i > 0 {
-			sb.WriteString("\n\n")
-		}
-		sb.WriteString("@")
-		sb.WriteString(name)
-		sb.WriteString("\n")
-		sb.WriteString(formatCalendarSingle(lang, monthStart, grouped[name]))
-	}
-	return sb.String()
-}
-
-func hasAdminCalendarNames(items []CalendarDay) bool {
-	for _, item := range items {
-		if strings.TrimSpace(item.AdminName) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func formatCalendarSingle(lang string, monthStart time.Time, items []CalendarDay) string {
-	monthStart = time.Date(monthStart.Year(), monthStart.Month(), 1, 0, 0, 0, 0, monthStart.Location())
-	byDay := make(map[int]CalendarDay, len(items))
-	for _, item := range items {
-		byDay[item.Date.Day()] = item
-	}
-
-	var sb strings.Builder
-	sb.WriteString(tr(lang, "calendar_title", monthStart.Format(monthLayout)))
-	sb.WriteString("\n")
-	sb.WriteString(tr(lang, "calendar_weekdays"))
-	sb.WriteString("\n")
-
-	firstWeekday := int(monthStart.Weekday())
-	if firstWeekday == 0 {
-		firstWeekday = 7
-	}
-	for i := 1; i < firstWeekday; i++ {
-		sb.WriteString("    ")
-	}
-	monthEnd := monthStart.AddDate(0, 1, 0)
-	for day := monthStart; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
-		item := byDay[day.Day()]
-		sb.WriteString(fmt.Sprintf("%2d%s ", day.Day(), calendarMarker(item)))
-		if day.Weekday() == time.Sunday {
-			sb.WriteString("\n")
-		}
-	}
-	if !strings.HasSuffix(sb.String(), "\n") {
-		sb.WriteString("\n")
-	}
-	sb.WriteString("\n")
-	sb.WriteString(tr(lang, "calendar_legend"))
-	sb.WriteString("\n")
-
-	detailCount := 0
-	for day := monthStart; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
-		item := byDay[day.Day()]
-		if item.TotalSlots == 0 {
-			continue
-		}
-		sb.WriteString(fmt.Sprintf("%02d: %s\n", day.Day(), tr(lang, "calendar_day_summary", item.OpenSlots, item.Booked, item.Blocked, item.Closed)))
-		detailCount++
-		if detailCount >= 20 {
-			sb.WriteString(tr(lang, "calendar_more_days"))
-			sb.WriteString("\n")
-			break
-		}
-	}
-	if detailCount == 0 {
-		sb.WriteString(tr(lang, "calendar_empty"))
-	}
-	return sb.String()
-}
-
-func calendarMarker(item CalendarDay) string {
-	switch {
-	case item.TotalSlots == 0:
-		return "."
-	case item.OpenSlots > 0:
-		if item.OpenSlots > 9 {
-			return "+"
-		}
-		return strconv.Itoa(item.OpenSlots)
-	default:
-		return "x"
-	}
 }
 
 func parseLanguageChoice(text string) (string, bool) {

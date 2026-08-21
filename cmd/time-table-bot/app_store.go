@@ -1683,13 +1683,13 @@ func (s *appStore) AdminCalendar(ctx context.Context, telegramID int64, monthSta
 	if err != nil {
 		return nil, err
 	}
-	if !isBotAdmin(actor.Role) {
+	if actor.Role != bot.RoleUser && !isBotAdmin(actor.Role) {
 		return nil, store.ErrInvalidArgument
 	}
 	from := time.Date(monthStart.In(s.loc).Year(), monthStart.In(s.loc).Month(), 1, 0, 0, 0, 0, s.loc)
 	to := from.AddDate(0, 1, 0)
 
-	showAdminNames := actor.Role == bot.RoleSuperAdmin && !isSuperAdminViewingAdmin(ctx, s, telegramID)
+	showAdminNames := actor.Role == bot.RoleUser || (actor.Role == bot.RoleSuperAdmin && !isSuperAdminViewingAdmin(ctx, s, telegramID))
 	query := `
 SELECT ` + calendarAdminSelect(showAdminNames) + ` AS admin_name,
        date_trunc('day', s.start_at AT TIME ZONE $1)::date AS day,
@@ -1773,7 +1773,7 @@ func (s *appStore) AdminSchedule(ctx context.Context, telegramID int64, from, to
 	if err != nil {
 		return nil, err
 	}
-	if !isBotAdmin(actor.Role) {
+	if actor.Role != bot.RoleUser && !isBotAdmin(actor.Role) {
 		return nil, store.ErrInvalidArgument
 	}
 	from = dateOnlyLocal(from, s.loc)
@@ -1782,7 +1782,7 @@ func (s *appStore) AdminSchedule(ctx context.Context, telegramID int64, from, to
 		return nil, store.ErrInvalidArgument
 	}
 
-	showAdminNames := actor.Role == bot.RoleSuperAdmin && !isSuperAdminViewingAdmin(ctx, s, telegramID)
+	showAdminNames := actor.Role == bot.RoleUser || (actor.Role == bot.RoleSuperAdmin && !isSuperAdminViewingAdmin(ctx, s, telegramID))
 	query := `
 SELECT ` + calendarAdminSelect(showAdminNames) + ` AS admin_name,
        s.start_at,

@@ -26,6 +26,7 @@ func keyboardForRole(role Role, lang string) *telegram.ReplyMarkup {
 	default:
 		return menuKeyboard([][]string{
 			{tr(lang, "button_start_booking")},
+			{tr(lang, "button_menu_calendar")},
 			{tr(lang, "button_action_my")},
 		})
 	}
@@ -163,6 +164,19 @@ func weekNavigationKeyboard(lang string, start time.Time) *telegram.ReplyMarkup 
 			{Text: tr(lang, "week_today"), CallbackData: "week:" + weekStart(time.Now()).Format("2006-01-02")},
 			{Text: tr(lang, "week_next"), CallbackData: "week:" + start.AddDate(0, 0, 7).Format("2006-01-02")},
 		},
+	}}
+}
+
+func calendarNavigationKeyboard(lang string, month time.Time) *telegram.ReplyMarkup {
+	now := time.Now().In(month.Location())
+	current := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: tr(lang, "calendar_prev"), CallbackData: "monthcal:" + month.AddDate(0, -1, 0).Format(monthLayout)},
+			{Text: tr(lang, "calendar_current"), CallbackData: "monthcal:" + current.Format(monthLayout)},
+			{Text: tr(lang, "calendar_next"), CallbackData: "monthcal:" + month.AddDate(0, 1, 0).Format(monthLayout)},
+		},
+		{{Text: tr(lang, "button_action_week"), CallbackData: "week:" + weekStart(now).Format("2006-01-02")}},
 	}}
 }
 

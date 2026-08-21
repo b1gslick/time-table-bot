@@ -1263,7 +1263,6 @@ func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
 		"svc:1",
 		"more:no",
 		"time:nearest",
-		"slot:1",
 	}
 	for _, data := range callbacks {
 		if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
@@ -1273,6 +1272,30 @@ func TestBotE2E_ClientInteractiveBookingWithCategories(t *testing.T) {
 				Chat: chat,
 			},
 			Data: data,
+		}); err != nil {
+			t.Fatalf("HandleCallback(%q): %v", data, err)
+		}
+	}
+	if len(tg.photos) != 1 || !strings.Contains(tg.photos[0].Caption, "Выберите дату") {
+		t.Fatalf("client availability overview = %#v", tg.photos)
+	}
+	dateCallback := ""
+	if tg.photos[0].ReplyMarkup != nil {
+		for _, row := range tg.photos[0].ReplyMarkup.InlineKeyboard {
+			for _, button := range row {
+				if strings.HasPrefix(button.CallbackData, "slotdate:") {
+					dateCallback = button.CallbackData
+					break
+				}
+			}
+		}
+	}
+	if dateCallback == "" {
+		t.Fatalf("availability date keyboard = %#v", tg.photos[0].ReplyMarkup)
+	}
+	for _, data := range []string{dateCallback, "slot:1"} {
+		if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+			ID: data, From: client, Message: &telegram.Message{Chat: chat}, Data: data,
 		}); err != nil {
 			t.Fatalf("HandleCallback(%q): %v", data, err)
 		}
@@ -1883,6 +1906,51 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	if !strings.Contains(tg.photos[0].Caption, "24.08") || !strings.Contains(tg.photos[0].Caption, "30.08") {
 		t.Fatalf("caption = %q, want selected week", tg.photos[0].Caption)
 	}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: telegram.User{ID: 2001, Username: "master", FirstName: "Master"},
+		Chat: telegram.Chat{ID: 2001},
+		Text: "Свободное время",
+	}); err != nil {
+		t.Fatalf("free time menu: %v", err)
+	}
+	if len(tg.photos) != 2 {
+		t.Fatalf("photos after free time menu = %d, want 2", len(tg.photos))
+	}
+	freeCfg, err := png.DecodeConfig(bytes.NewReader(tg.photos[1].Photo))
+	if err != nil {
+		t.Fatalf("DecodeConfig free time: %v", err)
+	}
+	if freeCfg.Width != 1600 || freeCfg.Height < 1000 {
+		t.Fatalf("free time image = %dx%d, want seven-day PNG", freeCfg.Width, freeCfg.Height)
+	}
+	selfBookingStart := start.AddDate(0, 0, 1)
+	for i := 0; i < 6; i++ {
+		slotStart := selfBookingStart.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID, StartAt: slotStart, EndAt: slotStart.Add(15 * time.Minute),
+			Capacity: 1, Status: domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot for admin self-booking %d: %v", i, err)
+		}
+	}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
+		From: telegram.User{ID: 2001, Username: "master", FirstName: "Master"},
+		Chat: telegram.Chat{ID: 2001}, Text: "Записаться",
+	}); err != nil {
+		t.Fatalf("admin self-booking start: %v", err)
+	}
+	for _, data := range []string{"cat:1", "sub:1", "svc:1", "more:no", "time:nearest"} {
+		if err := bookingBot.HandleCallback(ctx, &telegram.CallbackQuery{
+			ID:      data,
+			From:    telegram.User{ID: 2001, Username: "master", FirstName: "Master"},
+			Message: &telegram.Message{Chat: telegram.Chat{ID: 2001}}, Data: data,
+		}); err != nil {
+			t.Fatalf("admin self-booking callback %q: %v", data, err)
+		}
+	}
+	if len(tg.photos) != 3 || !strings.Contains(tg.photos[2].Caption, "Выберите дату") {
+		t.Fatalf("admin self-booking availability photos = %#v", tg.photos)
+	}
 }
 
 func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
@@ -1936,8 +2004,23 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 	if strings.Contains(startMessage.Text, "/help") || strings.Contains(startMessage.Text, "/book") {
 		t.Fatalf("client start exposes commands: %q", startMessage.Text)
 	}
-	if startMessage.ReplyMarkup == nil || len(startMessage.ReplyMarkup.Keyboard) != 2 || startMessage.ReplyMarkup.Keyboard[0][0].Text != "Начать запись" || startMessage.ReplyMarkup.Keyboard[1][0].Text != "Мои записи" {
+	if startMessage.ReplyMarkup == nil || len(startMessage.ReplyMarkup.Keyboard) != 3 || startMessage.ReplyMarkup.Keyboard[0][0].Text != "Начать запись" || startMessage.ReplyMarkup.Keyboard[1][0].Text != "Календарь" || startMessage.ReplyMarkup.Keyboard[2][0].Text != "Мои записи" {
 		t.Fatalf("client start keyboard = %#v", startMessage.ReplyMarkup)
+	}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "Календарь"}); err != nil {
+		t.Fatalf("client calendar button: %v", err)
+	}
+	if len(tg.photos) != 1 {
+		t.Fatalf("client calendar photos = %d, want 1", len(tg.photos))
+	}
+	if _, err := png.DecodeConfig(bytes.NewReader(tg.photos[0].Photo)); err != nil {
+		t.Fatalf("decode client calendar: %v", err)
+	}
+	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "/week 2026-08-24"}); err != nil {
+		t.Fatalf("client week: %v", err)
+	}
+	if len(tg.photos) != 2 || !strings.Contains(tg.photos[1].Caption, "данные записей скрыты") {
+		t.Fatalf("client week output = %#v", tg.photos)
 	}
 	bookingBot.SetClientGreetingGenerator(&staticClientGreetingGenerator{err: fmt.Errorf("generator unavailable")})
 	if err := bookingBot.HandleMessage(ctx, &telegram.Message{From: client, Chat: telegram.Chat{ID: 3001}, Text: "/start"}); err != nil {

@@ -25,18 +25,19 @@ const (
 )
 
 var (
-	scheduleBg        = color.RGBA{R: 238, G: 243, B: 241, A: 255}
-	schedulePanel     = color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	scheduleGrid      = color.RGBA{R: 207, G: 216, B: 218, A: 255}
-	scheduleGridSoft  = color.RGBA{R: 232, G: 237, B: 238, A: 255}
-	scheduleText      = color.RGBA{R: 31, G: 41, B: 45, A: 255}
-	scheduleMutedText = color.RGBA{R: 101, G: 115, B: 121, A: 255}
-	scheduleFree      = color.RGBA{R: 224, G: 242, B: 230, A: 255}
-	scheduleClosed    = color.RGBA{R: 225, G: 229, B: 231, A: 255}
-	scheduleBlocked   = color.RGBA{R: 167, G: 176, B: 181, A: 255}
-	scheduleToday     = color.RGBA{R: 226, G: 239, B: 243, A: 255}
-	scheduleWhite     = color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	bookingPalette    = []color.RGBA{
+	scheduleBg         = color.RGBA{R: 238, G: 243, B: 241, A: 255}
+	schedulePanel      = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	scheduleGrid       = color.RGBA{R: 207, G: 216, B: 218, A: 255}
+	scheduleGridSoft   = color.RGBA{R: 232, G: 237, B: 238, A: 255}
+	scheduleText       = color.RGBA{R: 31, G: 41, B: 45, A: 255}
+	scheduleMutedText  = color.RGBA{R: 101, G: 115, B: 121, A: 255}
+	scheduleFree       = color.RGBA{R: 224, G: 242, B: 230, A: 255}
+	scheduleClosed     = color.RGBA{R: 225, G: 229, B: 231, A: 255}
+	scheduleBlocked    = color.RGBA{R: 167, G: 176, B: 181, A: 255}
+	scheduleClientBusy = color.RGBA{R: 190, G: 196, B: 199, A: 255}
+	scheduleToday      = color.RGBA{R: 226, G: 239, B: 243, A: 255}
+	scheduleWhite      = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	bookingPalette     = []color.RGBA{
 		{R: 246, G: 191, B: 176, A: 255},
 		{R: 164, G: 207, B: 220, A: 255},
 		{R: 188, G: 216, B: 174, A: 255},
@@ -60,8 +61,17 @@ type scheduleFontSet struct {
 }
 
 func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridSlot, bookings []BookingView) ([]byte, error) {
+	return renderScheduleWeekImageForAudience(lang, start, slots, bookings, false)
+}
+
+func renderScheduleWeekImageForAudience(lang string, start time.Time, slots []ScheduleGridSlot, bookings []BookingView, private bool) ([]byte, error) {
 	start = weekStart(start)
-	groups := groupScheduleSlots(slots, bookings)
+	return renderScheduleDaysImageForAudience(lang, start, slots, bookings, private)
+}
+
+func renderScheduleDaysImageForAudience(lang string, start time.Time, slots []ScheduleGridSlot, bookings []BookingView, private bool) ([]byte, error) {
+	start = dateOnly(start)
+	groups := scheduleGroupsForAudience(slots, bookings, private)
 	height := 48 + len(groups)*schedulePanelHeight + 24
 	img := image.NewRGBA(image.Rect(0, 0, scheduleImageWidth, height))
 	fillRect(img, img.Bounds(), scheduleBg)
@@ -74,7 +84,7 @@ func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridS
 
 	y := 24
 	for _, group := range groups {
-		drawScheduleWeekPanel(img, fonts, lang, start, group, y)
+		drawScheduleWeekPanel(img, fonts, lang, start, group, y, private)
 		y += schedulePanelHeight
 	}
 
@@ -83,6 +93,172 @@ func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridS
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func scheduleGroupsForAudience(slots []ScheduleGridSlot, bookings []BookingView, private bool) []scheduleSlotGroup {
+	if private {
+		return groupScheduleSlots(slots, nil)
+	}
+	return groupScheduleSlots(slots, bookings)
+}
+
+func renderCalendarMonthImage(lang string, month time.Time, items []CalendarDay, private bool) ([]byte, error) {
+	month = time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, month.Location())
+	const (
+		width       = 1120
+		margin      = 28
+		panelHeight = 720
+	)
+	groups := groupCalendarDays(items)
+	height := 48 + len(groups)*panelHeight + 24
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	fillRect(img, img.Bounds(), scheduleBg)
+	fonts, err := newScheduleFontSet()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.close()
+
+	for i, group := range groups {
+		drawCalendarMonthPanel(img, fonts, lang, month, group, margin, 24+i*panelHeight, width-margin, private)
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+type calendarDayGroup struct {
+	Name string
+	Days []CalendarDay
+}
+
+func groupCalendarDays(items []CalendarDay) []calendarDayGroup {
+	hasNames := false
+	for _, item := range items {
+		if strings.TrimSpace(item.AdminName) != "" {
+			hasNames = true
+			break
+		}
+	}
+	if !hasNames {
+		return []calendarDayGroup{{Days: sortedCalendarDays(items)}}
+	}
+	grouped := make(map[string][]CalendarDay)
+	for _, item := range items {
+		name := scheduleAdminName(item.AdminName)
+		grouped[name] = append(grouped[name], item)
+	}
+	names := make([]string, 0, len(grouped))
+	for name := range grouped {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]calendarDayGroup, 0, len(names))
+	for _, name := range names {
+		out = append(out, calendarDayGroup{Name: name, Days: sortedCalendarDays(grouped[name])})
+	}
+	return out
+}
+
+func sortedCalendarDays(items []CalendarDay) []CalendarDay {
+	out := append([]CalendarDay(nil), items...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Date.Before(out[j].Date) })
+	return out
+}
+
+func drawCalendarMonthPanel(img *image.RGBA, fonts scheduleFontSet, lang string, month time.Time, group calendarDayGroup, left, top, right int, private bool) {
+	const (
+		titleHeight  = 74
+		headerHeight = 46
+		cellHeight   = 88
+	)
+	panel := image.Rect(left, top, right, top+696)
+	fillRect(img, panel, schedulePanel)
+	strokeRect(img, panel, scheduleGrid)
+	title := tr(lang, "calendar_title", month.Format(monthLayout))
+	if group.Name != "" {
+		title += "  @" + group.Name
+	}
+	drawFontText(img, fonts.title, left+30, top+22, fitFontText(title, right-left-60, fonts.title), scheduleText)
+
+	cellWidth := (right - left - 40) / 7
+	gridLeft := left + 20
+	gridTop := top + titleHeight + headerHeight
+	for column, weekday := range schedulePlanWeekdayOrder {
+		x1 := gridLeft + column*cellWidth
+		x2 := x1 + cellWidth
+		drawCenteredFontText(img, fonts.day, x1, x2, top+titleHeight+9, weekdayShort(lang, weekday), scheduleMutedText)
+	}
+	byDate := make(map[string]CalendarDay, len(group.Days))
+	for _, day := range group.Days {
+		byDate[day.Date.Format("2006-01-02")] = day
+	}
+	firstOffset := (int(month.Weekday()) + 6) % 7
+	monthEnd := month.AddDate(0, 1, 0)
+	for day := month; day.Before(monthEnd); day = day.AddDate(0, 0, 1) {
+		index := firstOffset + day.Day() - 1
+		row, column := index/7, index%7
+		x1 := gridLeft + column*cellWidth
+		y1 := gridTop + row*cellHeight
+		rect := image.Rect(x1, y1, x1+cellWidth, y1+cellHeight)
+		entry, ok := byDate[day.Format("2006-01-02")]
+		drawCalendarDayBackground(img, rect, entry, ok, private)
+		strokeRect(img, rect, scheduleGrid)
+		drawFontText(img, fonts.day, x1+10, y1+8, fmt.Sprintf("%d", day.Day()), scheduleText)
+		if ok && entry.TotalSlots > 0 {
+			drawCenteredFontText(img, fonts.small, x1+4, x1+cellWidth-4, y1+49, tr(lang, "calendar_free_short", entry.OpenSlots), scheduleText)
+		}
+	}
+	drawCalendarLegend(img, fonts, left+30, top+650, lang, private)
+}
+
+func drawCalendarDayBackground(img *image.RGBA, rect image.Rectangle, day CalendarDay, exists, private bool) {
+	if !exists || day.TotalSlots <= 0 {
+		fillRect(img, rect, schedulePanel)
+		return
+	}
+	busyFill := scheduleBlocked
+	if private {
+		busyFill = scheduleClientBusy
+	}
+	busy := day.Booked + day.Blocked + day.Closed
+	if day.OpenSlots <= 0 || busy >= day.TotalSlots {
+		fillRect(img, rect, busyFill)
+		return
+	}
+	if busy <= 0 || day.OpenSlots >= day.TotalSlots {
+		fillRect(img, rect, scheduleFree)
+		return
+	}
+	fillRect(img, rect, busyFill)
+	availableWidth := rect.Dx() * day.OpenSlots / day.TotalSlots
+	if availableWidth < 1 {
+		availableWidth = 1
+	}
+	fillRect(img, image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+availableWidth, rect.Max.Y), scheduleFree)
+}
+
+func drawCalendarLegend(img *image.RGBA, fonts scheduleFontSet, x, y int, lang string, private bool) {
+	busyFill := scheduleBlocked
+	if private {
+		busyFill = scheduleClientBusy
+	}
+	items := []struct {
+		label string
+		fill  color.RGBA
+	}{
+		{label: tr(lang, "calendar_legend_free"), fill: scheduleFree},
+		{label: tr(lang, "calendar_legend_busy"), fill: busyFill},
+		{label: tr(lang, "calendar_legend_empty"), fill: schedulePanel},
+	}
+	for _, item := range items {
+		fillRect(img, image.Rect(x, y, x+24, y+24), item.fill)
+		strokeRect(img, image.Rect(x, y, x+24, y+24), scheduleGrid)
+		drawFontText(img, fonts.body, x+34, y+2, item.label, scheduleMutedText)
+		x += 300
+	}
 }
 
 func renderSchedulePlanMonthImage(lang string, plan SchedulePlanDraft) ([]byte, error) {
@@ -282,7 +458,7 @@ func sortedScheduleBookings(bookings []BookingView) []BookingView {
 	return out
 }
 
-func drawScheduleWeekPanel(img *image.RGBA, fonts scheduleFontSet, lang string, week time.Time, group scheduleSlotGroup, top int) {
+func drawScheduleWeekPanel(img *image.RGBA, fonts scheduleFontSet, lang string, week time.Time, group scheduleSlotGroup, top int, private bool) {
 	left := 28
 	right := scheduleImageWidth - 28
 	bottom := top + schedulePanelHeight - 20
@@ -327,7 +503,7 @@ func drawScheduleWeekPanel(img *image.RGBA, fonts scheduleFontSet, lang string, 
 		}
 		x1, x2 := scheduleDayColumn(gridLeft, gridRight, colWidth, dayIndex)
 		y1, y2 := scheduleIntervalY(slot.StartAt, slot.EndAt, minMinute, maxMinute, gridTop, gridHeight)
-		fillRect(img, image.Rect(x1+1, y1, x2-1, y2), scheduleSlotBackground(slot))
+		drawScheduleSlot(img, image.Rect(x1+1, y1, x2-1, y2), slot, private)
 	}
 
 	for minute := minMinute; minute <= maxMinute; minute += 30 {
@@ -348,12 +524,39 @@ func drawScheduleWeekPanel(img *image.RGBA, fonts scheduleFontSet, lang string, 
 		drawCenteredFontText(img, fonts.day, gridLeft, gridRight, gridTop+gridHeight/2-12, message, scheduleMutedText)
 	}
 
-	for _, booking := range group.Bookings {
-		drawScheduleBooking(img, fonts, week, booking, minMinute, maxMinute, gridLeft, gridRight, gridTop, gridHeight, colWidth)
+	if !private {
+		for _, booking := range group.Bookings {
+			drawScheduleBooking(img, fonts, week, booking, minMinute, maxMinute, gridLeft, gridRight, gridTop, gridHeight, colWidth)
+		}
 	}
 
 	legendY := bottom - 52
-	drawScheduleLegend(img, fonts, left+34, legendY, lang)
+	drawScheduleLegend(img, fonts, left+34, legendY, lang, private)
+}
+
+func drawScheduleSlot(img *image.RGBA, rect image.Rectangle, slot ScheduleGridSlot, private bool) {
+	if !private {
+		fillRect(img, rect, scheduleSlotBackground(slot))
+		return
+	}
+	if strings.ToLower(slot.Status) != "open" {
+		fillRect(img, rect, scheduleClosed)
+		return
+	}
+	if slot.Available <= 0 || slot.Booked+slot.Blocked >= slot.Capacity {
+		fillRect(img, rect, scheduleClientBusy)
+		return
+	}
+	if slot.Capacity <= 0 || slot.Available >= slot.Capacity {
+		fillRect(img, rect, scheduleFree)
+		return
+	}
+	fillRect(img, rect, scheduleClientBusy)
+	availableWidth := rect.Dx() * slot.Available / slot.Capacity
+	if availableWidth < 1 {
+		availableWidth = 1
+	}
+	fillRect(img, image.Rect(rect.Min.X, rect.Min.Y, rect.Min.X+availableWidth, rect.Max.Y), scheduleFree)
 }
 
 func drawScheduleBooking(img *image.RGBA, fonts scheduleFontSet, week time.Time, booking BookingView, minMinute, maxMinute, gridLeft, gridRight, gridTop, gridHeight, colWidth int) {
@@ -496,14 +699,29 @@ func scheduleBookingColor(booking BookingView) color.RGBA {
 	return bookingPalette[hash%len(bookingPalette)]
 }
 
-func drawScheduleLegend(img *image.RGBA, fonts scheduleFontSet, x, y int, lang string) {
-	items := []struct {
+func drawScheduleLegend(img *image.RGBA, fonts scheduleFontSet, x, y int, lang string, private bool) {
+	var items []struct {
 		label string
 		fill  color.RGBA
-	}{
-		{label: tr(lang, "week_legend_free"), fill: scheduleFree},
-		{label: tr(lang, "week_legend_booking"), fill: bookingPalette[0]},
-		{label: tr(lang, "week_legend_closed"), fill: scheduleClosed},
+	}
+	if private {
+		items = []struct {
+			label string
+			fill  color.RGBA
+		}{
+			{label: tr(lang, "week_legend_free"), fill: scheduleFree},
+			{label: tr(lang, "week_legend_busy"), fill: scheduleClientBusy},
+			{label: tr(lang, "week_legend_closed"), fill: scheduleClosed},
+		}
+	} else {
+		items = []struct {
+			label string
+			fill  color.RGBA
+		}{
+			{label: tr(lang, "week_legend_free"), fill: scheduleFree},
+			{label: tr(lang, "week_legend_booking"), fill: bookingPalette[0]},
+			{label: tr(lang, "week_legend_closed"), fill: scheduleClosed},
+		}
 	}
 	for _, item := range items {
 		fillRect(img, image.Rect(x, y, x+24, y+24), item.fill)

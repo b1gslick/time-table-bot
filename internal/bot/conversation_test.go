@@ -2,6 +2,8 @@ package bot
 
 import (
 	"bytes"
+	"image"
+	"image/color"
 	"image/png"
 	"strings"
 	"testing"
@@ -98,7 +100,7 @@ func TestStartKeyboardsDoNotExposeCommands(t *testing.T) {
 		}
 	}
 	clientKeyboard := keyboardForRole(RoleUser, LangRU)
-	if len(clientKeyboard.Keyboard) != 2 || clientKeyboard.Keyboard[0][0].Text != "Начать запись" || clientKeyboard.Keyboard[1][0].Text != "Мои записи" {
+	if len(clientKeyboard.Keyboard) != 3 || clientKeyboard.Keyboard[0][0].Text != "Начать запись" || clientKeyboard.Keyboard[1][0].Text != "Календарь" || clientKeyboard.Keyboard[2][0].Text != "Мои записи" {
 		t.Fatalf("client keyboard = %#v", clientKeyboard.Keyboard)
 	}
 }
@@ -343,6 +345,48 @@ func TestSlotBrowserMovesByCalendarDayAndHasBack(t *testing.T) {
 	}
 }
 
+func TestAvailabilityDateKeyboardShowsAvailableDays(t *testing.T) {
+	from := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
+	slots := []AvailabilitySlot{
+		{StartAt: from.AddDate(0, 0, 1).Add(10 * time.Hour)},
+		{StartAt: from.AddDate(0, 0, 1).Add(11 * time.Hour)},
+		{StartAt: from.AddDate(0, 0, 3).Add(12 * time.Hour)},
+		{StartAt: from.AddDate(0, 0, 8).Add(12 * time.Hour)},
+	}
+	kb := availabilityDateKeyboard(LangRU, slots, from, from.AddDate(0, 0, 7))
+	if kb == nil || len(kb.InlineKeyboard) != 2 || len(kb.InlineKeyboard[0]) != 2 {
+		t.Fatalf("date keyboard = %#v", kb)
+	}
+	if got := kb.InlineKeyboard[0][0].CallbackData; got != "slotdate:2026-06-23" {
+		t.Fatalf("first date callback = %q", got)
+	}
+	if got := kb.InlineKeyboard[0][1].CallbackData; got != "slotdate:2026-06-25" {
+		t.Fatalf("second date callback = %q", got)
+	}
+}
+
+func TestScheduleGridForAvailabilityMarksUnavailableTimeBusy(t *testing.T) {
+	start := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	grid := []ScheduleGridSlot{
+		{AdminName: "master", StartAt: start, EndAt: start.Add(30 * time.Minute), Status: "open", Capacity: 1, Available: 1},
+		{AdminName: "master", StartAt: start.Add(30 * time.Minute), EndAt: start.Add(time.Hour), Status: "open", Capacity: 1, Available: 1},
+		{AdminName: "other", StartAt: start, EndAt: start.Add(30 * time.Minute), Status: "open", Capacity: 1, Available: 1},
+	}
+	availability := []AvailabilitySlot{{
+		AdminName: "master", StartAt: start, EndAt: start.Add(30 * time.Minute),
+	}}
+	got := scheduleGridForAvailability(grid, availability, dateOnly(start), dateOnly(start).AddDate(0, 0, 7))
+	if len(got) != 2 {
+		t.Fatalf("grid len = %d, want only selected master", len(got))
+	}
+	if got[0].Available != 1 || got[0].Booked != 0 {
+		t.Fatalf("available slot = %#v", got[0])
+	}
+	if got[1].Available != 0 || got[1].Booked != 1 {
+		t.Fatalf("unavailable slot = %#v", got[1])
+	}
+}
+
 func TestNormalizePhone(t *testing.T) {
 	tests := map[string]string{
 		"+357 99 999999": "+35799999999",
@@ -357,43 +401,46 @@ func TestNormalizePhone(t *testing.T) {
 	}
 }
 
-func TestFormatCalendar(t *testing.T) {
+func TestRenderCalendarMonthImageProducesPNG(t *testing.T) {
 	month := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	got := formatCalendar(LangRU, month, []CalendarDay{
+	rendered, err := renderCalendarMonthImage(LangRU, month, []CalendarDay{
 		{Date: month, OpenSlots: 3, TotalSlots: 4},
 		{Date: month.AddDate(0, 0, 1), Booked: 2, TotalSlots: 2},
-	})
-	if !strings.Contains(got, "Календарь 2026-06") {
-		t.Fatalf("calendar title missing: %s", got)
+	}, true)
+	if err != nil {
+		t.Fatalf("renderCalendarMonthImage error: %v", err)
 	}
-	if !strings.Contains(got, " 13 ") {
-		t.Fatalf("open marker missing: %s", got)
+	cfg, err := png.DecodeConfig(bytes.NewReader(rendered))
+	if err != nil {
+		t.Fatalf("DecodeConfig error: %v", err)
 	}
-	if !strings.Contains(got, " 2x ") {
-		t.Fatalf("busy marker missing: %s", got)
+	if cfg.Width != 1120 || cfg.Height < 700 {
+		t.Fatalf("image size = %dx%d, want 1120 and at least 700", cfg.Width, cfg.Height)
 	}
-	if !strings.Contains(got, "01: свободно 3") {
-		t.Fatalf("day summary missing: %s", got)
+	decoded, err := png.Decode(bytes.NewReader(rendered))
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if !imageContainsColor(decoded, scheduleClientBusy) {
+		t.Fatal("private monthly calendar does not contain gray busy time")
 	}
 }
 
-func TestFormatCalendarGroupsSuperAdminViewByAdmin(t *testing.T) {
+func TestRenderCalendarMonthImageGroupsByAdmin(t *testing.T) {
 	month := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	got := formatCalendar(LangRU, month, []CalendarDay{
+	rendered, err := renderCalendarMonthImage(LangRU, month, []CalendarDay{
 		{AdminName: "master", Date: month, OpenSlots: 2, TotalSlots: 2},
 		{AdminName: "second", Date: month, Booked: 1, TotalSlots: 1},
-	})
-	if !strings.Contains(got, "@master\nКалендарь 2026-06") {
-		t.Fatalf("master calendar section missing: %s", got)
+	}, true)
+	if err != nil {
+		t.Fatalf("renderCalendarMonthImage error: %v", err)
 	}
-	if !strings.Contains(got, "@second\nКалендарь 2026-06") {
-		t.Fatalf("second calendar section missing: %s", got)
+	cfg, err := png.DecodeConfig(bytes.NewReader(rendered))
+	if err != nil {
+		t.Fatalf("DecodeConfig error: %v", err)
 	}
-	if !strings.Contains(got, "01: свободно 2") {
-		t.Fatalf("master day summary missing: %s", got)
-	}
-	if !strings.Contains(got, "01: свободно 0, записей 1") {
-		t.Fatalf("second day summary missing: %s", got)
+	if cfg.Height < 1400 {
+		t.Fatalf("grouped calendar height = %d, want two panels", cfg.Height)
 	}
 }
 
@@ -438,6 +485,48 @@ func TestRenderScheduleWeekImageProducesPNG(t *testing.T) {
 	}
 }
 
+func TestPrivateScheduleImageDropsBookingDetailsAndUsesGray(t *testing.T) {
+	week := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
+	slots := []ScheduleGridSlot{{
+		AdminName: "master", StartAt: week.Add(10 * time.Hour), EndAt: week.Add(10*time.Hour + 30*time.Minute),
+		Status: "open", Capacity: 1, Booked: 1, Available: 0,
+	}}
+	bookings := []BookingView{{
+		AdminName: "master", Username: "private-client", ServiceNames: []string{"Private service"},
+		StartAt: week.Add(10 * time.Hour), EndAt: week.Add(10*time.Hour + 30*time.Minute),
+	}}
+	groups := scheduleGroupsForAudience(slots, bookings, true)
+	if len(groups) != 1 || len(groups[0].Bookings) != 0 {
+		t.Fatalf("private groups contain booking details: %#v", groups)
+	}
+	rendered, err := renderScheduleWeekImageForAudience(LangRU, week, slots, bookings, true)
+	if err != nil {
+		t.Fatalf("render private schedule: %v", err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(rendered))
+	if err != nil {
+		t.Fatalf("decode private schedule: %v", err)
+	}
+	if !imageContainsColor(decoded, scheduleClientBusy) {
+		t.Fatal("private schedule does not contain gray busy slots")
+	}
+}
+
+func imageContainsColor(decoded interface {
+	Bounds() image.Rectangle
+	At(x, y int) color.Color
+}, target color.RGBA) bool {
+	want := color.RGBAModel.Convert(target).(color.RGBA)
+	for y := decoded.Bounds().Min.Y; y < decoded.Bounds().Max.Y; y++ {
+		for x := decoded.Bounds().Min.X; x < decoded.Bounds().Max.X; x++ {
+			if color.RGBAModel.Convert(decoded.At(x, y)).(color.RGBA) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestWeekNavigationKeyboardUsesAdjacentWeeks(t *testing.T) {
 	start := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
 	kb := weekNavigationKeyboard(LangRU, start)
@@ -449,6 +538,20 @@ func TestWeekNavigationKeyboardUsesAdjacentWeeks(t *testing.T) {
 	}
 	if got := kb.InlineKeyboard[0][2].CallbackData; got != "week:2026-06-29" {
 		t.Fatalf("next callback = %q, want week:2026-06-29", got)
+	}
+}
+
+func TestCalendarNavigationKeyboardUsesAdjacentMonths(t *testing.T) {
+	month := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	kb := calendarNavigationKeyboard(LangRU, month)
+	if kb == nil || len(kb.InlineKeyboard) != 2 || len(kb.InlineKeyboard[0]) != 3 {
+		t.Fatalf("keyboard = %#v, want navigation and week rows", kb)
+	}
+	if got := kb.InlineKeyboard[0][0].CallbackData; got != "monthcal:2026-05" {
+		t.Fatalf("prev callback = %q", got)
+	}
+	if got := kb.InlineKeyboard[0][2].CallbackData; got != "monthcal:2026-07" {
+		t.Fatalf("next callback = %q", got)
 	}
 }
 
