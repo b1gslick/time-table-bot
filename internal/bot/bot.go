@@ -216,12 +216,18 @@ type SchedulePlanDraft struct {
 }
 
 type ServiceImportDraft struct {
-	Category    string  `json:"category,omitempty"`
-	Subcategory string  `json:"subcategory,omitempty"`
-	Name        string  `json:"name,omitempty"`
-	DurationMin int     `json:"duration_min,omitempty"`
-	PriceText   string  `json:"price_text,omitempty"`
-	Confidence  float64 `json:"confidence,omitempty"`
+	ServiceIndex      int     `json:"service_index,omitempty"`
+	Category          string  `json:"category,omitempty"`
+	Subcategory       string  `json:"subcategory,omitempty"`
+	Name              string  `json:"name,omitempty"`
+	DurationMin       int     `json:"duration_min,omitempty"`
+	PriceText         string  `json:"price_text,omitempty"`
+	ChangeCategory    bool    `json:"change_category,omitempty"`
+	ChangeSubcategory bool    `json:"change_subcategory,omitempty"`
+	ChangeName        bool    `json:"change_name,omitempty"`
+	ChangeDuration    bool    `json:"change_duration,omitempty"`
+	ChangePrice       bool    `json:"change_price,omitempty"`
+	Confidence        float64 `json:"confidence,omitempty"`
 }
 
 type ServiceCatalogEntry struct {
@@ -287,6 +293,7 @@ type ConversationState struct {
 	ServiceName           string                `json:"service_name,omitempty"`
 	ServiceDescription    string                `json:"service_description,omitempty"`
 	ServiceIndex          int                   `json:"service_index,omitempty"`
+	ServiceEditField      string                `json:"service_edit_field,omitempty"`
 	Username              string                `json:"username,omitempty"`
 	FromDateTime          string                `json:"from_datetime,omitempty"`
 	ContactType           string                `json:"contact_type,omitempty"`

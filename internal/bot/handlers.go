@@ -270,6 +270,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if strings.HasPrefix(cb.Data, "serviceimport:") {
 		return b.handleServiceImportCallback(ctx, cb)
 	}
+	if strings.HasPrefix(cb.Data, "serviceedit:") {
+		return b.handleServiceEditCallback(ctx, cb)
+	}
 	if strings.HasPrefix(cb.Data, "financeentry:") {
 		return b.handleFinanceEntryCallback(ctx, cb)
 	}
@@ -1300,9 +1303,19 @@ func (b *Bot) handleServiceEdit(ctx context.Context, chatID int64, actor UserRec
 		return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
 	}
 	name := strings.TrimSpace(strings.Join(parts[3:], " "))
-	name, description := splitServiceNameDescription(name)
+	name, description, hasDescription := splitServiceNameDescriptionPatch(name)
 	if name == "" {
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_usage"))
+	}
+	if !hasDescription {
+		services, listErr := b.store.ListServices(ctx, actor.TelegramID)
+		if listErr != nil {
+			return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
+		}
+		if index > len(services) {
+			return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_bad_index"))
+		}
+		description = services[index-1].Description
 	}
 	if err := b.store.EditServiceByIndex(ctx, actor.TelegramID, index, name, duration, description); err != nil {
 		b.logger.Printf("service edit failed admin=%d index=%d duration=%d name=%q: %v", actor.TelegramID, index, duration, name, err)
@@ -1347,11 +1360,7 @@ func (b *Bot) askServiceEdit(ctx context.Context, chatID int64, actor UserRecord
 	if err := b.store.SetConversationState(ctx, actor.TelegramID, ConversationState{Step: conversationStepEditSvc}); err != nil {
 		return b.sendText(ctx, chatID, tr(actor.Language, "conversation_failed"))
 	}
-	var sb strings.Builder
-	sb.WriteString(formatServices(actor.Language, services))
-	sb.WriteString("\n")
-	sb.WriteString(tr(actor.Language, "service_edit_ask_index"))
-	return b.sendText(ctx, chatID, sb.String())
+	return b.sendTextWithKeyboard(ctx, chatID, tr(actor.Language, "service_edit_choose"), serviceEditServiceKeyboard(actor.Language, services))
 }
 
 func (b *Bot) askServiceDelete(ctx context.Context, chatID int64, actor UserRecord) error {

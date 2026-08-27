@@ -695,19 +695,7 @@ func (b *Bot) conversationEditServiceIndex(ctx context.Context, chatID int64, us
 	if err != nil || index <= 0 {
 		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_ask_index"))
 	}
-	services, err := b.store.ListServices(ctx, user.TelegramID)
-	if err != nil {
-		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
-	}
-	if index > len(services) {
-		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_bad_index"))
-	}
-	state.ServiceIndex = index
-	state.Step = conversationStepEditSvcData
-	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
-		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
-	}
-	return b.sendText(ctx, chatID, tr(user.Language, "service_edit_ask_data"))
+	return b.selectServiceForEdit(ctx, chatID, user, state, index)
 }
 
 func (b *Bot) conversationEditServiceData(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -715,19 +703,7 @@ func (b *Bot) conversationEditServiceData(ctx context.Context, chatID int64, use
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
 	}
-	duration, name, description, ok := parseServiceEditData(text)
-	if !ok {
-		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_ask_data"))
-	}
-	if err := b.store.EditServiceByIndex(ctx, user.TelegramID, state.ServiceIndex, name, duration, description); err != nil {
-		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
-			return b.sendText(ctx, chatID, tr(user.Language, "service_edit_bad_index"))
-		}
-		b.logger.Printf("interactive service edit failed admin=%d index=%d duration=%d name=%q: %v", user.TelegramID, state.ServiceIndex, duration, name, err)
-		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_failed"))
-	}
-	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_edit_ok", state.ServiceIndex), keyboardForUser(user))
+	return b.applyServiceEditInput(ctx, chatID, user, state, text)
 }
 
 func (b *Bot) conversationSetProfile(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -1791,34 +1767,44 @@ func servicePathFromState(state ConversationState) string {
 }
 
 func splitServiceNameDescription(text string) (string, string) {
+	name, description, _ := splitServiceNameDescriptionPatch(text)
+	return name, description
+}
+
+func splitServiceNameDescriptionPatch(text string) (string, string, bool) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return "", ""
+		return "", "", false
 	}
 	if before, after, ok := strings.Cut(text, "|"); ok {
-		return strings.TrimSpace(before), normalizeOptionalText(after)
+		return strings.TrimSpace(before), normalizeOptionalText(after), true
 	}
 	lines := strings.SplitN(text, "\n", 2)
 	if len(lines) == 2 {
-		return strings.TrimSpace(lines[0]), normalizeOptionalText(lines[1])
+		return strings.TrimSpace(lines[0]), normalizeOptionalText(lines[1]), true
 	}
-	return text, ""
+	return text, "", false
 }
 
 func parseServiceEditData(text string) (int, string, string, bool) {
+	duration, name, description, _, ok := parseServiceEditDataPatch(text)
+	return duration, name, description, ok
+}
+
+func parseServiceEditDataPatch(text string) (int, string, string, bool, bool) {
 	parts := strings.Fields(strings.TrimSpace(text))
 	if len(parts) < 2 {
-		return 0, "", "", false
+		return 0, "", "", false, false
 	}
 	duration, err := strconv.Atoi(parts[0])
 	if err != nil || duration <= 0 {
-		return 0, "", "", false
+		return 0, "", "", false, false
 	}
-	name, description := splitServiceNameDescription(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), parts[0])))
+	name, description, hasDescription := splitServiceNameDescriptionPatch(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), parts[0])))
 	if name == "" {
-		return 0, "", "", false
+		return 0, "", "", false, false
 	}
-	return duration, name, description, true
+	return duration, name, description, hasDescription, true
 }
 
 func (b *Bot) askServiceAddCategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {

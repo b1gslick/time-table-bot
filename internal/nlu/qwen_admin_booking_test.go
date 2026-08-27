@@ -208,7 +208,7 @@ func TestQwenParserParsesServiceImport(t *testing.T) {
 		if req.MaxCompletionTokens != 3000 {
 			t.Fatalf("max_completion_tokens = %d", req.MaxCompletionTokens)
 		}
-		if len(req.Messages) != 2 || !strings.Contains(req.Messages[1].Content, "Восковая депиляция > Лицо > Усы") {
+		if len(req.Messages) != 2 || !strings.Contains(req.Messages[1].Content, "1. Восковая депиляция > Лицо > Усы") || !strings.Contains(req.Messages[0].Content, "change_price") {
 			t.Fatalf("existing services missing from prompt: %#v", req.Messages)
 		}
 		w.Header().Set("Content-Type", "application/json")

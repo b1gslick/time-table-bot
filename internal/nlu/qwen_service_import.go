@@ -66,6 +66,9 @@ func (p *QwenParser) ParseAdminServiceImport(ctx context.Context, req AdminServi
 	}
 	for i := range intent.Entries {
 		entry := &intent.Entries[i]
+		if entry.ServiceIndex < 0 {
+			entry.ServiceIndex = 0
+		}
 		entry.Category = strings.TrimSpace(entry.Category)
 		entry.Subcategory = strings.TrimSpace(entry.Subcategory)
 		entry.Name = strings.TrimSpace(entry.Name)
@@ -84,12 +87,15 @@ func qwenServiceImportSystemPrompt() string {
 		"You structure a salon administrator's spoken or written service catalog.",
 		"Return only JSON. Never create, edit, or delete data.",
 		"Use this schema:",
-		`{"is_service_catalog":true,"entries":[{"category":"category","subcategory":"subcategory or empty","name":"service name","duration_min":60,"price_text":"45 EUR","confidence":0.0}],"confidence":0.0}`,
+		`{"is_service_catalog":true,"entries":[{"service_index":1,"category":"category","subcategory":"subcategory or empty","name":"service name","duration_min":60,"price_text":"45 EUR or client-facing description","change_category":false,"change_subcategory":false,"change_name":false,"change_duration":false,"change_price":true,"confidence":0.0}],"confidence":0.0}`,
 		"Each distinct duration or price variant is a separate service entry.",
 		"Convert hours to minutes, including phrases such as one and a half hours. Do not invent a missing duration or price.",
 		"Put services into concise semantic categories and subcategories. Reuse exact category and subcategory spelling from existing services when appropriate.",
 		"Do not include the category or subcategory again in the service name unless it is naturally part of that name.",
-		"Preserve the stated price, currency, and useful pricing notes in price_text. Keep it empty if no price was stated.",
+		"For a new service use service_index=0 and return its complete stated fields. For a change to an existing service, use its exact one-based index from Existing services.",
+		"For an existing service set only the change_* flags for fields the administrator explicitly asked to change. Never copy unchanged values into changed fields and never set their flags.",
+		"change_price covers the existing client-facing price or short description stored in price_text. Preserve the stated currency and useful pricing notes. An explicit request to clear it uses an empty price_text with change_price=true.",
+		"A request such as 'change only manicure price to 50 EUR' is one existing-service entry with service_index set, price_text='50 EUR', change_price=true, and all other change flags false.",
 		"Set is_service_catalog=true only when the administrator asks to add, import, create, update, or replace one or more services or clearly dictates a price list.",
 		"When the administrator asks to replace the full service list, extract every service stated in the new list and do not copy omitted existing services into entries.",
 		"A client appointment request, a request to show services, or ordinary conversation is not a service catalog.",
@@ -101,7 +107,8 @@ func qwenServiceImportUserPrompt(req AdminServiceImportRequest) string {
 	sb.WriteString("Language: ")
 	sb.WriteString(req.Language)
 	sb.WriteString("\nExisting services:\n")
-	for _, svc := range req.ExistingServices {
+	for index, svc := range req.ExistingServices {
+		sb.WriteString(fmt.Sprintf("%d. ", index+1))
 		if svc.Category != "" {
 			sb.WriteString(svc.Category)
 			sb.WriteString(" > ")

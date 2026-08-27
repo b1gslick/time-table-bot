@@ -180,12 +180,18 @@ type AdminServiceImportRequest struct {
 }
 
 type AdminServiceImportEntry struct {
-	Category    string  `json:"category"`
-	Subcategory string  `json:"subcategory"`
-	Name        string  `json:"name"`
-	DurationMin int     `json:"duration_min"`
-	PriceText   string  `json:"price_text"`
-	Confidence  float64 `json:"confidence"`
+	ServiceIndex      int     `json:"service_index"`
+	Category          string  `json:"category"`
+	Subcategory       string  `json:"subcategory"`
+	Name              string  `json:"name"`
+	DurationMin       int     `json:"duration_min"`
+	PriceText         string  `json:"price_text"`
+	ChangeCategory    bool    `json:"change_category"`
+	ChangeSubcategory bool    `json:"change_subcategory"`
+	ChangeName        bool    `json:"change_name"`
+	ChangeDuration    bool    `json:"change_duration"`
+	ChangePrice       bool    `json:"change_price"`
+	Confidence        float64 `json:"confidence"`
 }
 
 type AdminServiceImportIntent struct {

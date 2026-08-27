@@ -67,10 +67,13 @@ func TestAdminMenuButtonsAreLocalizedAndRecognized(t *testing.T) {
 		t.Fatalf("cross-language generate day action = %q", got)
 	}
 	servicesKeyboard := servicesMenuKeyboard(LangRU)
-	if got := servicesKeyboard.Keyboard[0][1].Text; got != "Изменить список услуг" {
+	if got := servicesKeyboard.Keyboard[0][1].Text; got != "Изменить услугу" {
+		t.Fatalf("targeted service edit button = %q", got)
+	}
+	if got := servicesKeyboard.Keyboard[2][1].Text; got != "Заменить весь список" {
 		t.Fatalf("service replacement button = %q", got)
 	}
-	if got := menuButtonAction(LangRU, "Изменить список услуг"); got != "action_service_replace" {
+	if got := menuButtonAction(LangRU, "Заменить весь список"); got != "action_service_replace" {
 		t.Fatalf("service replacement action = %q", got)
 	}
 	for _, row := range servicesKeyboard.Keyboard {

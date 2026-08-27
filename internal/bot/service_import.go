@@ -39,12 +39,20 @@ func looksLikeAdminServiceImport(text string) bool {
 		"добавь услуг", "добавить услуг", "создай услуг", "создать услуг", "новые услуги",
 		"импорт услуг", "загрузи услуг", "добавь в прайс", "обнови прайс", "вот услуги",
 		"измени список услуг", "замени список услуг", "обнови список услуг",
+		"измени цен", "поменяй цен", "обнови цен", "измени описан", "поменяй описан",
+		"измени длительност", "поменяй длительност", "переименуй услуг",
 		"add service", "import service", "new service", "update price list", "price list",
-		"change service list", "replace service list", "update service list",
+		"change service list", "replace service list", "update service list", "change price",
+		"update price", "change description", "change duration", "rename service",
 	} {
 		if strings.Contains(normalized, marker) {
 			return true
 		}
+	}
+	changeVerb := containsAny(normalized, "измени", "поменяй", "обнови", "исправь", "change", "update", "edit", "rename")
+	serviceField := containsAny(normalized, "цен", "описан", "длительност", "назван", "price", "description", "duration", "name")
+	if changeVerb && serviceField {
+		return true
 	}
 	if !serviceImportDurationRE.MatchString(text) || !serviceImportPriceRE.MatchString(text) {
 		return false
@@ -55,6 +63,15 @@ func looksLikeAdminServiceImport(text string) bool {
 		}
 	}
 	return true
+}
+
+func containsAny(text string, values ...string) bool {
+	for _, value := range values {
+		if strings.Contains(text, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeServiceCatalogReplace(text string) bool {
@@ -135,17 +152,33 @@ func (b *Bot) parseServiceCatalog(ctx context.Context, chatID int64, user UserRe
 	}
 	entries := make([]ServiceImportDraft, 0, len(intent.Entries))
 	for _, entry := range intent.Entries {
-		entries = append(entries, ServiceImportDraft{
-			Category: entry.Category, Subcategory: entry.Subcategory, Name: entry.Name,
+		draft := ServiceImportDraft{
+			ServiceIndex: entry.ServiceIndex,
+			Category:     entry.Category, Subcategory: entry.Subcategory, Name: entry.Name,
 			DurationMin: entry.DurationMin, PriceText: entry.PriceText, Confidence: entry.Confidence,
-		})
+			ChangeCategory: entry.ChangeCategory, ChangeSubcategory: entry.ChangeSubcategory,
+			ChangeName: entry.ChangeName, ChangeDuration: entry.ChangeDuration, ChangePrice: entry.ChangePrice,
+		}
+		if replace {
+			draft.ServiceIndex = 0
+			draft.ChangeCategory = false
+			draft.ChangeSubcategory = false
+			draft.ChangeName = false
+			draft.ChangeDuration = false
+			draft.ChangePrice = false
+		}
+		entries = append(entries, draft)
 	}
 	state := ConversationState{Step: conversationStepServiceImport, ServiceImportEntries: entries, ServiceImportReplace: replace}
 	return b.showServiceImportPreview(ctx, chatID, user, state)
 }
 
 func (b *Bot) showServiceImportPreview(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
-	items := evaluateServiceImport(user.Language, state.ServiceImportEntries)
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_import_failed"))
+	}
+	items := evaluateServiceChanges(user.Language, state.ServiceImportEntries, services)
 	state.Step = conversationStepServiceImport
 	state.ServiceImportEntries = make([]ServiceImportDraft, 0, len(items))
 	ready := 0
@@ -166,9 +199,76 @@ func (b *Bot) showServiceImportPreview(ctx context.Context, chatID int64, user U
 }
 
 func evaluateServiceImport(lang string, drafts []ServiceImportDraft) []evaluatedServiceImport {
+	return evaluateServiceChanges(lang, drafts, nil)
+}
+
+func evaluateServiceChanges(lang string, drafts []ServiceImportDraft, services []ServiceView) []evaluatedServiceImport {
 	out := make([]evaluatedServiceImport, 0, len(drafts))
 	seen := make(map[string]struct{})
+	seenUpdates := make(map[int]struct{})
 	for _, draft := range drafts {
+		if draft.ServiceIndex > 0 {
+			item := evaluatedServiceImport{Draft: draft}
+			if draft.ServiceIndex > len(services) {
+				item.Issue = tr(lang, "service_import_issue_index")
+				out = append(out, item)
+				continue
+			}
+			if _, exists := seenUpdates[draft.ServiceIndex]; exists {
+				item.Issue = tr(lang, "service_import_issue_duplicate")
+				item.Path = serviceViewPath(services[draft.ServiceIndex-1])
+				out = append(out, item)
+				continue
+			}
+			seenUpdates[draft.ServiceIndex] = struct{}{}
+			original := services[draft.ServiceIndex-1]
+			if !serviceImportHasChanges(draft) {
+				item.Issue = tr(lang, "service_import_issue_no_changes")
+				item.Path = serviceViewPath(original)
+				out = append(out, item)
+				continue
+			}
+			merged := ServiceImportDraft{
+				ServiceIndex: draft.ServiceIndex, Category: original.Category, Subcategory: original.Subcategory,
+				Name: original.Name, DurationMin: original.DurationMin, PriceText: original.Description,
+				ChangeCategory: draft.ChangeCategory, ChangeSubcategory: draft.ChangeSubcategory,
+				ChangeName: draft.ChangeName, ChangeDuration: draft.ChangeDuration, ChangePrice: draft.ChangePrice,
+				Confidence: draft.Confidence,
+			}
+			if draft.ChangeCategory {
+				merged.Category = draft.Category
+			}
+			if draft.ChangeSubcategory {
+				merged.Subcategory = draft.Subcategory
+			}
+			if draft.ChangeName {
+				merged.Name = draft.Name
+			}
+			if draft.ChangeDuration {
+				merged.DurationMin = draft.DurationMin
+			}
+			if draft.ChangePrice {
+				merged.PriceText = draft.PriceText
+			}
+			merged.Category = cleanServiceImportPart(merged.Category)
+			merged.Subcategory = cleanServiceImportPart(merged.Subcategory)
+			merged.Name = cleanServiceImportPart(merged.Name)
+			merged.PriceText = strings.TrimSpace(merged.PriceText)
+			item.Draft = merged
+			item.Path = serviceImportPath(merged)
+			switch {
+			case merged.Name == "":
+				item.Issue = tr(lang, "service_import_issue_name")
+			case merged.DurationMin <= 0:
+				item.Issue = tr(lang, "service_import_issue_duration")
+			case merged.Confidence > 0 && merged.Confidence < serviceImportMinConfidence:
+				item.Issue = tr(lang, "service_import_issue_uncertain")
+			default:
+				item.Ready = true
+			}
+			out = append(out, item)
+			continue
+		}
 		draft.Category = cleanServiceImportPart(draft.Category)
 		draft.Subcategory = cleanServiceImportPart(draft.Subcategory)
 		draft.Name = cleanServiceImportPart(draft.Name)
@@ -196,6 +296,14 @@ func evaluateServiceImport(lang string, drafts []ServiceImportDraft) []evaluated
 	return out
 }
 
+func serviceImportHasChanges(draft ServiceImportDraft) bool {
+	return draft.ChangeCategory || draft.ChangeSubcategory || draft.ChangeName || draft.ChangeDuration || draft.ChangePrice
+}
+
+func serviceViewPath(service ServiceView) string {
+	return serviceImportPath(ServiceImportDraft{Category: service.Category, Subcategory: service.Subcategory, Name: service.Name})
+}
+
 func cleanServiceImportPart(value string) string {
 	value = strings.ReplaceAll(value, ">", " ")
 	return strings.Join(strings.Fields(value), " ")
@@ -212,7 +320,11 @@ func serviceImportPath(draft ServiceImportDraft) string {
 }
 
 func (b *Bot) confirmServiceImport(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
-	items := evaluateServiceImport(user.Language, state.ServiceImportEntries)
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_import_failed"))
+	}
+	items := evaluateServiceChanges(user.Language, state.ServiceImportEntries, services)
 	if state.ServiceImportReplace {
 		catalog := make([]ServiceCatalogEntry, 0, len(items))
 		for _, item := range items {
@@ -228,10 +340,19 @@ func (b *Bot) confirmServiceImport(ctx context.Context, chatID int64, user UserR
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_replace_done", len(catalog)), keyboardForUser(user))
 	}
-	added, skipped := 0, 0
+	added, updated, skipped := 0, 0, 0
 	for _, item := range items {
 		if !item.Ready {
 			skipped++
+			continue
+		}
+		if item.Draft.ServiceIndex > 0 {
+			if err := b.store.EditServiceByIndex(ctx, user.TelegramID, item.Draft.ServiceIndex, item.Path, item.Draft.DurationMin, item.Draft.PriceText); err != nil {
+				b.logger.Printf("service import: update failed admin=%d index=%d: %v", user.TelegramID, item.Draft.ServiceIndex, err)
+				skipped++
+				continue
+			}
+			updated++
 			continue
 		}
 		if err := b.store.AddService(ctx, user.TelegramID, item.Path, item.Draft.DurationMin, item.Draft.PriceText); err != nil {
@@ -242,7 +363,7 @@ func (b *Bot) confirmServiceImport(ctx context.Context, chatID int64, user UserR
 		added++
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_import_done", added, skipped), keyboardForUser(user))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_import_done", added, updated, skipped), keyboardForUser(user))
 }
 
 func (b *Bot) handleServiceImportCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
@@ -286,6 +407,9 @@ func formatServiceImportPreview(lang string, items []evaluatedServiceImport, rep
 	sb.WriteString(tr(lang, headerKey))
 	for _, item := range items {
 		line := "\n+ "
+		if item.Draft.ServiceIndex > 0 {
+			line = "\n~ "
+		}
 		if !item.Ready {
 			line = "\n! "
 		}
