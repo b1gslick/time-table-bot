@@ -230,7 +230,7 @@ func evaluateServiceChanges(lang string, drafts []ServiceImportDraft, services [
 			}
 			merged := ServiceImportDraft{
 				ServiceIndex: draft.ServiceIndex, Category: original.Category, Subcategory: original.Subcategory,
-				Name: original.Name, DurationMin: original.DurationMin, PriceText: original.Description,
+				Name: original.Name, DurationMin: original.DurationMin, PriceText: original.PriceText,
 				ChangeCategory: draft.ChangeCategory, ChangeSubcategory: draft.ChangeSubcategory,
 				ChangeName: draft.ChangeName, ChangeDuration: draft.ChangeDuration, ChangePrice: draft.ChangePrice,
 				Confidence: draft.Confidence,
@@ -253,7 +253,7 @@ func evaluateServiceChanges(lang string, drafts []ServiceImportDraft, services [
 			merged.Category = cleanServiceImportPart(merged.Category)
 			merged.Subcategory = cleanServiceImportPart(merged.Subcategory)
 			merged.Name = cleanServiceImportPart(merged.Name)
-			merged.PriceText = strings.TrimSpace(merged.PriceText)
+			merged.PriceText = normalizeServicePrice(merged.PriceText)
 			item.Draft = merged
 			item.Path = serviceImportPath(merged)
 			switch {
@@ -272,7 +272,7 @@ func evaluateServiceChanges(lang string, drafts []ServiceImportDraft, services [
 		draft.Category = cleanServiceImportPart(draft.Category)
 		draft.Subcategory = cleanServiceImportPart(draft.Subcategory)
 		draft.Name = cleanServiceImportPart(draft.Name)
-		draft.PriceText = strings.TrimSpace(draft.PriceText)
+		draft.PriceText = normalizeServicePrice(draft.PriceText)
 		item := evaluatedServiceImport{Draft: draft}
 		switch {
 		case draft.Name == "":

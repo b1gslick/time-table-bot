@@ -210,7 +210,7 @@ ORDER BY occurred_at;
 
 func (s *appStore) allAdminServicesByID(ctx context.Context, adminID int64) (map[int64]domain.AdminService, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active, created_at, updated_at
+SELECT id, admin_user_id, category, subcategory, name, description, price_text, duration_min, price_cents, is_active, created_at, updated_at
 FROM admin_services WHERE admin_user_id = $1;
 `, adminID)
 	if err != nil {
@@ -221,7 +221,7 @@ FROM admin_services WHERE admin_user_id = $1;
 	for rows.Next() {
 		var service domain.AdminService
 		if err := rows.Scan(&service.ID, &service.AdminUserID, &service.Category, &service.Subcategory,
-			&service.Name, &service.Description, &service.DurationMin, &service.PriceCents,
+			&service.Name, &service.Description, &service.PriceText, &service.DurationMin, &service.PriceCents,
 			&service.IsActive, &service.CreatedAt, &service.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -267,7 +267,7 @@ func serviceFinancePrice(service domain.AdminService) (int64, string) {
 			return 0, "package_price"
 		}
 	}
-	for _, value := range []string{service.Description, service.Name} {
+	for _, value := range []string{service.PriceText, service.Description, service.Name} {
 		matches := serviceMoneyRE.FindAllStringSubmatch(value, -1)
 		if len(matches) == 1 {
 			amount, ok := decimalMoneyToCents(matches[0][1])

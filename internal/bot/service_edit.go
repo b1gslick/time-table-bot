@@ -13,16 +13,29 @@ import (
 )
 
 const (
-	serviceEditFieldPrice     = "price"
-	serviceEditFieldDuration  = "duration"
-	serviceEditFieldName      = "name"
-	serviceEditFieldSections  = "sections"
-	serviceEditFieldAll       = "all"
-	serviceEditCallbackPrefix = "serviceedit:"
-	serviceEditMaxButtonRunes = 48
+	serviceEditFieldPrice       = "price"
+	serviceEditFieldDescription = "description"
+	serviceEditFieldDuration    = "duration"
+	serviceEditFieldName        = "name"
+	serviceEditFieldCategory    = "category"
+	serviceEditFieldSubcategory = "subcategory"
+	serviceEditFieldSections    = "sections"
+	serviceEditFieldAll         = "all"
+	serviceEditCallbackPrefix   = "serviceedit:"
+	serviceEditMaxButtonRunes   = 48
 )
 
 var serviceEditDurationValueRE = regexp.MustCompile(`(?i)(\d+(?:[.,]\d+)?)\s*(мин(?:ут[а-я]*)?|minutes?|mins?|час(?:а|ов)?|hours?|hrs?)`)
+
+var serviceCurrencyReplacements = []struct {
+	re *regexp.Regexp
+	to string
+}{
+	{regexp.MustCompile(`(?i)(евро|eur)`), "€"},
+	{regexp.MustCompile(`(?i)(доллар(?:а|ов|ы)?|usd|dollars?)`), "$"},
+	{regexp.MustCompile(`(?i)(фунт(?:а|ов|ы)?|gbp|pounds?)`), "£"},
+	{regexp.MustCompile(`(?i)(руб(?:ль|ля|лей|ли|\.)?|rub)`), "₽"},
+}
 
 func (b *Bot) handleServiceEditCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
 	user, err := b.userFromCallback(ctx, cb)
@@ -51,6 +64,24 @@ func (b *Bot) handleServiceEditCallback(ctx context.Context, cb *telegram.Callba
 		}
 		return b.selectServiceForEdit(ctx, cb.Message.Chat.ID, user, state, index)
 	}
+	if action == "fields" {
+		services, listErr := b.store.ListServices(ctx, user.TelegramID)
+		if listErr != nil || state.ServiceIndex <= 0 || state.ServiceIndex > len(services) {
+			return b.sendText(ctx, cb.Message.Chat.ID, tr(user.Language, "service_edit_bad_index"))
+		}
+		state.ServiceEditField = ""
+		state.Step = conversationStepEditSvcData
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, cb.Message.Chat.ID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, formatServiceEditCard(user.Language, state.ServiceIndex, services[state.ServiceIndex-1]), serviceEditFieldKeyboard(user.Language))
+	}
+	if rawIndex, ok := strings.CutPrefix(action, "category:"); ok {
+		return b.applyServiceEditChoice(ctx, cb.Message.Chat.ID, user, state, serviceEditFieldCategory, rawIndex)
+	}
+	if rawIndex, ok := strings.CutPrefix(action, "subcategory:"); ok {
+		return b.applyServiceEditChoice(ctx, cb.Message.Chat.ID, user, state, serviceEditFieldSubcategory, rawIndex)
+	}
 	if field, ok := strings.CutPrefix(action, "field:"); ok && validServiceEditField(field) {
 		state.ServiceEditField = field
 		state.Step = conversationStepEditSvcData
@@ -61,7 +92,7 @@ func (b *Bot) handleServiceEditCallback(ctx context.Context, cb *telegram.Callba
 		if listErr != nil || state.ServiceIndex <= 0 || state.ServiceIndex > len(services) {
 			return b.sendText(ctx, cb.Message.Chat.ID, tr(user.Language, "service_edit_bad_index"))
 		}
-		return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, serviceEditFieldPrompt(user.Language, field, services[state.ServiceIndex-1]), serviceEditInputKeyboard(user.Language))
+		return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, serviceEditFieldPrompt(user.Language, field, services[state.ServiceIndex-1]), serviceEditFieldInputKeyboard(user.Language, field, services, services[state.ServiceIndex-1]))
 	}
 	return nil
 }
@@ -96,9 +127,12 @@ func (b *Bot) applyServiceEditInput(ctx context.Context, chatID int64, user User
 	path := serviceViewPath(current)
 	duration := current.DurationMin
 	description := current.Description
+	priceText := current.PriceText
 
 	switch state.ServiceEditField {
 	case serviceEditFieldPrice:
+		priceText = normalizeServicePrice(normalizeOptionalText(text))
+	case serviceEditFieldDescription:
 		description = normalizeOptionalText(text)
 	case serviceEditFieldDuration:
 		value, ok := parseServiceEditDuration(text)
@@ -112,6 +146,22 @@ func (b *Bot) applyServiceEditInput(ctx context.Context, chatID int64, user User
 			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_edit_name_bad"), serviceEditInputKeyboard(user.Language))
 		}
 		path = servicePath(current.Category, current.Subcategory, name)
+	case serviceEditFieldCategory:
+		category, ok := parseServiceEditSectionName(text)
+		if !ok {
+			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_edit_category_bad"), serviceEditFieldInputKeyboard(user.Language, serviceEditFieldCategory, services, current))
+		}
+		subcategory := current.Subcategory
+		if !strings.EqualFold(category, current.Category) {
+			subcategory = ""
+		}
+		path = servicePath(category, subcategory, current.Name)
+	case serviceEditFieldSubcategory:
+		subcategory, ok := parseServiceEditSectionName(text)
+		if !ok {
+			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_edit_subcategory_bad"), serviceEditFieldInputKeyboard(user.Language, serviceEditFieldSubcategory, services, current))
+		}
+		path = servicePath(current.Category, subcategory, current.Name)
 	case serviceEditFieldSections:
 		category, subcategory, ok := parseServiceEditSections(text)
 		if !ok {
@@ -119,28 +169,41 @@ func (b *Bot) applyServiceEditInput(ctx context.Context, chatID int64, user User
 		}
 		path = servicePath(category, subcategory, current.Name)
 	case serviceEditFieldAll, "":
-		newDuration, newPath, newDescription, hasDescription, ok := parseServiceEditDataPatch(text)
+		newDuration, newPath, newPrice, hasPrice, ok := parseServiceEditDataPatch(text)
 		if !ok {
 			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_edit_ask_data"), serviceEditInputKeyboard(user.Language))
 		}
 		duration = newDuration
 		path = newPath
-		if hasDescription {
-			description = newDescription
+		if hasPrice {
+			priceText = normalizeServicePrice(newPrice)
 		}
 	default:
 		return b.sendTextWithKeyboard(ctx, chatID, formatServiceEditCard(user.Language, state.ServiceIndex, current), serviceEditFieldKeyboard(user.Language))
 	}
 
-	if err := b.store.EditServiceByIndex(ctx, user.TelegramID, state.ServiceIndex, path, duration, description); err != nil {
+	return b.saveServiceEdit(ctx, chatID, user, state, path, duration, description, priceText)
+}
+
+func (b *Bot) saveServiceEdit(ctx context.Context, chatID int64, user UserRecord, state ConversationState, path string, duration int, description, priceText string) error {
+	if err := b.store.EditServiceDetailsByIndex(ctx, user.TelegramID, state.ServiceIndex, path, duration, description, normalizeServicePrice(priceText)); err != nil {
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 			return b.sendText(ctx, chatID, tr(user.Language, "service_edit_bad_index"))
 		}
 		b.logger.Printf("interactive service edit failed admin=%d index=%d duration=%d name=%q: %v", user.TelegramID, state.ServiceIndex, duration, path, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_failed"))
 	}
-	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_edit_ok", state.ServiceIndex), serviceEditDoneKeyboard(user.Language))
+	state.ServiceEditField = ""
+	state.Step = conversationStepEditSvcData
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil || state.ServiceIndex <= 0 || state.ServiceIndex > len(services) {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_ok", state.ServiceIndex))
+	}
+	message := tr(user.Language, "service_edit_ok", state.ServiceIndex) + "\n\n" + formatServiceEditCard(user.Language, state.ServiceIndex, services[state.ServiceIndex-1])
+	return b.sendTextWithKeyboard(ctx, chatID, message, serviceEditFieldKeyboard(user.Language))
 }
 
 func parseServiceEditDuration(text string) (int, bool) {
@@ -199,6 +262,22 @@ func parseServiceEditSections(text string) (string, string, bool) {
 	return category, subcategory, true
 }
 
+func parseServiceEditSectionName(text string) (string, bool) {
+	value := normalizeOptionalText(text)
+	if strings.Contains(value, ">") {
+		return "", false
+	}
+	return value, true
+}
+
+func normalizeServicePrice(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	for _, replacement := range serviceCurrencyReplacements {
+		text = replacement.re.ReplaceAllString(text, replacement.to)
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
 func servicePath(category, subcategory, name string) string {
 	parts := make([]string, 0, 3)
 	for _, part := range []string{category, subcategory, name} {
@@ -211,7 +290,8 @@ func servicePath(category, subcategory, name string) string {
 
 func validServiceEditField(field string) bool {
 	switch field {
-	case serviceEditFieldPrice, serviceEditFieldDuration, serviceEditFieldName, serviceEditFieldSections, serviceEditFieldAll:
+	case serviceEditFieldPrice, serviceEditFieldDescription, serviceEditFieldDuration, serviceEditFieldName,
+		serviceEditFieldCategory, serviceEditFieldSubcategory, serviceEditFieldSections, serviceEditFieldAll:
 		return true
 	default:
 		return false
@@ -223,21 +303,43 @@ func formatServiceEditCard(lang string, index int, service ServiceView) string {
 	if description == "" {
 		description = tr(lang, "service_edit_empty")
 	}
-	return tr(lang, "service_edit_card", index, serviceViewPath(service), service.DurationMin, description)
+	price := normalizeServicePrice(service.PriceText)
+	if price == "" {
+		price = tr(lang, "service_edit_empty")
+	}
+	return tr(lang, "service_edit_card", index, serviceViewPath(service), service.DurationMin, price, description)
 }
 
 func serviceEditFieldPrompt(lang, field string, service ServiceView) string {
 	switch field {
 	case serviceEditFieldPrice:
-		current := strings.TrimSpace(service.Description)
+		current := normalizeServicePrice(service.PriceText)
 		if current == "" {
 			current = tr(lang, "service_edit_empty")
 		}
 		return tr(lang, "service_edit_price_ask", current)
+	case serviceEditFieldDescription:
+		current := strings.TrimSpace(service.Description)
+		if current == "" {
+			current = tr(lang, "service_edit_empty")
+		}
+		return tr(lang, "service_edit_description_ask", current)
 	case serviceEditFieldDuration:
 		return tr(lang, "service_edit_duration_ask", service.DurationMin)
 	case serviceEditFieldName:
 		return tr(lang, "service_edit_name_ask", service.Name)
+	case serviceEditFieldCategory:
+		category := strings.TrimSpace(service.Category)
+		if category == "" {
+			category = tr(lang, "service_edit_empty")
+		}
+		return tr(lang, "service_edit_category_ask", category)
+	case serviceEditFieldSubcategory:
+		subcategory := strings.TrimSpace(service.Subcategory)
+		if subcategory == "" {
+			subcategory = tr(lang, "service_edit_empty")
+		}
+		return tr(lang, "service_edit_subcategory_ask", subcategory)
 	case serviceEditFieldSections:
 		sections := servicePath(service.Category, service.Subcategory, "")
 		if sections == "" {
@@ -267,21 +369,118 @@ func serviceEditFieldKeyboard(lang string) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
 		{
 			{Text: tr(lang, "service_edit_field_price"), CallbackData: "serviceedit:field:price"},
-			{Text: tr(lang, "service_edit_field_duration"), CallbackData: "serviceedit:field:duration"},
+			{Text: tr(lang, "service_edit_field_description"), CallbackData: "serviceedit:field:description"},
 		},
 		{
+			{Text: tr(lang, "service_edit_field_duration"), CallbackData: "serviceedit:field:duration"},
 			{Text: tr(lang, "service_edit_field_name"), CallbackData: "serviceedit:field:name"},
-			{Text: tr(lang, "service_edit_field_sections"), CallbackData: "serviceedit:field:sections"},
+		},
+		{
+			{Text: tr(lang, "service_edit_field_category"), CallbackData: "serviceedit:field:category"},
+			{Text: tr(lang, "service_edit_field_subcategory"), CallbackData: "serviceedit:field:subcategory"},
 		},
 		{{Text: tr(lang, "service_edit_field_all"), CallbackData: "serviceedit:field:all"}},
-		{{Text: tr(lang, "button_back"), CallbackData: "serviceedit:list"}},
+		{
+			{Text: tr(lang, "button_back"), CallbackData: "serviceedit:list"},
+			{Text: tr(lang, "service_edit_done"), CallbackData: "serviceedit:cancel"},
+		},
 	}}
 }
 
 func serviceEditInputKeyboard(lang string) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
-		{{Text: tr(lang, "button_back"), CallbackData: "serviceedit:list"}},
+		{{Text: tr(lang, "button_back"), CallbackData: "serviceedit:fields"}},
 	}}
+}
+
+func serviceEditFieldInputKeyboard(lang, field string, services []ServiceView, current ServiceView) *telegram.ReplyMarkup {
+	if field != serviceEditFieldCategory && field != serviceEditFieldSubcategory {
+		return serviceEditInputKeyboard(lang)
+	}
+	values := serviceEditCategoryValues(services)
+	prefix := "category:"
+	if field == serviceEditFieldSubcategory {
+		values = serviceEditSubcategoryValues(services, current.Category)
+		prefix = "subcategory:"
+	}
+	rows := make([][]telegram.InlineKeyboardButton, 0, len(values)+2)
+	for index, value := range values {
+		rows = append(rows, []telegram.InlineKeyboardButton{{Text: value, CallbackData: fmt.Sprintf("serviceedit:%s%d", prefix, index+1)}})
+	}
+	rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "service_edit_section_clear"), CallbackData: "serviceedit:" + prefix + "0"}})
+	rows = append(rows, []telegram.InlineKeyboardButton{{Text: tr(lang, "button_back"), CallbackData: "serviceedit:fields"}})
+	return &telegram.ReplyMarkup{InlineKeyboard: rows}
+}
+
+func serviceEditCategoryValues(services []ServiceView) []string {
+	return uniqueServiceEditValues(services, func(service ServiceView) string { return service.Category })
+}
+
+func serviceEditSubcategoryValues(services []ServiceView, category string) []string {
+	filtered := make([]ServiceView, 0, len(services))
+	for _, service := range services {
+		if strings.EqualFold(strings.TrimSpace(service.Category), strings.TrimSpace(category)) {
+			filtered = append(filtered, service)
+		}
+	}
+	return uniqueServiceEditValues(filtered, func(service ServiceView) string { return service.Subcategory })
+}
+
+func uniqueServiceEditValues(services []ServiceView, value func(ServiceView) string) []string {
+	values := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, service := range services {
+		item := strings.TrimSpace(value(service))
+		key := strings.ToLower(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, item)
+	}
+	return values
+}
+
+func (b *Bot) applyServiceEditChoice(ctx context.Context, chatID int64, user UserRecord, state ConversationState, field, rawIndex string) error {
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil || state.ServiceIndex <= 0 || state.ServiceIndex > len(services) {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_bad_index"))
+	}
+	index, err := strconv.Atoi(rawIndex)
+	if err != nil || index < 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_expired"))
+	}
+	current := services[state.ServiceIndex-1]
+	path := serviceViewPath(current)
+	if field == serviceEditFieldCategory {
+		values := serviceEditCategoryValues(services)
+		category := ""
+		if index > 0 {
+			if index > len(values) {
+				return b.sendText(ctx, chatID, tr(user.Language, "service_edit_expired"))
+			}
+			category = values[index-1]
+		}
+		subcategory := current.Subcategory
+		if !strings.EqualFold(category, current.Category) {
+			subcategory = ""
+		}
+		path = servicePath(category, subcategory, current.Name)
+	} else {
+		values := serviceEditSubcategoryValues(services, current.Category)
+		subcategory := ""
+		if index > 0 {
+			if index > len(values) {
+				return b.sendText(ctx, chatID, tr(user.Language, "service_edit_expired"))
+			}
+			subcategory = values[index-1]
+		}
+		path = servicePath(current.Category, subcategory, current.Name)
+	}
+	return b.saveServiceEdit(ctx, chatID, user, state, path, current.DurationMin, current.Description, current.PriceText)
 }
 
 func serviceEditDoneKeyboard(lang string) *telegram.ReplyMarkup {

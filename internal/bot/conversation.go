@@ -53,8 +53,12 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 		return true, b.conversationAddServiceName(ctx, chatID, user, state, text)
 	case conversationStepAddSvcDur:
 		return true, b.conversationAddServiceDuration(ctx, chatID, user, state, text)
+	case conversationStepAddSvcPrice:
+		return true, b.conversationAddServicePrice(ctx, chatID, user, state, text)
 	case conversationStepAddSvcDesc:
 		return true, b.conversationAddServiceDescription(ctx, chatID, user, state, text)
+	case conversationStepAddSvcConfirm:
+		return true, b.showServiceAddReview(ctx, chatID, user, state)
 	case conversationStepEditSvc:
 		return true, b.conversationEditServiceIndex(ctx, chatID, user, state, text)
 	case conversationStepEditSvcData:
@@ -588,7 +592,13 @@ func (b *Bot) conversationAddServiceCategory(ctx context.Context, chatID int64, 
 	if !ok {
 		return b.askServiceAddCategory(ctx, chatID, user, state)
 	}
+	if !strings.EqualFold(category, state.Category) {
+		state.Subcategory = ""
+	}
 	state.Category = category
+	if state.ServiceEditField == "add_review" {
+		return b.showServiceAddReview(ctx, chatID, user, state)
+	}
 	state.Step = conversationStepAddSvcSub
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
@@ -609,11 +619,14 @@ func (b *Bot) conversationAddServiceSubcategory(ctx context.Context, chatID int6
 		return b.askServiceAddSubcategory(ctx, chatID, user, state)
 	}
 	state.Subcategory = subcategory
+	if state.ServiceEditField == "add_review" {
+		return b.showServiceAddReview(ctx, chatID, user, state)
+	}
 	state.Step = conversationStepAddSvcName
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
-	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_name"))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_name"), serviceAddInputKeyboard(user.Language))
 }
 
 func (b *Bot) conversationAddServiceName(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -623,14 +636,17 @@ func (b *Bot) conversationAddServiceName(ctx context.Context, chatID int64, user
 	}
 	name := strings.TrimSpace(text)
 	if name == "" || name == "-" {
-		return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_name"))
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_name"), serviceAddInputKeyboard(user.Language))
 	}
 	state.ServiceName = name
+	if state.ServiceEditField == "add_review" {
+		return b.showServiceAddReview(ctx, chatID, user, state)
+	}
 	state.Step = conversationStepAddSvcDur
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
-	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_duration"))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_duration"), serviceAddInputKeyboard(user.Language))
 }
 
 func (b *Bot) conversationAddServiceDuration(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -638,16 +654,35 @@ func (b *Bot) conversationAddServiceDuration(ctx context.Context, chatID int64, 
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
 	}
-	duration, err := strconv.Atoi(strings.TrimSpace(text))
-	if err != nil || duration <= 0 {
-		return b.sendText(ctx, chatID, tr(user.Language, "duration_bad"))
+	duration, ok := parseServiceEditDuration(text)
+	if !ok {
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "duration_bad"), serviceAddInputKeyboard(user.Language))
 	}
 	state.ServiceIndex = duration
+	if state.ServiceEditField == "add_review" {
+		return b.showServiceAddReview(ctx, chatID, user, state)
+	}
+	state.Step = conversationStepAddSvcPrice
+	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+	}
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_price"), serviceAddInputKeyboard(user.Language))
+}
+
+func (b *Bot) conversationAddServicePrice(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
+	if !isAdmin(user.Role) {
+		_ = b.store.ClearConversationState(ctx, user.TelegramID)
+		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
+	}
+	state.ServicePriceText = normalizeServicePrice(normalizeOptionalText(text))
+	if state.ServiceEditField == "add_review" {
+		return b.showServiceAddReview(ctx, chatID, user, state)
+	}
 	state.Step = conversationStepAddSvcDesc
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
-	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ask_description"))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_description"), serviceAddInputKeyboard(user.Language))
 }
 
 func (b *Bot) conversationAddServiceDescription(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {
@@ -655,15 +690,19 @@ func (b *Bot) conversationAddServiceDescription(ctx context.Context, chatID int6
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return b.sendText(ctx, chatID, tr(user.Language, "admin_only"))
 	}
+	state.ServiceDescription = normalizeOptionalText(text)
+	return b.showServiceAddReview(ctx, chatID, user, state)
+}
+
+func (b *Bot) saveServiceAdd(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
 	path := servicePathFromState(state)
-	description := normalizeOptionalText(text)
-	if err := b.store.AddService(ctx, user.TelegramID, path, state.ServiceIndex, description); err != nil {
+	if err := b.store.AddServiceDetails(ctx, user.TelegramID, path, state.ServiceIndex, state.ServiceDescription, normalizeServicePrice(state.ServicePriceText)); err != nil {
 		b.logger.Printf("interactive service add failed admin=%d path=%q duration=%d: %v", user.TelegramID, path, state.ServiceIndex, err)
 		return b.sendText(ctx, chatID, tr(user.Language, "service_add_failed"))
 	}
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	b.logger.Printf("interactive service added admin=%d path=%q duration=%d", user.TelegramID, path, state.ServiceIndex)
-	return b.sendText(ctx, chatID, tr(user.Language, "service_add_ok", path, state.ServiceIndex))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ok", path, state.ServiceIndex), servicesMenuKeyboard(user.Language))
 }
 
 func (b *Bot) conversationDeleteService(ctx context.Context, chatID int64, user UserRecord, text string) error {
@@ -1742,6 +1781,13 @@ func formatServicesList(lang string, services []ServiceView, includePath bool) s
 			sb.WriteString(service.Description)
 			sb.WriteString("\n")
 		}
+		if price := normalizeServicePrice(service.PriceText); price != "" {
+			sb.WriteString("   ")
+			sb.WriteString(tr(lang, "service_edit_field_price"))
+			sb.WriteString(": ")
+			sb.WriteString(price)
+			sb.WriteString("\n")
+		}
 	}
 	return sb.String()
 }
@@ -1817,13 +1863,7 @@ func (b *Bot) askServiceAddCategory(ctx context.Context, chatID int64, user User
 		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
 	}
 	categories := serviceCategories(services)
-	var sb strings.Builder
-	sb.WriteString(tr(user.Language, "service_add_ask_category"))
-	if len(categories) > 0 {
-		sb.WriteString("\n")
-		sb.WriteString(formatCategories(user.Language, categories))
-	}
-	return b.sendText(ctx, chatID, sb.String())
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_category"), serviceAddCategoryKeyboard(user.Language, categories))
 }
 
 func (b *Bot) askServiceAddSubcategory(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
@@ -1836,13 +1876,7 @@ func (b *Bot) askServiceAddSubcategory(ctx context.Context, chatID int64, user U
 		return b.sendText(ctx, chatID, tr(user.Language, "services_list_failed"))
 	}
 	subcategories := serviceSubcategories(services, state.Category)
-	var sb strings.Builder
-	sb.WriteString(tr(user.Language, "service_add_ask_subcategory"))
-	if len(subcategories) > 0 {
-		sb.WriteString("\n")
-		sb.WriteString(formatSubcategories(user.Language, subcategories))
-	}
-	return b.sendText(ctx, chatID, sb.String())
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "service_add_ask_subcategory"), serviceAddSubcategoryKeyboard(user.Language, subcategories))
 }
 
 func (b *Bot) resolveAdminServiceCategory(ctx context.Context, user UserRecord, text string) (string, bool, error) {

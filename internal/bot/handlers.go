@@ -33,7 +33,9 @@ const (
 	conversationStepAddSvcSub        = "admin_service_subcategory"
 	conversationStepAddSvcName       = "admin_service_name"
 	conversationStepAddSvcDur        = "admin_service_duration"
+	conversationStepAddSvcPrice      = "admin_service_price"
 	conversationStepAddSvcDesc       = "admin_service_description"
+	conversationStepAddSvcConfirm    = "admin_service_confirm"
 	conversationStepEditSvc          = "admin_service_edit"
 	conversationStepEditSvcData      = "admin_service_edit_data"
 	conversationStepDeleteSvc        = "admin_service_delete"
@@ -272,6 +274,9 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	}
 	if strings.HasPrefix(cb.Data, "serviceedit:") {
 		return b.handleServiceEditCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "serviceadd:") {
+		return b.handleServiceAddCallback(ctx, cb)
 	}
 	if strings.HasPrefix(cb.Data, "financeentry:") {
 		return b.handleFinanceEntryCallback(ctx, cb)
@@ -703,6 +708,10 @@ func formatStartServices(lang string, services []ServiceView, limit int) string 
 		if description := strings.Join(strings.Fields(service.Description), " "); description != "" {
 			sb.WriteString(" — ")
 			sb.WriteString(description)
+		}
+		if price := normalizeServicePrice(service.PriceText); price != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(price)
 		}
 		if service.AdminName != "" {
 			sb.WriteString(" · @")
@@ -1260,7 +1269,7 @@ func (b *Bot) handleServiceAdd(ctx context.Context, chatID int64, actor UserReco
 	if name == "" {
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_usage"))
 	}
-	if err := b.store.AddService(ctx, actor.TelegramID, name, duration, description); err != nil {
+	if err := b.store.AddService(ctx, actor.TelegramID, name, duration, normalizeServicePrice(description)); err != nil {
 		b.logger.Printf("service add failed admin=%d duration=%d name=%q: %v", actor.TelegramID, duration, name, err)
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_add_failed"))
 	}
@@ -1303,11 +1312,11 @@ func (b *Bot) handleServiceEdit(ctx context.Context, chatID int64, actor UserRec
 		return b.sendText(ctx, chatID, tr(actor.Language, "duration_bad"))
 	}
 	name := strings.TrimSpace(strings.Join(parts[3:], " "))
-	name, description, hasDescription := splitServiceNameDescriptionPatch(name)
+	name, priceText, hasPrice := splitServiceNameDescriptionPatch(name)
 	if name == "" {
 		return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_usage"))
 	}
-	if !hasDescription {
+	if !hasPrice {
 		services, listErr := b.store.ListServices(ctx, actor.TelegramID)
 		if listErr != nil {
 			return b.sendText(ctx, chatID, tr(actor.Language, "services_list_failed"))
@@ -1315,9 +1324,9 @@ func (b *Bot) handleServiceEdit(ctx context.Context, chatID int64, actor UserRec
 		if index > len(services) {
 			return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_bad_index"))
 		}
-		description = services[index-1].Description
+		priceText = services[index-1].PriceText
 	}
-	if err := b.store.EditServiceByIndex(ctx, actor.TelegramID, index, name, duration, description); err != nil {
+	if err := b.store.EditServiceByIndex(ctx, actor.TelegramID, index, name, duration, normalizeServicePrice(priceText)); err != nil {
 		b.logger.Printf("service edit failed admin=%d index=%d duration=%d name=%q: %v", actor.TelegramID, index, duration, name, err)
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 			return b.sendText(ctx, chatID, tr(actor.Language, "service_edit_bad_index"))

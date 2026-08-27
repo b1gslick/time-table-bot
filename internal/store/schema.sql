@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS admin_services (
     subcategory TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    price_text TEXT NOT NULL DEFAULT '',
     duration_min INTEGER NOT NULL CHECK (duration_min > 0),
     price_cents BIGINT NOT NULL DEFAULT 0 CHECK (price_cents >= 0),
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -38,6 +39,28 @@ ALTER TABLE admin_services
 
 ALTER TABLE admin_services
     ADD COLUMN IF NOT EXISTS subcategory TEXT NOT NULL DEFAULT '';
+
+-- Older builds stored free-form prices in description. Perform this migration
+-- only when the new column is first introduced, so later descriptions that
+-- happen to mention a price are never moved on restart.
+DO $service_price_migration$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'admin_services'
+          AND column_name = 'price_text'
+    ) THEN
+        ALTER TABLE admin_services
+            ADD COLUMN price_text TEXT NOT NULL DEFAULT '';
+        UPDATE admin_services
+        SET price_text = description,
+            description = ''
+        WHERE description ~* '[0-9]+([.,][0-9]+)?[[:space:]]*(€|EUR|евро|\$|USD|доллар)';
+    END IF;
+END
+$service_price_migration$;
 
 ALTER TABLE admin_services
     DROP CONSTRAINT IF EXISTS admin_services_admin_user_id_name_key;

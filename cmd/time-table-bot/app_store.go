@@ -384,6 +384,10 @@ func (s *appStore) SetCategoryOrder(ctx context.Context, adminTelegramID int64, 
 }
 
 func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error {
+	return s.AddServiceDetails(ctx, adminTelegramID, name, durationMin, "", priceText)
+}
+
+func (s *appStore) AddServiceDetails(ctx context.Context, adminTelegramID int64, name string, durationMin int, description, priceText string) error {
 	if strings.TrimSpace(name) == "" || durationMin <= 0 {
 		return store.ErrInvalidArgument
 	}
@@ -400,7 +404,8 @@ func (s *appStore) AddService(ctx context.Context, adminTelegramID int64, name s
 		Category:    category,
 		Subcategory: subcategory,
 		Name:        serviceName,
-		Description: strings.TrimSpace(priceText),
+		Description: strings.TrimSpace(description),
+		PriceText:   strings.TrimSpace(priceText),
 		DurationMin: durationMin,
 		IsActive:    true,
 	})
@@ -412,8 +417,8 @@ func (s *appStore) ReplaceServices(ctx context.Context, adminTelegramID int64, s
 		return store.ErrInvalidArgument
 	}
 	type catalogRow struct {
-		category, subcategory, name, description string
-		durationMin                              int
+		category, subcategory, name, priceText string
+		durationMin                            int
 	}
 	rows := make([]catalogRow, 0, len(services))
 	categories := make([]string, 0)
@@ -431,7 +436,7 @@ func (s *appStore) ReplaceServices(ctx context.Context, adminTelegramID int64, s
 		seenServices[key] = struct{}{}
 		rows = append(rows, catalogRow{
 			category: category, subcategory: subcategory, name: name,
-			description: strings.TrimSpace(service.PriceText), durationMin: service.DurationMin,
+			priceText: strings.TrimSpace(service.PriceText), durationMin: service.DurationMin,
 		})
 		if category != "" {
 			categoryKey := strings.ToLower(category)
@@ -466,14 +471,15 @@ WHERE admin_user_id = $1 AND is_active = TRUE;
 	}
 	for _, row := range rows {
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO admin_services (admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active)
-VALUES ($1, $2, $3, $4, $5, $6, 0, TRUE)
+INSERT INTO admin_services (admin_user_id, category, subcategory, name, description, price_text, duration_min, price_cents, is_active)
+VALUES ($1, $2, $3, $4, '', $5, $6, 0, TRUE)
 ON CONFLICT(admin_user_id, category, subcategory, name, duration_min) DO UPDATE SET
 	description = EXCLUDED.description,
+	price_text = EXCLUDED.price_text,
 	price_cents = EXCLUDED.price_cents,
 	is_active = TRUE,
 	updated_at = NOW();
-`, adminID, row.category, row.subcategory, row.name, row.description, row.durationMin); err != nil {
+`, adminID, row.category, row.subcategory, row.name, row.priceText, row.durationMin); err != nil {
 			return err
 		}
 	}
@@ -532,6 +538,17 @@ WHERE id = $1 AND admin_user_id = $2 AND is_active = TRUE;
 }
 
 func (s *appStore) EditServiceByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, priceText string) error {
+	services, err := s.ListServices(ctx, adminTelegramID)
+	if err != nil {
+		return err
+	}
+	if index <= 0 || index > len(services) {
+		return store.ErrInvalidArgument
+	}
+	return s.EditServiceDetailsByIndex(ctx, adminTelegramID, index, name, durationMin, services[index-1].Description, priceText)
+}
+
+func (s *appStore) EditServiceDetailsByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, description, priceText string) error {
 	if index <= 0 || strings.TrimSpace(name) == "" || durationMin <= 0 {
 		return store.ErrInvalidArgument
 	}
@@ -549,10 +566,11 @@ SET category = $1,
     subcategory = $2,
     name = $3,
     description = $4,
-    duration_min = $5,
+    price_text = $5,
+    duration_min = $6,
     updated_at = NOW()
-WHERE id = $6 AND is_active = TRUE;
-`, category, subcategory, serviceName, strings.TrimSpace(priceText), durationMin, services[index-1].ID)
+WHERE id = $7 AND is_active = TRUE;
+`, category, subcategory, serviceName, strings.TrimSpace(description), strings.TrimSpace(priceText), durationMin, services[index-1].ID)
 	if err != nil {
 		return err
 	}
@@ -575,7 +593,7 @@ func (s *appStore) ListServices(ctx context.Context, telegramID int64) ([]bot.Se
 	}
 
 	query := `
-SELECT svc.id, COALESCE(a.username, ''), svc.category, svc.subcategory, svc.name, svc.description, svc.duration_min, svc.price_cents
+SELECT svc.id, COALESCE(a.username, ''), svc.category, svc.subcategory, svc.name, svc.description, svc.price_text, svc.duration_min, svc.price_cents
 FROM admin_services svc
 JOIN users a ON a.id = svc.admin_user_id
 WHERE svc.is_active = TRUE
@@ -596,7 +614,7 @@ WHERE svc.is_active = TRUE
 	var services []bot.ServiceView
 	for rows.Next() {
 		var item bot.ServiceView
-		if err := rows.Scan(&item.ID, &item.AdminName, &item.Category, &item.Subcategory, &item.Name, &item.Description, &item.DurationMin, &item.PriceCents); err != nil {
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.Category, &item.Subcategory, &item.Name, &item.Description, &item.PriceText, &item.DurationMin, &item.PriceCents); err != nil {
 			return nil, err
 		}
 		services = append(services, item)
@@ -3308,7 +3326,7 @@ func (s *appStore) servicesByIDs(ctx context.Context, ids []int64) ([]domain.Adm
 		args = append(args, id)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, admin_user_id, category, subcategory, name, description, duration_min, price_cents, is_active, created_at, updated_at
+SELECT id, admin_user_id, category, subcategory, name, description, price_text, duration_min, price_cents, is_active, created_at, updated_at
 FROM admin_services
 WHERE is_active = TRUE AND id IN (`+strings.Join(placeholders, ",")+`)
 ORDER BY array_position(ARRAY[`+strings.Join(placeholders, ",")+`]::bigint[], id);
@@ -3320,7 +3338,7 @@ ORDER BY array_position(ARRAY[`+strings.Join(placeholders, ",")+`]::bigint[], id
 	var out []domain.AdminService
 	for rows.Next() {
 		var service domain.AdminService
-		if err := rows.Scan(&service.ID, &service.AdminUserID, &service.Category, &service.Subcategory, &service.Name, &service.Description, &service.DurationMin, &service.PriceCents, &service.IsActive, &service.CreatedAt, &service.UpdatedAt); err != nil {
+		if err := rows.Scan(&service.ID, &service.AdminUserID, &service.Category, &service.Subcategory, &service.Name, &service.Description, &service.PriceText, &service.DurationMin, &service.PriceCents, &service.IsActive, &service.CreatedAt, &service.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, service)

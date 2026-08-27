@@ -48,10 +48,46 @@ func TestServiceEditKeyboardsGuideTargetedChange(t *testing.T) {
 		}
 	}
 	joined := strings.Join(callbacks, ",")
-	for _, want := range []string{"serviceedit:field:price", "serviceedit:field:duration", "serviceedit:field:name", "serviceedit:field:sections"} {
+	for _, want := range []string{
+		"serviceedit:field:price", "serviceedit:field:description", "serviceedit:field:duration",
+		"serviceedit:field:name", "serviceedit:field:category", "serviceedit:field:subcategory",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("field callbacks = %q, missing %q", joined, want)
 		}
+	}
+}
+
+func TestNormalizeServicePriceUsesCurrencySymbols(t *testing.T) {
+	tests := map[string]string{
+		"50 евро":      "50 €",
+		"20 Евро":      "20 €",
+		"15 EUR":       "15 €",
+		"30 долларов":  "30 $",
+		"25 USD":       "25 $",
+		"40 pounds":    "40 £",
+		"1 500 рублей": "1 500 ₽",
+	}
+	for input, want := range tests {
+		if got := normalizeServicePrice(input); got != want {
+			t.Errorf("normalizeServicePrice(%q) = %q; want %q", input, got, want)
+		}
+	}
+}
+
+func TestServiceEditCategoryKeyboardsUseExistingValues(t *testing.T) {
+	services := []ServiceView{
+		{Category: "Ногти", Subcategory: "Маникюр"},
+		{Category: "Ногти", Subcategory: "Педикюр"},
+		{Category: "Брови", Subcategory: "Коррекция"},
+	}
+	categoryKeyboard := serviceEditFieldInputKeyboard(LangRU, serviceEditFieldCategory, services, services[0])
+	if got := categoryKeyboard.InlineKeyboard[0][0].Text; got != "Ногти" {
+		t.Fatalf("first category = %q", got)
+	}
+	subcategoryKeyboard := serviceEditFieldInputKeyboard(LangRU, serviceEditFieldSubcategory, services, services[0])
+	if got := subcategoryKeyboard.InlineKeyboard[1][0].Text; got != "Педикюр" {
+		t.Fatalf("second subcategory = %q", got)
 	}
 }
 

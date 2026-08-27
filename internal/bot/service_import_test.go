@@ -27,7 +27,7 @@ func TestLooksLikeAdminServiceImport(t *testing.T) {
 }
 
 func TestEvaluateServiceImportMergesPartialUpdate(t *testing.T) {
-	services := []ServiceView{{Category: "Ногти", Subcategory: "Маникюр", Name: "Классический", DurationMin: 45, Description: "40 EUR"}}
+	services := []ServiceView{{Category: "Ногти", Subcategory: "Маникюр", Name: "Классический", DurationMin: 45, PriceText: "40 €"}}
 	items := evaluateServiceChanges(LangRU, []ServiceImportDraft{{
 		ServiceIndex: 1, PriceText: "50 EUR", ChangePrice: true, Confidence: 0.95,
 	}}, services)
@@ -35,10 +35,10 @@ func TestEvaluateServiceImportMergesPartialUpdate(t *testing.T) {
 		t.Fatalf("partial update = %#v", items)
 	}
 	got := items[0].Draft
-	if got.Name != "Классический" || got.DurationMin != 45 || got.PriceText != "50 EUR" || got.ServiceIndex != 1 {
+	if got.Name != "Классический" || got.DurationMin != 45 || got.PriceText != "50 €" || got.ServiceIndex != 1 {
 		t.Fatalf("merged update = %#v", got)
 	}
-	if !strings.Contains(formatServiceImportPreview(LangRU, items, false), "~ Ногти > Маникюр > Классический — 45 мин. — 50 EUR") {
+	if !strings.Contains(formatServiceImportPreview(LangRU, items, false), "~ Ногти > Маникюр > Классический — 45 мин. — 50 €") {
 		t.Fatalf("partial update preview = %q", formatServiceImportPreview(LangRU, items, false))
 	}
 }

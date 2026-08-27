@@ -84,6 +84,7 @@ type ServiceView struct {
 	Subcategory string
 	Name        string
 	Description string
+	PriceText   string
 	DurationMin int
 	PriceCents  int64
 }
@@ -292,6 +293,7 @@ type ConversationState struct {
 	Subcategory           string                `json:"subcategory,omitempty"`
 	ServiceName           string                `json:"service_name,omitempty"`
 	ServiceDescription    string                `json:"service_description,omitempty"`
+	ServicePriceText      string                `json:"service_price_text,omitempty"`
 	ServiceIndex          int                   `json:"service_index,omitempty"`
 	ServiceEditField      string                `json:"service_edit_field,omitempty"`
 	Username              string                `json:"username,omitempty"`
@@ -344,8 +346,10 @@ type Store interface {
 	SetProfileText(ctx context.Context, adminTelegramID int64, text string) error
 	SetCategoryOrder(ctx context.Context, adminTelegramID int64, categories []string) error
 	AddService(ctx context.Context, adminTelegramID int64, name string, durationMin int, priceText string) error
+	AddServiceDetails(ctx context.Context, adminTelegramID int64, name string, durationMin int, description, priceText string) error
 	ReplaceServices(ctx context.Context, adminTelegramID int64, services []ServiceCatalogEntry) error
 	EditServiceByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, priceText string) error
+	EditServiceDetailsByIndex(ctx context.Context, adminTelegramID int64, index int, name string, durationMin int, description, priceText string) error
 	DeleteServiceByIndex(ctx context.Context, adminTelegramID int64, index int) error
 	ListServices(ctx context.Context, telegramID int64) ([]ServiceView, error)
 	MasterIntro(ctx context.Context, telegramID int64) (string, error)

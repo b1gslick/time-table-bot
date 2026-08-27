@@ -51,6 +51,7 @@ type AdminService struct {
 	Subcategory string
 	Name        string
 	Description string
+	PriceText   string
 	DurationMin int
 	PriceCents  int64
 	IsActive    bool
