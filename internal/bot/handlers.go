@@ -702,25 +702,25 @@ func formatStartServices(lang string, services []ServiceView, limit int) string 
 		}
 		sb.WriteString("\n• ")
 		sb.WriteString(strings.Join(path, " / "))
-		sb.WriteString(" — ")
-		sb.WriteString(strconv.Itoa(service.DurationMin))
-		sb.WriteString(" ")
-		sb.WriteString(tr(lang, "minutes_short"))
-		if description := strings.Join(strings.Fields(service.Description), " "); description != "" {
-			sb.WriteString(" — ")
-			sb.WriteString(description)
-		}
 		price := normalizeServicePrice(service.PriceText)
 		if price == "" {
 			price = embeddedPrice
 		}
 		if price != "" {
-			sb.WriteString(" — ")
+			sb.WriteString(" · ")
 			sb.WriteString(price)
 		}
+		sb.WriteString(" · ")
+		sb.WriteString(strconv.Itoa(service.DurationMin))
+		sb.WriteString(" ")
+		sb.WriteString(tr(lang, "minutes_short"))
 		if service.AdminName != "" {
 			sb.WriteString(" · @")
 			sb.WriteString(service.AdminName)
+		}
+		if description := strings.Join(strings.Fields(service.Description), " "); description != "" {
+			sb.WriteString("\n  ")
+			sb.WriteString(description)
 		}
 	}
 	if len(services) > limit {

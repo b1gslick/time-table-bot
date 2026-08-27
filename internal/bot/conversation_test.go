@@ -110,17 +110,25 @@ func TestStartKeyboardsDoNotExposeCommands(t *testing.T) {
 
 func TestFormatStartServicesIsCompactAndCommandFree(t *testing.T) {
 	services := []ServiceView{
-		{Category: "Эпиляция", Subcategory: "Ноги", Name: "Голени", DurationMin: 45, Description: "35 EUR"},
+		{Category: "Эпиляция", Subcategory: "Ноги", Name: "Голени", DurationMin: 45, Description: "Удаление волос", PriceText: "35 EUR"},
 		{Category: "Эпиляция", Name: "Полный комплекс", DurationMin: 90, AdminName: "master"},
 	}
 	got := formatStartServices(LangRU, services, 1)
-	for _, want := range []string{"Доступные услуги:", "• Эпиляция / Ноги / Голени — 45 мин. — 35 EUR", "И еще услуг: 1"} {
+	for _, want := range []string{"Доступные услуги:", "• Эпиляция / Ноги / Голени · 35 € · 45 мин.\n  Удаление волос", "И еще услуг: 1"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("start services = %q, missing %q", got, want)
 		}
 	}
 	if strings.Contains(got, "/schedule") || strings.Contains(got, "/book") {
 		t.Fatalf("start services exposes commands: %q", got)
+	}
+}
+
+func TestFormatClientServicesShowsPriceAndDurationInline(t *testing.T) {
+	services := []ServiceView{{Name: "Только тело", DurationMin: 60, PriceText: "70 евро", Description: "Эндосфера тела"}}
+	got := formatServicesList(LangRU, services, false)
+	if !strings.Contains(got, "1. Только тело · 70 € · 60 мин.\n   Эндосфера тела") {
+		t.Fatalf("client services = %q", got)
 	}
 }
 

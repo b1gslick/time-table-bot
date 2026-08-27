@@ -1767,30 +1767,26 @@ func formatServicesList(lang string, services []ServiceView, includePath bool) s
 		sb.WriteString(". ")
 		name, embeddedPrice := splitTrailingServicePrice(service.Name)
 		sb.WriteString(name)
-		sb.WriteString(" - ")
-		sb.WriteString(strconv.Itoa(service.DurationMin))
-		sb.WriteString(" ")
-		sb.WriteString(tr(lang, "minutes_short"))
-		if service.AdminName != "" {
-			sb.WriteString(" (@")
-			sb.WriteString(service.AdminName)
-			sb.WriteString(")")
-		}
-		sb.WriteString("\n")
-		if service.Description != "" {
-			sb.WriteString("   ")
-			sb.WriteString(service.Description)
-			sb.WriteString("\n")
-		}
 		price := normalizeServicePrice(service.PriceText)
 		if price == "" {
 			price = embeddedPrice
 		}
 		if price != "" {
-			sb.WriteString("   ")
-			sb.WriteString(tr(lang, "service_edit_field_price"))
-			sb.WriteString(": ")
+			sb.WriteString(" · ")
 			sb.WriteString(price)
+		}
+		sb.WriteString(" · ")
+		sb.WriteString(strconv.Itoa(service.DurationMin))
+		sb.WriteString(" ")
+		sb.WriteString(tr(lang, "minutes_short"))
+		if service.AdminName != "" {
+			sb.WriteString(" · @")
+			sb.WriteString(service.AdminName)
+		}
+		sb.WriteString("\n")
+		if description := strings.Join(strings.Fields(service.Description), " "); description != "" {
+			sb.WriteString("   ")
+			sb.WriteString(description)
 			sb.WriteString("\n")
 		}
 	}
