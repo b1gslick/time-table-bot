@@ -1765,7 +1765,8 @@ func formatServicesList(lang string, services []ServiceView, includePath bool) s
 		}
 		sb.WriteString(strconv.Itoa(i + 1))
 		sb.WriteString(". ")
-		sb.WriteString(service.Name)
+		name, embeddedPrice := splitTrailingServicePrice(service.Name)
+		sb.WriteString(name)
 		sb.WriteString(" - ")
 		sb.WriteString(strconv.Itoa(service.DurationMin))
 		sb.WriteString(" ")
@@ -1781,7 +1782,11 @@ func formatServicesList(lang string, services []ServiceView, includePath bool) s
 			sb.WriteString(service.Description)
 			sb.WriteString("\n")
 		}
-		if price := normalizeServicePrice(service.PriceText); price != "" {
+		price := normalizeServicePrice(service.PriceText)
+		if price == "" {
+			price = embeddedPrice
+		}
+		if price != "" {
 			sb.WriteString("   ")
 			sb.WriteString(tr(lang, "service_edit_field_price"))
 			sb.WriteString(": ")
@@ -2396,7 +2401,8 @@ func serviceDisplayName(service ServiceView) string {
 	if service.Subcategory != "" {
 		parts = append(parts, service.Subcategory)
 	}
-	parts = append(parts, service.Name)
+	name, _ := splitTrailingServicePrice(service.Name)
+	parts = append(parts, name)
 	if len(parts) == 1 {
 		return parts[0]
 	}

@@ -31,11 +31,17 @@ var serviceCurrencyReplacements = []struct {
 	re *regexp.Regexp
 	to string
 }{
-	{regexp.MustCompile(`(?i)(евро|eur)`), "€"},
+	{regexp.MustCompile(`(?i)(евро|euros?|eur)`), "€"},
 	{regexp.MustCompile(`(?i)(доллар(?:а|ов|ы)?|usd|dollars?)`), "$"},
 	{regexp.MustCompile(`(?i)(фунт(?:а|ов|ы)?|gbp|pounds?)`), "£"},
 	{regexp.MustCompile(`(?i)(руб(?:ль|ля|лей|ли|\.)?|rub)`), "₽"},
 }
+
+var (
+	serviceBrokenEuroRE      = regexp.MustCompile(`(?i)€o\b`)
+	serviceCurrencySpacingRE = regexp.MustCompile(`(\d)\s*([€$£₽])`)
+	serviceTrailingPriceRE   = regexp.MustCompile(`(?i)^(.*\S)\s+(\d+(?:[.,]\d+)?\s*(?:€|\$|£|₽|евро|euros?|eur|доллар(?:а|ов|ы)?|dollars?|usd|фунт(?:а|ов|ы)?|pounds?|gbp|руб(?:ль|ля|лей|ли|\.)?|rub))\s*$`)
+)
 
 func (b *Bot) handleServiceEditCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
 	user, err := b.userFromCallback(ctx, cb)
@@ -124,10 +130,14 @@ func (b *Bot) applyServiceEditInput(ctx context.Context, chatID int64, user User
 		return b.sendText(ctx, chatID, tr(user.Language, "service_edit_bad_index"))
 	}
 	current := services[state.ServiceIndex-1]
-	path := serviceViewPath(current)
+	cleanName, embeddedPrice := splitTrailingServicePrice(current.Name)
+	path := servicePath(current.Category, current.Subcategory, cleanName)
 	duration := current.DurationMin
 	description := current.Description
 	priceText := current.PriceText
+	if strings.TrimSpace(priceText) == "" {
+		priceText = embeddedPrice
+	}
 
 	switch state.ServiceEditField {
 	case serviceEditFieldPrice:
@@ -272,10 +282,21 @@ func parseServiceEditSectionName(text string) (string, bool) {
 
 func normalizeServicePrice(text string) string {
 	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	text = serviceBrokenEuroRE.ReplaceAllString(text, "€")
 	for _, replacement := range serviceCurrencyReplacements {
 		text = replacement.re.ReplaceAllString(text, replacement.to)
 	}
+	text = serviceCurrencySpacingRE.ReplaceAllString(text, "$1 $2")
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func splitTrailingServicePrice(name string) (string, string) {
+	name = strings.Join(strings.Fields(strings.TrimSpace(name)), " ")
+	match := serviceTrailingPriceRE.FindStringSubmatch(name)
+	if len(match) != 3 {
+		return name, ""
+	}
+	return strings.TrimSpace(match[1]), normalizeServicePrice(match[2])
 }
 
 func servicePath(category, subcategory, name string) string {
@@ -304,6 +325,9 @@ func formatServiceEditCard(lang string, index int, service ServiceView) string {
 		description = tr(lang, "service_edit_empty")
 	}
 	price := normalizeServicePrice(service.PriceText)
+	if price == "" {
+		_, price = splitTrailingServicePrice(service.Name)
+	}
 	if price == "" {
 		price = tr(lang, "service_edit_empty")
 	}

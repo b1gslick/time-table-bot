@@ -693,8 +693,9 @@ func formatStartServices(lang string, services []ServiceView, limit int) string 
 	var sb strings.Builder
 	sb.WriteString(tr(lang, "start_services_header"))
 	for _, service := range services[:limit] {
+		name, embeddedPrice := splitTrailingServicePrice(service.Name)
 		path := make([]string, 0, 3)
-		for _, part := range []string{service.Category, service.Subcategory, service.Name} {
+		for _, part := range []string{service.Category, service.Subcategory, name} {
 			if part = strings.TrimSpace(part); part != "" {
 				path = append(path, part)
 			}
@@ -709,7 +710,11 @@ func formatStartServices(lang string, services []ServiceView, limit int) string 
 			sb.WriteString(" — ")
 			sb.WriteString(description)
 		}
-		if price := normalizeServicePrice(service.PriceText); price != "" {
+		price := normalizeServicePrice(service.PriceText)
+		if price == "" {
+			price = embeddedPrice
+		}
+		if price != "" {
 			sb.WriteString(" — ")
 			sb.WriteString(price)
 		}

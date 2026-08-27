@@ -254,6 +254,12 @@ func evaluateServiceChanges(lang string, drafts []ServiceImportDraft, services [
 			merged.Subcategory = cleanServiceImportPart(merged.Subcategory)
 			merged.Name = cleanServiceImportPart(merged.Name)
 			merged.PriceText = normalizeServicePrice(merged.PriceText)
+			if name, embeddedPrice := splitTrailingServicePrice(merged.Name); embeddedPrice != "" {
+				merged.Name = name
+				if merged.PriceText == "" {
+					merged.PriceText = embeddedPrice
+				}
+			}
 			item.Draft = merged
 			item.Path = serviceImportPath(merged)
 			switch {
@@ -273,6 +279,12 @@ func evaluateServiceChanges(lang string, drafts []ServiceImportDraft, services [
 		draft.Subcategory = cleanServiceImportPart(draft.Subcategory)
 		draft.Name = cleanServiceImportPart(draft.Name)
 		draft.PriceText = normalizeServicePrice(draft.PriceText)
+		if name, embeddedPrice := splitTrailingServicePrice(draft.Name); embeddedPrice != "" {
+			draft.Name = name
+			if draft.PriceText == "" {
+				draft.PriceText = embeddedPrice
+			}
+		}
 		item := evaluatedServiceImport{Draft: draft}
 		switch {
 		case draft.Name == "":
@@ -301,7 +313,8 @@ func serviceImportHasChanges(draft ServiceImportDraft) bool {
 }
 
 func serviceViewPath(service ServiceView) string {
-	return serviceImportPath(ServiceImportDraft{Category: service.Category, Subcategory: service.Subcategory, Name: service.Name})
+	name, _ := splitTrailingServicePrice(service.Name)
+	return serviceImportPath(ServiceImportDraft{Category: service.Category, Subcategory: service.Subcategory, Name: name})
 }
 
 func cleanServiceImportPart(value string) string {

@@ -63,6 +63,9 @@ func TestNormalizeServicePriceUsesCurrencySymbols(t *testing.T) {
 		"50 евро":      "50 €",
 		"20 Евро":      "20 €",
 		"15 EUR":       "15 €",
+		"70 Euro":      "70 €",
+		"70 Euros":     "70 €",
+		"70 €o":        "70 €",
 		"30 долларов":  "30 $",
 		"25 USD":       "25 $",
 		"40 pounds":    "40 £",
@@ -71,6 +74,24 @@ func TestNormalizeServicePriceUsesCurrencySymbols(t *testing.T) {
 	for input, want := range tests {
 		if got := normalizeServicePrice(input); got != want {
 			t.Errorf("normalizeServicePrice(%q) = %q; want %q", input, got, want)
+		}
+	}
+}
+
+func TestSplitTrailingServicePrice(t *testing.T) {
+	tests := []struct {
+		input string
+		name  string
+		price string
+	}{
+		{"Только тело 55€", "Только тело", "55 €"},
+		{"Тело и лицо 65 EUR", "Тело и лицо", "65 €"},
+		{"Массаж 90 минут", "Массаж 90 минут", ""},
+	}
+	for _, test := range tests {
+		name, price := splitTrailingServicePrice(test.input)
+		if name != test.name || price != test.price {
+			t.Errorf("splitTrailingServicePrice(%q) = %q, %q; want %q, %q", test.input, name, price, test.name, test.price)
 		}
 	}
 }
