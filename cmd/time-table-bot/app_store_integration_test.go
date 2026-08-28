@@ -904,7 +904,7 @@ func TestAppStore_DeleteServiceAndScheduleMonth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListServices after replace: %v", err)
 	}
-	if len(services) != 2 || services[0].Name != "Cut" || services[1].Name != "Color" || services[0].Description != "50 EUR" {
+	if len(services) != 2 || services[0].Name != "Cut" || services[1].Name != "Color" || services[0].PriceText != "50 EUR" || services[0].Description != "" {
 		t.Fatalf("services after replace = %#v", services)
 	}
 
@@ -1860,7 +1860,8 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	if err := app.AddService(ctx, 2001, "Эпиляция > Основное > Эпиляция", 90, ""); err != nil {
 		t.Fatalf("AddService: %v", err)
 	}
-	start := time.Date(2026, 8, 25, 10, 0, 0, 0, time.UTC)
+	futureDate := time.Now().UTC().AddDate(0, 0, 1)
+	start := time.Date(futureDate.Year(), futureDate.Month(), futureDate.Day(), 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 6; i++ {
 		slotStart := start.Add(time.Duration(i*15) * time.Minute)
 		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
@@ -1889,7 +1890,7 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
 		From: telegram.User{ID: 2001, Username: "master", FirstName: "Master"},
 		Chat: telegram.Chat{ID: 2001},
-		Text: "покажи график за 25.08.2026",
+		Text: "покажи график за " + start.Format("02.01.2006"),
 	}); err != nil {
 		t.Fatalf("HandleMessage: %v", err)
 	}
@@ -1903,7 +1904,10 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	if cfg.Width != 1600 || cfg.Height < 1000 {
 		t.Fatalf("week image = %dx%d, want compact full-week PNG", cfg.Width, cfg.Height)
 	}
-	if !strings.Contains(tg.photos[0].Caption, "24.08") || !strings.Contains(tg.photos[0].Caption, "30.08") {
+	daysSinceMonday := (int(start.Weekday()) + 6) % 7
+	weekStart := start.AddDate(0, 0, -daysSinceMonday)
+	weekEnd := weekStart.AddDate(0, 0, 6)
+	if !strings.Contains(tg.photos[0].Caption, weekStart.Format("02.01")) || !strings.Contains(tg.photos[0].Caption, weekEnd.Format("02.01")) {
 		t.Fatalf("caption = %q, want selected week", tg.photos[0].Caption)
 	}
 	if err := bookingBot.HandleMessage(ctx, &telegram.Message{
@@ -2031,7 +2035,7 @@ func TestBotE2E_StartOnboardingShowsServicesWithoutCommands(t *testing.T) {
 		t.Fatalf("client start messages = %d, want 1", len(tg.messages))
 	}
 	startMessage := tg.messages[0]
-	for _, want := range []string{"Анна, добро пожаловать!", "Доступные услуги:", "Эпиляция / Ноги / Голени", "35 EUR"} {
+	for _, want := range []string{"Анна, добро пожаловать!", "Доступные услуги:", "Эпиляция / Ноги / Голени", "35 €"} {
 		if !strings.Contains(startMessage.Text, want) {
 			t.Fatalf("client start = %q, missing %q", startMessage.Text, want)
 		}
