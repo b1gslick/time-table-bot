@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/image/font"
 )
 
 func TestParseLanguageChoice(t *testing.T) {
@@ -530,6 +532,67 @@ func TestRenderScheduleWeekImageProducesPNG(t *testing.T) {
 	}
 }
 
+func TestScheduleBookingLinesKeepContactVisible(t *testing.T) {
+	start := time.Date(2026, 6, 22, 11, 0, 0, 0, time.UTC)
+	booking := BookingView{
+		Alias: "анастасия балтаджи", Username: "+357991234567890",
+		ServiceNames: []string{"Эпиляция"}, StartAt: start, EndAt: start.Add(30 * time.Minute),
+	}
+
+	short := scheduleBookingLines(booking, 42)
+	wantShort := []string{"анастасия балтаджи", "Эпиляция", "+357991234567890"}
+	if len(short) != len(wantShort) {
+		t.Fatalf("short booking lines = %#v", short)
+	}
+	for i, text := range wantShort {
+		if short[i].Text != text {
+			t.Fatalf("short booking line %d = %q, want %q", i, short[i].Text, text)
+		}
+	}
+	tiny := scheduleBookingLines(booking, 24)
+	if len(tiny) != 1 || tiny[0].Text != "анастасия балтаджи" {
+		t.Fatalf("tiny booking lines = %#v, alias must have priority", tiny)
+	}
+	tall := scheduleBookingLines(booking, 90)
+	want := []string{"анастасия балтаджи", "Эпиляция", "+357991234567890"}
+	if len(tall) != len(want) {
+		t.Fatalf("tall booking lines = %#v", tall)
+	}
+	for i, text := range want {
+		if tall[i].Text != text {
+			t.Fatalf("tall booking line %d = %q, want %q", i, tall[i].Text, text)
+		}
+	}
+}
+
+func TestWrapScheduleServiceKeepsFullName(t *testing.T) {
+	fonts, err := newScheduleFontSet()
+	if err != nil {
+		t.Fatalf("newScheduleFontSet: %v", err)
+	}
+	defer fonts.close()
+
+	service := "Эндосфера — только тело и зона декольте"
+	lines := wrapFontText(service, 150, fonts.compact, 2)
+	if len(lines) != 2 || strings.Join(lines, " ") != service {
+		t.Fatalf("wrapped service = %#v, want full service name", lines)
+	}
+	for _, line := range lines {
+		if font.MeasureString(fonts.compact, line).Ceil() > 150 {
+			t.Fatalf("wrapped line %q is too wide", line)
+		}
+	}
+}
+
+func TestLargeScheduleBookingContentIsLowered(t *testing.T) {
+	if got := scheduleBookingContentTop(160, 21, 4); got != 38 {
+		t.Fatalf("large booking content top = %d, want 38", got)
+	}
+	if got := scheduleBookingContentTop(60, 18, 3); got != 2 {
+		t.Fatalf("compact booking content top = %d, want 2", got)
+	}
+}
+
 func TestPrivateScheduleImageDropsBookingDetailsAndUsesGray(t *testing.T) {
 	week := time.Date(2026, 6, 22, 0, 0, 0, 0, time.UTC)
 	slots := []ScheduleGridSlot{{
@@ -623,9 +686,9 @@ func TestAdminBookingsRangeParsesRelativeDays(t *testing.T) {
 func TestFormatAdminBookingsIncludesTimeClientAndService(t *testing.T) {
 	start := time.Date(2026, 6, 3, 10, 0, 0, 0, time.Local)
 	got := formatAdminBookings(LangRU, "Записи клиентов на 03.06.2026:\n", []BookingView{
-		{Username: "client", StartAt: start, EndAt: start.Add(time.Hour), ServiceNames: []string{"Маникюр"}},
+		{Alias: "лиза", Username: "client", StartAt: start, EndAt: start.Add(time.Hour), ServiceNames: []string{"Маникюр"}},
 	}, 30, true)
-	if !strings.Contains(got, "2026-06-03 10:00 - @client - Маникюр") {
+	if !strings.Contains(got, "2026-06-03 10:00 - лиза (@client) - Маникюр") {
 		t.Fatalf("formatted bookings = %q", got)
 	}
 }

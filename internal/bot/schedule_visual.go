@@ -20,8 +20,8 @@ import (
 )
 
 const (
-	scheduleImageWidth  = 1600
-	schedulePanelHeight = 1060
+	scheduleImageWidth  = 1920
+	schedulePanelHeight = 1400
 )
 
 var (
@@ -53,11 +53,16 @@ type scheduleSlotGroup struct {
 }
 
 type scheduleFontSet struct {
-	title font.Face
-	day   font.Face
-	time  font.Face
-	body  font.Face
-	small font.Face
+	title   font.Face
+	day     font.Face
+	time    font.Face
+	body    font.Face
+	small   font.Face
+	compact font.Face
+}
+
+type scheduleBookingLine struct {
+	Text string
 }
 
 func renderScheduleWeekImage(lang string, start time.Time, slots []ScheduleGridSlot, bookings []BookingView) ([]byte, error) {
@@ -366,11 +371,15 @@ func newScheduleFontSet() (scheduleFontSet, error) {
 		faces.close()
 		return scheduleFontSet{}, err
 	}
+	if faces.compact, err = newFace(regular, 9); err != nil {
+		faces.close()
+		return scheduleFontSet{}, err
+	}
 	return faces, nil
 }
 
 func (f scheduleFontSet) close() {
-	for _, face := range []font.Face{f.title, f.day, f.time, f.body, f.small} {
+	for _, face := range []font.Face{f.title, f.day, f.time, f.body, f.small, f.compact} {
 		if closer, ok := face.(interface{ Close() error }); ok {
 			_ = closer.Close()
 		}
@@ -583,34 +592,149 @@ func drawScheduleBooking(img *image.RGBA, fonts scheduleFontSet, week time.Time,
 	padding := 7
 	availableWidth := x2 - x1 - padding*2
 	height := y2 - y1
-	timeLabel := booking.StartAt.Format("15:04") + "-" + booking.EndAt.Format("15:04")
-	client := formatClientContact(booking.Username)
-	service := strings.Join(booking.ServiceNames, ", ")
+	lineHeight := 18
+	face := fonts.small
+	service := strings.TrimSpace(strings.Join(booking.ServiceNames, ", "))
 	if service == "" {
 		service = "Запись"
 	}
-	if height < 42 {
-		line := booking.StartAt.Format("15:04")
-		if client != "" {
-			line += " " + client
+	if height < 58 {
+		lineHeight = 13
+		face = fonts.compact
+	} else if height >= 100 {
+		lineHeight = 21
+		face = fonts.body
+	}
+	maxLines := (height - 2) / lineHeight
+	if maxLines < 1 {
+		maxLines = 1
+	}
+	lines := scheduleBookingLinesForLimit(booking, maxLines)
+	if maxLines >= 4 && font.MeasureString(face, service).Ceil() > availableWidth {
+		wrappedService := wrapFontText(service, availableWidth, face, 2)
+		if len(wrappedService) == 2 {
+			expanded := make([]scheduleBookingLine, 0, len(lines)+1)
+			for _, line := range lines {
+				if line.Text == service {
+					expanded = append(expanded, scheduleBookingLine{Text: wrappedService[0]}, scheduleBookingLine{Text: wrappedService[1]})
+					continue
+				}
+				expanded = append(expanded, line)
+			}
+			lines = expanded
 		}
-		drawFontText(img, fonts.small, x1+padding, y1+1, fitFontText(line, availableWidth, fonts.small), scheduleText)
-		if height >= 34 {
-			drawFontText(img, fonts.small, x1+padding, y1+17, fitFontText(service, availableWidth, fonts.small), scheduleText)
+	}
+	top := y1 + scheduleBookingContentTop(height, lineHeight, len(lines))
+	timeFace := fonts.small
+	if height < 58 {
+		timeFace = fonts.compact
+	} else if height >= 100 {
+		timeFace = fonts.time
+	}
+	timeLabel := booking.StartAt.Format("15:04")
+	timeWidth := font.MeasureString(timeFace, timeLabel).Ceil()
+	timeTop := y1 + 4
+	drawFontText(img, timeFace, x2-padding-timeWidth, timeTop, timeLabel, scheduleText)
+	reserveTimeWidth := top < timeTop+timeFace.Metrics().Height.Ceil()+4
+	for i, line := range lines {
+		lineWidth := availableWidth
+		if i == 0 && reserveTimeWidth {
+			lineWidth -= timeWidth + 8
 		}
-		return
+		drawFontText(img, face, x1+padding, top+i*lineHeight, fitFontText(line.Text, lineWidth, face), scheduleText)
 	}
-	drawFontText(img, fonts.time, x1+padding, y1+5, fitFontText(timeLabel, availableWidth, fonts.time), scheduleText)
-	secondLine := client
-	if height < 68 && client != "" {
-		secondLine = client + " | " + service
-	} else if secondLine == "" {
-		secondLine = service
+}
+
+func scheduleBookingContentTop(height, lineHeight, lineCount int) int {
+	if height < 90 || lineHeight <= 0 || lineCount <= 0 {
+		return 2
 	}
-	drawFontText(img, fonts.small, x1+padding, y1+24, fitFontText(secondLine, availableWidth, fonts.small), scheduleText)
-	if height >= 68 && client != "" {
-		drawFontText(img, fonts.small, x1+padding, y1+43, fitFontText(service, availableWidth, fonts.small), scheduleText)
+	top := (height - lineHeight*lineCount) / 2
+	if top < 12 {
+		return 12
 	}
+	return top
+}
+
+func scheduleBookingLines(booking BookingView, height int) []scheduleBookingLine {
+	lineHeight := 18
+	if height < 58 {
+		lineHeight = 13
+	}
+	maxLines := (height - 2) / lineHeight
+	if maxLines < 1 {
+		maxLines = 1
+	}
+	return scheduleBookingLinesForLimit(booking, maxLines)
+}
+
+func scheduleBookingLinesForLimit(booking BookingView, maxLines int) []scheduleBookingLine {
+	alias := strings.TrimSpace(booking.Alias)
+	contact := formatClientContact(booking.Username)
+	service := strings.TrimSpace(strings.Join(booking.ServiceNames, ", "))
+	if service == "" {
+		service = "Запись"
+	}
+	primary := alias
+	if primary == "" {
+		primary = contact
+	}
+	if primary == "" {
+		primary = service
+	}
+
+	switch maxLines {
+	case 1:
+		return []scheduleBookingLine{{Text: primary}}
+	case 2:
+		if alias != "" {
+			second := service
+			if contact != "" {
+				second += " · " + contact
+			}
+			return []scheduleBookingLine{{Text: alias}, {Text: second}}
+		}
+		if contact != "" {
+			return []scheduleBookingLine{{Text: service}, {Text: contact}}
+		}
+		return []scheduleBookingLine{{Text: service}}
+	default:
+		lines := make([]scheduleBookingLine, 0, 3)
+		if alias != "" {
+			lines = append(lines, scheduleBookingLine{Text: alias})
+		}
+		lines = append(lines, scheduleBookingLine{Text: service})
+		if contact != "" {
+			lines = append(lines, scheduleBookingLine{Text: contact})
+		}
+		return lines
+	}
+}
+
+func wrapFontText(value string, maxWidth int, face font.Face, maxLines int) []string {
+	words := strings.Fields(value)
+	if len(words) == 0 || maxLines <= 0 {
+		return nil
+	}
+	lines := make([]string, 0, maxLines)
+	for len(words) > 0 && len(lines) < maxLines {
+		line := words[0]
+		words = words[1:]
+		for len(words) > 0 {
+			candidate := line + " " + words[0]
+			if font.MeasureString(face, candidate).Ceil() > maxWidth {
+				break
+			}
+			line = candidate
+			words = words[1:]
+		}
+		if len(lines) == maxLines-1 && len(words) > 0 {
+			line += " " + strings.Join(words, " ")
+			words = nil
+		}
+		lines = append(lines, fitFontText(line, maxWidth, face))
+	}
+	return lines
 }
 
 func scheduleDayColumn(gridLeft, gridRight, colWidth, dayIndex int) (int, int) {

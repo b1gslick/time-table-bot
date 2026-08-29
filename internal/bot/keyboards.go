@@ -350,7 +350,7 @@ func cancelBookingKeyboard(lang string, items []BookingView) *telegram.ReplyMark
 	for i := 0; i < limit; i++ {
 		item := items[i]
 		label := item.StartAt.Format("02.01 15:04")
-		client := formatClientContact(item.Username)
+		client := formatAdminClient(item.Alias, item.Username)
 		if client == "" {
 			client = tr(lang, "unknown_user")
 		}
@@ -425,8 +425,8 @@ func bookingButtonLabel(lang string, item BookingView) string {
 	if item.AdminName != "" {
 		label += " - @" + item.AdminName
 	}
-	if item.Username != "" {
-		client := formatClientContact(item.Username)
+	if item.Username != "" || item.Alias != "" {
+		client := formatAdminClient(item.Alias, item.Username)
 		if client == "" {
 			client = tr(lang, "unknown_user")
 		}

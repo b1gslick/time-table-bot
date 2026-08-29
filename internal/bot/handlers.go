@@ -494,7 +494,7 @@ func (b *Bot) handleCancelBookingCallback(ctx context.Context, cb *telegram.Call
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "cancel_failed"))
 	}
 	b.notifyBookingChange(ctx, "cancelled", result, cb.Message.Chat.ID)
-	client := formatClientContact(result.Username)
+	client := formatAdminClient(result.Alias, result.Username)
 	if client == "" {
 		client = tr(current.Language, "unknown_user")
 	}
@@ -1609,7 +1609,7 @@ func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord,
 			return b.sendText(ctx, chatID, tr(actor.Language, "appoint_failed"))
 		}
 		b.notifyBookingChange(ctx, "created", result, chatID)
-		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ok_contact", phone))
+		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ok_contact", formatAdminClient(result.Alias, result.Username)))
 	}
 	if len(parts) == 2 {
 		username := normalizeUsername(parts[1])
@@ -1631,7 +1631,7 @@ func (b *Bot) handleAppoint(ctx context.Context, chatID int64, actor UserRecord,
 		return b.sendText(ctx, chatID, tr(actor.Language, "appoint_failed"))
 	}
 	b.notifyBookingChange(ctx, "created", result, chatID)
-	return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ok", username))
+	return b.sendText(ctx, chatID, tr(actor.Language, "appoint_ok_contact", formatAdminClient(result.Alias, result.Username)))
 }
 
 func (b *Bot) handleCancel(ctx context.Context, chatID int64, actor UserRecord, parts []string) error {
@@ -2062,7 +2062,11 @@ func (b *Bot) handleMove(ctx context.Context, chatID int64, actor UserRecord, pa
 
 func (b *Bot) notifyMove(ctx context.Context, result MoveResult) {
 	if result.AdminChatID > 0 {
-		text := tr(result.AdminLanguage, "move_admin_notice", result.Username, result.FromStart.Format(dateTimeLayout), result.ToStart.Format(dateTimeLayout))
+		client := formatAdminClient(result.Alias, result.Username)
+		if client == "" {
+			client = tr(result.AdminLanguage, "unknown_user")
+		}
+		text := tr(result.AdminLanguage, "move_admin_notice", client, result.FromStart.Format(dateTimeLayout), result.ToStart.Format(dateTimeLayout))
 		if err := b.sendText(ctx, result.AdminChatID, text); err != nil {
 			b.logger.Printf("notify admin about move failed: %v", err)
 		}
@@ -2073,7 +2077,7 @@ func (b *Bot) notifyBookingChange(ctx context.Context, action string, result Boo
 	if result.AdminChatID <= 0 || result.AdminChatID == skipChatID {
 		return
 	}
-	client := formatClientContact(result.Username)
+	client := formatAdminClient(result.Alias, result.Username)
 	if client == "" {
 		client = tr(result.AdminLanguage, "unknown_user")
 	}
@@ -2161,6 +2165,19 @@ func formatClientContact(value string) string {
 	return "@" + value
 }
 
+func formatAdminClient(alias, contact string) string {
+	alias = strings.TrimSpace(alias)
+	contact = formatClientContact(contact)
+	switch {
+	case alias == "":
+		return contact
+	case contact == "":
+		return alias
+	default:
+		return alias + " (" + contact + ")"
+	}
+}
+
 func adminBookingsRange(parts []string) (time.Time, time.Time, time.Time, bool, error) {
 	if len(parts) < 2 {
 		return time.Now(), time.Time{}, time.Time{}, false, nil
@@ -2232,8 +2249,8 @@ func formatAdminBookings(lang, header string, items []BookingView, limit int, in
 			}
 		}
 		sb.WriteString(" - ")
-		if item.Username != "" {
-			sb.WriteString(formatClientContact(item.Username))
+		if client := formatAdminClient(item.Alias, item.Username); client != "" {
+			sb.WriteString(client)
 		} else {
 			sb.WriteString(tr(lang, "unknown_user"))
 		}

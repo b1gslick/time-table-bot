@@ -1837,8 +1837,16 @@ func TestAppStore_ContactAliasRelinksExistingNamedBooking(t *testing.T) {
 		t.Fatalf("UpsertContactAlias = %d, %v", updated, err)
 	}
 	after, err := app.ListAdminBookingsRange(ctx, 2001, start.Add(-time.Minute), start.Add(time.Hour))
-	if err != nil || len(after) != 1 || after[0].Username != "hasti69" {
+	if err != nil || len(after) != 1 || after[0].Username != "hasti69" || after[0].Alias != "анастасия балтаджи" {
 		t.Fatalf("bookings after alias = %#v, %v", after, err)
+	}
+	change, err := app.bookingChangeByID(ctx, after[0].ID, admin.ID)
+	if err != nil || change.Username != "hasti69" || change.Alias != "анастасия балтаджи" {
+		t.Fatalf("booking change after alias = %#v, %v", change, err)
+	}
+	conflict, err = app.FindImportBookingConflict(ctx, 2001, []int{1}, start.Add(15*time.Minute))
+	if err != nil || conflict == nil || conflict.Username != "hasti69" || conflict.Alias != "анастасия балтаджи" {
+		t.Fatalf("conflict after alias = %#v, %v", conflict, err)
 	}
 }
 
@@ -1901,7 +1909,7 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
-	if cfg.Width != 1600 || cfg.Height < 1000 {
+	if cfg.Width != 1920 || cfg.Height < 1200 {
 		t.Fatalf("week image = %dx%d, want compact full-week PNG", cfg.Width, cfg.Height)
 	}
 	daysSinceMonday := (int(start.Weekday()) + 6) % 7
@@ -1924,7 +1932,7 @@ func TestBotE2E_AdminNaturalScheduleSendsWeekImageWithBooking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeConfig free time: %v", err)
 	}
-	if freeCfg.Width != 1600 || freeCfg.Height < 1000 {
+	if freeCfg.Width != 1920 || freeCfg.Height < 1200 {
 		t.Fatalf("free time image = %dx%d, want seven-day PNG", freeCfg.Width, freeCfg.Height)
 	}
 	selfBookingStart := start.AddDate(0, 0, 1)

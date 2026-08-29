@@ -487,10 +487,11 @@ func (b *Bot) completePendingBooking(ctx context.Context, chatID int64, user Use
 	b.notifyBookingChange(ctx, "created", result, chatID)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
 	if isAdminAppointmentState(state) {
-		if state.ContactType == "phone" {
-			return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", state.Username), keyboardForUser(user))
+		client := formatAdminClient(result.Alias, result.Username)
+		if client == "" {
+			client = tr(user.Language, "unknown_user")
 		}
-		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForUser(user))
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", client), keyboardForUser(user))
 	}
 	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "book_ok", result.StartAt.Format(dateTimeLayout)), keyboardForUser(user))
 }
@@ -1379,7 +1380,7 @@ func (b *Bot) conversationAppointTime(ctx context.Context, chatID int64, user Us
 		}
 		b.notifyBookingChange(ctx, "created", result, chatID)
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
-		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", state.Username), keyboardForUser(user))
+		return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", formatAdminClient(result.Alias, result.Username)), keyboardForUser(user))
 	}
 	result, err := b.store.AddBookingByUsername(ctx, user.TelegramID, state.Username, start)
 	if err != nil {
@@ -1387,7 +1388,7 @@ func (b *Bot) conversationAppointTime(ctx context.Context, chatID int64, user Us
 	}
 	b.notifyBookingChange(ctx, "created", result, chatID)
 	_ = b.store.ClearConversationState(ctx, user.TelegramID)
-	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok", state.Username), keyboardForUser(user))
+	return b.sendTextWithKeyboard(ctx, chatID, tr(user.Language, "appoint_ok_contact", formatAdminClient(result.Alias, result.Username)), keyboardForUser(user))
 }
 
 func (b *Bot) conversationCancelUser(ctx context.Context, chatID int64, user UserRecord, state ConversationState, text string) error {

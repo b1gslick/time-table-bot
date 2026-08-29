@@ -43,6 +43,7 @@ type Booking struct {
 type MoveResult struct {
 	AdminChatID   int64
 	AdminLanguage string
+	Alias         string
 	Username      string
 	FromStart     time.Time
 	ToStart       time.Time
@@ -51,6 +52,7 @@ type MoveResult struct {
 type BookingChangeResult struct {
 	AdminChatID   int64
 	AdminLanguage string
+	Alias         string
 	Username      string
 	StartAt       time.Time
 	EndAt         time.Time
@@ -62,6 +64,7 @@ type BookingChangeResult struct {
 type BookingView struct {
 	ID           int64
 	AdminName    string
+	Alias        string
 	Username     string
 	ServiceNames []string
 	StartAt      time.Time
@@ -70,6 +73,7 @@ type BookingView struct {
 }
 
 type BookingConflict struct {
+	Alias        string
 	Username     string
 	ServiceNames []string
 	StartAt      time.Time

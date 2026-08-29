@@ -1333,6 +1333,17 @@ SELECT primary_booking.id,
                 AND COALESCE(client.full_name, '') <> '' THEN client.full_name
            ELSE COALESCE(client.username, '')
        END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = $1
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = client.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = client.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias,
        COALESCE(primary_slot.start_at, occupied.start_at),
        COALESCE(primary_slot.end_at, occupied.end_at),
        COALESCE(primary_booking.note, ''),
@@ -1347,6 +1358,7 @@ LEFT JOIN admin_services service ON service.id = primary_booking.service_id;
 `, spec.adminID, start, end).Scan(
 		&bookingID,
 		&conflict.Username,
+		&conflict.Alias,
 		&conflict.StartAt,
 		&conflict.EndAt,
 		&note,
@@ -1980,6 +1992,17 @@ SELECT b.id,
            WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
            ELSE COALESCE(u.username, '')
        END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = s.admin_user_id
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = u.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = u.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias,
        s.start_at,
        s.end_at,
        b.status,
@@ -2024,7 +2047,7 @@ WHERE b.status = 'booked'
 	for rows.Next() {
 		var item bot.BookingView
 		var note, serviceName string
-		if err := rows.Scan(&item.ID, &item.AdminName, &item.Username, &item.StartAt, &item.EndAt, &item.Status, &note, &serviceName); err != nil {
+		if err := rows.Scan(&item.ID, &item.AdminName, &item.Username, &item.Alias, &item.StartAt, &item.EndAt, &item.Status, &note, &serviceName); err != nil {
 			return nil, err
 		}
 		if actor.Role != bot.RoleSuperAdmin || isSuperAdminViewingAdmin(ctx, s, telegramID) {
@@ -2048,6 +2071,17 @@ SELECT b.id,
            WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
            ELSE COALESCE(u.username, '')
        END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = s.admin_user_id
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = u.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = u.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias,
        s.start_at,
        s.end_at,
        b.status,
@@ -2074,7 +2108,7 @@ LIMIT 50;
 	for rows.Next() {
 		var item bot.BookingView
 		var note, serviceName string
-		if err := rows.Scan(&item.ID, &item.Username, &item.StartAt, &item.EndAt, &item.Status, &note, &serviceName); err != nil {
+		if err := rows.Scan(&item.ID, &item.Username, &item.Alias, &item.StartAt, &item.EndAt, &item.Status, &note, &serviceName); err != nil {
 			return nil, err
 		}
 		item.StartAt = item.StartAt.In(s.loc)
@@ -2099,6 +2133,17 @@ SELECT a.telegram_id,
            WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
            ELSE COALESCE(u.username, '')
        END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = s.admin_user_id
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = u.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = u.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias,
        s.start_at,
        s.end_at,
        b.note,
@@ -2129,6 +2174,7 @@ WHERE b.id = $1
 		&adminChatID,
 		&result.AdminLanguage,
 		&result.Username,
+		&result.Alias,
 		&result.StartAt,
 		&result.EndAt,
 		&note,
@@ -2396,10 +2442,28 @@ func (s *appStore) MoveBookingForUser(ctx context.Context, telegramID int64, fro
 		bookingID      int64
 		adminID        int64
 		adminChatID    sql.NullInt64
+		clientAlias    string
 		clientUsername string
 	)
 	err = s.db.QueryRowContext(ctx, `
-SELECT b.id, s.admin_user_id, a.telegram_id, u.username
+SELECT b.id,
+       s.admin_user_id,
+       a.telegram_id,
+       CASE
+           WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           ELSE COALESCE(u.username, '')
+       END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = s.admin_user_id
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = u.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = u.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 JOIN users u ON u.id = b.user_id
@@ -2408,7 +2472,7 @@ WHERE b.user_id = $1
   AND s.start_at = $2
   AND b.status = 'booked'
 LIMIT 1;
-`, userID, fromStart.In(s.loc)).Scan(&bookingID, &adminID, &adminChatID, &clientUsername)
+`, userID, fromStart.In(s.loc)).Scan(&bookingID, &adminID, &adminChatID, &clientUsername, &clientAlias)
 	if errors.Is(err, sql.ErrNoRows) {
 		return bot.MoveResult{}, store.ErrNotFound
 	}
@@ -2425,6 +2489,7 @@ LIMIT 1;
 	}
 
 	result := bot.MoveResult{
+		Alias:         clientAlias,
 		Username:      clientUsername,
 		FromStart:     fromStart.In(s.loc),
 		ToStart:       toStart.In(s.loc),
@@ -3488,10 +3553,28 @@ func (s *appStore) moveBookingForUserToAvailability(ctx context.Context, telegra
 		oldBookingID   int64
 		adminID        int64
 		adminChatID    sql.NullInt64
+		clientAlias    string
 		clientUsername string
 	)
 	err = tx.QueryRowContext(ctx, `
-SELECT b.id, s.admin_user_id, a.telegram_id, u.username
+SELECT b.id,
+       s.admin_user_id,
+       a.telegram_id,
+       CASE
+           WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           ELSE COALESCE(u.username, '')
+       END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = s.admin_user_id
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = u.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = u.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 JOIN users u ON u.id = b.user_id
@@ -3500,7 +3583,7 @@ WHERE b.user_id = $1
   AND s.start_at = $2
   AND b.status = 'booked'
 FOR UPDATE;
-`, userID, fromStart.In(s.loc)).Scan(&oldBookingID, &adminID, &adminChatID, &clientUsername)
+`, userID, fromStart.In(s.loc)).Scan(&oldBookingID, &adminID, &adminChatID, &clientUsername, &clientAlias)
 	if errors.Is(err, sql.ErrNoRows) {
 		return bot.MoveResult{}, store.ErrNotFound
 	}
@@ -3590,6 +3673,7 @@ VALUES ($1, NULL, NULL, 'blocked', $2, $3);
 	}
 
 	result := bot.MoveResult{
+		Alias:         clientAlias,
 		Username:      clientUsername,
 		FromStart:     fromStart.In(s.loc),
 		ToStart:       toStart.In(s.loc),
@@ -3626,11 +3710,29 @@ func (s *appStore) moveBookingForUserIDToAvailability(ctx context.Context, teleg
 	var (
 		adminID        int64
 		adminChatID    sql.NullInt64
+		clientAlias    string
 		clientUsername string
 		fromStart      time.Time
 	)
 	err = tx.QueryRowContext(ctx, `
-SELECT s.admin_user_id, a.telegram_id, u.username, s.start_at
+SELECT s.admin_user_id,
+       a.telegram_id,
+       CASE
+           WHEN (u.username LIKE 'phone_%' OR u.username LIKE 'name_%') AND COALESCE(u.full_name, '') <> '' THEN u.full_name
+           ELSE COALESCE(u.username, '')
+       END AS client_name,
+       COALESCE((
+           SELECT ca.alias
+           FROM admin_contact_aliases ca
+           WHERE ca.admin_user_id = s.admin_user_id
+             AND (
+                 (ca.contact_type = 'telegram' AND ca.contact = u.username)
+                 OR (ca.contact_type = 'phone' AND ca.contact = u.full_name)
+             )
+           ORDER BY ca.updated_at DESC, ca.alias ASC
+           LIMIT 1
+       ), '') AS client_alias,
+       s.start_at
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 JOIN users u ON u.id = b.user_id
@@ -3639,7 +3741,7 @@ WHERE b.id = $1
   AND b.user_id = $2
   AND b.status = 'booked'
 FOR UPDATE;
-`, bookingID, userID).Scan(&adminID, &adminChatID, &clientUsername, &fromStart)
+`, bookingID, userID).Scan(&adminID, &adminChatID, &clientUsername, &clientAlias, &fromStart)
 	if errors.Is(err, sql.ErrNoRows) {
 		return bot.MoveResult{}, store.ErrNotFound
 	}
@@ -3729,6 +3831,7 @@ VALUES ($1, NULL, NULL, 'blocked', $2, $3);
 	}
 
 	result := bot.MoveResult{
+		Alias:         clientAlias,
 		Username:      clientUsername,
 		FromStart:     fromStart.In(s.loc),
 		ToStart:       toStart.In(s.loc),

@@ -34,3 +34,21 @@ func TestResolveContactAliasUnderstandsRussianInflection(t *testing.T) {
 		t.Fatal("unrelated text must not resolve an alias")
 	}
 }
+
+func TestFormatAdminClientShowsAliasAndContact(t *testing.T) {
+	tests := []struct {
+		alias   string
+		contact string
+		want    string
+	}{
+		{alias: "лиза", contact: "client", want: "лиза (@client)"},
+		{alias: "лиза", contact: "+35799123456", want: "лиза (+35799123456)"},
+		{contact: "client", want: "@client"},
+		{alias: "лиза", want: "лиза"},
+	}
+	for _, test := range tests {
+		if got := formatAdminClient(test.alias, test.contact); got != test.want {
+			t.Fatalf("formatAdminClient(%q, %q) = %q, want %q", test.alias, test.contact, got, test.want)
+		}
+	}
+}

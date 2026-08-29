@@ -827,11 +827,9 @@ func formatScheduleImportConflict(lang string, conflict BookingConflict) string 
 	if conflict.Blocked {
 		return tr(lang, "schedule_import_issue_blocked", interval)
 	}
-	client := strings.TrimSpace(conflict.Username)
+	client := formatAdminClient(conflict.Alias, conflict.Username)
 	if client == "" {
 		client = tr(lang, "schedule_import_unknown_client")
-	} else if !strings.HasPrefix(client, "+") && !strings.HasPrefix(client, "@") && !strings.Contains(client, " ") {
-		client = "@" + client
 	}
 	services := strings.Join(conflict.ServiceNames, ", ")
 	if services == "" {
