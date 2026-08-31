@@ -2834,16 +2834,22 @@ func (s *appStore) MoveBookingForUserByIndex(ctx context.Context, telegramID int
 }
 
 func (s *appStore) PrepareUpcomingReminders(ctx context.Context, now time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `
+DELETE FROM reminders
+WHERE kind = 'day_before'
+  AND recipient_role = 'admin'
+  AND sent_at IS NULL;
+`); err != nil {
+		return fmt.Errorf("delete disabled admin day-before reminders: %w", err)
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
-SELECT b.id, s.start_at, u.telegram_id, u.username, a.telegram_id,
-       COALESCE(ul.value, 'ru') AS user_language,
-       COALESCE(al.value, 'ru') AS admin_language
+SELECT b.id, s.start_at, u.telegram_id,
+       COALESCE(ul.value, 'ru') AS user_language
 FROM bookings b
 JOIN schedule_slots s ON s.id = b.slot_id
 LEFT JOIN users u ON u.id = b.user_id
-JOIN users a ON a.id = s.admin_user_id
 LEFT JOIN admin_settings ul ON ul.admin_user_id = u.id AND ul.key = 'language'
-LEFT JOIN admin_settings al ON al.admin_user_id = a.id AND al.key = 'language'
 WHERE b.status = 'booked'
   AND s.start_at >= $1
   AND s.start_at < $2;
@@ -2855,33 +2861,21 @@ WHERE b.status = 'booked'
 
 	for rows.Next() {
 		var (
-			bookingID     int64
-			startAt       time.Time
-			userChatID    sql.NullInt64
-			username      sql.NullString
-			adminChatID   sql.NullInt64
-			userLanguage  string
-			adminLanguage string
+			bookingID    int64
+			startAt      time.Time
+			userChatID   sql.NullInt64
+			userLanguage string
 		)
-		if err := rows.Scan(&bookingID, &startAt, &userChatID, &username, &adminChatID, &userLanguage, &adminLanguage); err != nil {
+		if err := rows.Scan(&bookingID, &startAt, &userChatID, &userLanguage); err != nil {
 			return err
 		}
 		startAt = startAt.In(s.loc)
-		userLabel := "@client"
-		if username.Valid && username.String != "" {
-			userLabel = "@" + username.String
-		}
 
 		if userChatID.Valid {
 			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "day_before", "user", startAt.Add(-24*time.Hour), userReminderDayBefore(userLanguage, startAt)); err != nil {
 				return err
 			}
 			if err := s.upsertReminder(ctx, bookingID, userChatID.Int64, "hour_before", "user", startAt.Add(-time.Hour), userReminderHourBefore(userLanguage, startAt)); err != nil {
-				return err
-			}
-		}
-		if adminChatID.Valid {
-			if err := s.upsertReminder(ctx, bookingID, adminChatID.Int64, "day_before", "admin", startAt.Add(-24*time.Hour), adminReminderDayBefore(adminLanguage, userLabel, startAt)); err != nil {
 				return err
 			}
 		}
@@ -4435,13 +4429,6 @@ func userReminderHourBefore(language string, startAt time.Time) string {
 		return fmt.Sprintf("Reminder: your booking starts in 1 hour, at %s.", startAt.Format("15:04"))
 	}
 	return fmt.Sprintf("Напоминание: запись начнется через 1 час, в %s.", startAt.Format("15:04"))
-}
-
-func adminReminderDayBefore(language, userLabel string, startAt time.Time) string {
-	if language == bot.LangEN {
-		return fmt.Sprintf("Reminder: tomorrow client %s has a booking at %s.", userLabel, startAt.Format("02.01.2006 15:04"))
-	}
-	return fmt.Sprintf("Напоминание: завтра запись у клиента %s в %s.", userLabel, startAt.Format("02.01.2006 15:04"))
 }
 
 func adminDailyBookingsReminder(language string, day time.Time, items []bot.BookingView) string {

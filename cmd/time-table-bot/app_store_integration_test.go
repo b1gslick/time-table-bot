@@ -1285,6 +1285,73 @@ func TestAppStore_AdminScheduleReminderAndMissingMonthNotice(t *testing.T) {
 	}
 }
 
+func TestAppStore_PrepareUpcomingRemindersDisablesAdminDayBefore(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Hour)
+	start := now.Add(48 * time.Hour)
+	slot, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+		AdminUserID: admin.ID,
+		StartAt:     start,
+		EndAt:       start.Add(30 * time.Minute),
+		Capacity:    1,
+		Status:      domain.SlotStatusOpen,
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduleSlot: %v", err)
+	}
+	booking, err := repo.CreateBooking(ctx, domain.Booking{
+		SlotID:        slot.ID,
+		UserID:        &client.ID,
+		Status:        domain.BookingStatusBooked,
+		TravelMinutes: 0,
+	})
+	if err != nil {
+		t.Fatalf("CreateBooking: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO reminders (booking_id, chat_id, kind, recipient_role, send_at, channel, payload)
+VALUES ($1, $2, 'day_before', 'admin', $3, 'telegram', 'legacy admin reminder');
+`, booking.ID, 2001, start.Add(-24*time.Hour)); err != nil {
+		t.Fatalf("seed admin day-before reminder: %v", err)
+	}
+
+	if err := app.PrepareUpcomingReminders(ctx, now); err != nil {
+		t.Fatalf("PrepareUpcomingReminders: %v", err)
+	}
+	var adminDayBefore, userDayBefore, userHourBefore int
+	if err := db.QueryRowContext(ctx, `
+SELECT
+  COUNT(*) FILTER (WHERE recipient_role = 'admin' AND kind = 'day_before'),
+  COUNT(*) FILTER (WHERE recipient_role = 'user' AND kind = 'day_before'),
+  COUNT(*) FILTER (WHERE recipient_role = 'user' AND kind = 'hour_before')
+FROM reminders
+WHERE booking_id = $1;
+`, booking.ID).Scan(&adminDayBefore, &userDayBefore, &userHourBefore); err != nil {
+		t.Fatalf("count booking reminders: %v", err)
+	}
+	if adminDayBefore != 0 || userDayBefore != 1 || userHourBefore != 1 {
+		t.Fatalf("reminders = admin day %d, user day %d, user hour %d; want 0, 1, 1", adminDayBefore, userDayBefore, userHourBefore)
+	}
+}
+
 func TestAppStore_DailyAdminBookingSummary(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
