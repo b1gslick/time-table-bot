@@ -1712,7 +1712,7 @@ func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegra
 	if err != nil {
 		return bot.BookingChangeResult{}, err
 	}
-	if err := s.repo.RescheduleBooking(ctx, bookingID, newSlotID); err != nil {
+	if err := s.rescheduleBookingWithCoverage(ctx, bookingID, newSlotID); err != nil {
 		return bot.BookingChangeResult{}, err
 	}
 	updated, err := s.bookingChangeByID(ctx, bookingID, adminID)
@@ -1722,6 +1722,157 @@ func (s *appStore) RescheduleBookingByUsername(ctx context.Context, adminTelegra
 	result.NewStartAt = updated.StartAt
 	result.NewEndAt = updated.EndAt
 	return result, nil
+}
+
+type rescheduleCoverageSlot struct {
+	id       int64
+	startAt  time.Time
+	endAt    time.Time
+	capacity int
+}
+
+func (s *appStore) rescheduleBookingWithCoverage(ctx context.Context, bookingID, newSlotID int64) error {
+	if bookingID <= 0 || newSlotID <= 0 {
+		return store.ErrInvalidArgument
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		adminID            int64
+		oldStart, oldEnd   time.Time
+		note               string
+		destination        rescheduleCoverageSlot
+		destinationAdminID int64
+		destinationStatus  string
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT slot.admin_user_id, slot.start_at, slot.end_at, booking.note
+FROM bookings booking
+JOIN schedule_slots slot ON slot.id = booking.slot_id
+WHERE booking.id = $1 AND booking.status = 'booked'
+FOR UPDATE OF booking, slot;
+`, bookingID).Scan(&adminID, &oldStart, &oldEnd, &note)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	err = tx.QueryRowContext(ctx, `
+SELECT id, admin_user_id, start_at, end_at, capacity, status
+FROM schedule_slots
+WHERE id = $1
+FOR UPDATE;
+`, newSlotID).Scan(
+		&destination.id,
+		&destinationAdminID,
+		&destination.startAt,
+		&destination.endAt,
+		&destination.capacity,
+		&destinationStatus,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if destinationAdminID != adminID || destinationStatus != string(domain.SlotStatusOpen) || !destination.endAt.After(destination.startAt) {
+		return store.ErrSlotUnavailable
+	}
+
+	durationMin := bookingDurationFromNote(note)
+	if durationMin <= 0 {
+		durationMin = int(oldEnd.Sub(oldStart) / time.Minute)
+	}
+	if durationMin <= 0 {
+		return store.ErrInvalidArgument
+	}
+	requiredEnd := destination.startAt.Add(time.Duration(durationMin) * time.Minute)
+	coverage := []rescheduleCoverageSlot{destination}
+	coveredUntil := destination.endAt
+	for coveredUntil.Before(requiredEnd) {
+		var next rescheduleCoverageSlot
+		err := tx.QueryRowContext(ctx, `
+SELECT id, start_at, end_at, capacity
+FROM schedule_slots
+WHERE admin_user_id = $1
+  AND status = 'open'
+  AND start_at = $2
+ORDER BY end_at DESC, id ASC
+LIMIT 1
+FOR UPDATE;
+`, adminID, coveredUntil).Scan(&next.id, &next.startAt, &next.endAt, &next.capacity)
+		if errors.Is(err, sql.ErrNoRows) {
+			return store.ErrSlotUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		if !next.endAt.After(coveredUntil) {
+			return store.ErrSlotUnavailable
+		}
+		coverage = append(coverage, next)
+		coveredUntil = next.endAt
+	}
+
+	coveredNote := coveredByBookingNote(bookingID)
+	for _, slot := range coverage {
+		var used int
+		if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM bookings
+WHERE slot_id = $1
+  AND status IN ('booked', 'blocked')
+  AND id <> $2
+  AND NOT (status = 'blocked' AND split_part(split_part(note, ';', 1), ' | ', 1) = $3);
+`, slot.id, bookingID, coveredNote).Scan(&used); err != nil {
+			return err
+		}
+		if used >= slot.capacity {
+			return store.ErrSlotUnavailable
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE bookings
+SET status = 'cancelled',
+    cancelled_at = NOW(),
+    updated_at = NOW(),
+    note = note || ';moved_release'
+WHERE status = 'blocked'
+  AND split_part(split_part(note, ';', 1), ' | ', 1) = $1;
+`, coveredNote); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE bookings
+SET slot_id = $1,
+    status = 'booked',
+    cancelled_at = NULL,
+    updated_at = NOW()
+WHERE id = $2 AND status = 'booked';
+`, newSlotID, bookingID); err != nil {
+		return err
+	}
+	for _, slot := range coverage[1:] {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO bookings (slot_id, user_id, service_id, status, travel_minutes, note)
+VALUES ($1, NULL, NULL, 'blocked', 0, $2);
+`, slot.id, coveredNote); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
+	return nil
 }
 
 func (s *appStore) BlockSlot(ctx context.Context, adminTelegramID int64, start time.Time) error {
@@ -2640,7 +2791,7 @@ LIMIT 1;
 	if err != nil {
 		return bot.MoveResult{}, err
 	}
-	if err := s.repo.RescheduleBooking(ctx, bookingID, newSlotID); err != nil {
+	if err := s.rescheduleBookingWithCoverage(ctx, bookingID, newSlotID); err != nil {
 		return bot.MoveResult{}, err
 	}
 

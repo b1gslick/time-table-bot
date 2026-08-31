@@ -859,6 +859,121 @@ func TestAppStore_DeleteImportedBookingRestoresReusableSchedule(t *testing.T) {
 	}
 }
 
+func TestAppStore_RescheduleMovesDurationBlocksAndReleasesOldSlots(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+
+	createSlots := func(start time.Time, count, durationMin int) []int64 {
+		t.Helper()
+		ids := make([]int64, 0, count)
+		for i := 0; i < count; i++ {
+			slotStart := start.Add(time.Duration(i*durationMin) * time.Minute)
+			slot, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+				AdminUserID: admin.ID,
+				StartAt:     slotStart,
+				EndAt:       slotStart.Add(time.Duration(durationMin) * time.Minute),
+				Capacity:    1,
+				Status:      domain.SlotStatusOpen,
+			})
+			if err != nil {
+				t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+			}
+			ids = append(ids, slot.ID)
+		}
+		return ids
+	}
+
+	sourceStart := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Hour)
+	sourceIDs := createSlots(sourceStart, 3, 15)
+	destinationStart := sourceStart.AddDate(0, 0, 1)
+	destinationIDs := createSlots(destinationStart, 3, 15)
+	wideDestinationStart := sourceStart.AddDate(0, 0, 2)
+	wideDestinationIDs := createSlots(wideDestinationStart, 1, 45)
+
+	note := `{"service_ids":[],"service_names":["Combined"],"duration_min":40}`
+	booking, err := repo.CreateBooking(ctx, domain.Booking{
+		SlotID:        sourceIDs[0],
+		UserID:        &client.ID,
+		Status:        domain.BookingStatusBooked,
+		TravelMinutes: 0,
+		Note:          note,
+	})
+	if err != nil {
+		t.Fatalf("CreateBooking: %v", err)
+	}
+	for _, slotID := range sourceIDs[1:] {
+		if _, err := repo.CreateBooking(ctx, domain.Booking{
+			SlotID:        slotID,
+			Status:        domain.BookingStatusBlocked,
+			TravelMinutes: 0,
+			Note:          coveredByBookingNote(booking.ID),
+		}); err != nil {
+			t.Fatalf("CreateBooking block: %v", err)
+		}
+	}
+
+	if _, err := app.RescheduleBookingByUsername(ctx, 2001, "client", sourceStart, destinationStart); err != nil {
+		t.Fatalf("RescheduleBookingByUsername standard destination: %v", err)
+	}
+	var primarySlotID int64
+	if err := db.QueryRowContext(ctx, `SELECT slot_id FROM bookings WHERE id = $1`, booking.ID).Scan(&primarySlotID); err != nil {
+		t.Fatalf("read moved primary: %v", err)
+	}
+	if primarySlotID != destinationIDs[0] {
+		t.Fatalf("primary slot = %d, want %d", primarySlotID, destinationIDs[0])
+	}
+	var oldActive, newActive int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM bookings
+WHERE status = 'blocked' AND note = $1 AND slot_id IN ($2, $3, $4);
+`, coveredByBookingNote(booking.ID), sourceIDs[0], sourceIDs[1], sourceIDs[2]).Scan(&oldActive); err != nil {
+		t.Fatalf("count old blocks: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM bookings
+WHERE status = 'blocked' AND note = $1 AND slot_id IN ($2, $3, $4);
+`, coveredByBookingNote(booking.ID), destinationIDs[0], destinationIDs[1], destinationIDs[2]).Scan(&newActive); err != nil {
+		t.Fatalf("count new blocks: %v", err)
+	}
+	if oldActive != 0 || newActive != 2 {
+		t.Fatalf("active blocks after standard move = old %d new %d, want 0 and 2", oldActive, newActive)
+	}
+
+	if _, err := app.RescheduleBookingByUsername(ctx, 2001, "client", destinationStart, wideDestinationStart); err != nil {
+		t.Fatalf("RescheduleBookingByUsername wide destination: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT slot_id FROM bookings WHERE id = $1`, booking.ID).Scan(&primarySlotID); err != nil {
+		t.Fatalf("read wide moved primary: %v", err)
+	}
+	if primarySlotID != wideDestinationIDs[0] {
+		t.Fatalf("wide primary slot = %d, want %d", primarySlotID, wideDestinationIDs[0])
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM bookings WHERE status = 'blocked' AND note = $1;
+`, coveredByBookingNote(booking.ID)).Scan(&newActive); err != nil {
+		t.Fatalf("count remaining blocks: %v", err)
+	}
+	if newActive != 0 {
+		t.Fatalf("active blocks after wide move = %d, want 0", newActive)
+	}
+}
+
 func TestAppStore_FinanceReportIncludesBookingsExpensesAndOverrides(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
