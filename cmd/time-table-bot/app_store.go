@@ -1495,18 +1495,182 @@ func (s *appStore) DeleteBookingByID(ctx context.Context, adminTelegramID int64,
 	if err != nil {
 		return bot.BookingChangeResult{}, err
 	}
-	if err := s.repo.DeleteBooking(ctx, bookingID, "cancelled_by_admin"); err != nil {
-		return bot.BookingChangeResult{}, err
-	}
-	_, err = s.db.ExecContext(ctx, `
-UPDATE bookings
-SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(), note = note || ';cancelled_by_admin'
-WHERE status = 'blocked' AND note = $1;
-`, coveredByBookingNote(bookingID))
-	if err != nil {
+	if err := s.cancelBookingAndRelease(ctx, bookingID, "cancelled_by_admin"); err != nil {
 		return bot.BookingChangeResult{}, err
 	}
 	return result, nil
+}
+
+func (s *appStore) cancelBookingAndRelease(ctx context.Context, bookingID int64, reason string) error {
+	if bookingID <= 0 {
+		return store.ErrInvalidArgument
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var (
+		adminID  int64
+		slotID   int64
+		startAt  time.Time
+		endAt    time.Time
+		slotNote string
+	)
+	err = tx.QueryRowContext(ctx, `
+SELECT s.admin_user_id, s.id, s.start_at, s.end_at, s.note
+FROM bookings b
+JOIN schedule_slots s ON s.id = b.slot_id
+WHERE b.id = $1 AND b.status = 'booked'
+FOR UPDATE OF b, s;
+`, bookingID).Scan(&adminID, &slotID, &startAt, &endAt, &slotNote)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+
+	reason = strings.TrimSpace(reason)
+	if _, err := tx.ExecContext(ctx, `
+UPDATE bookings
+SET status = 'cancelled',
+    note = CASE WHEN note = '' THEN $2 ELSE note || ' | ' || $2 END,
+    cancelled_at = NOW(),
+    updated_at = NOW()
+WHERE id = $1 AND status = 'booked';
+`, bookingID, reason); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE bookings
+SET status = 'cancelled',
+    cancelled_at = NOW(),
+    updated_at = NOW(),
+    note = note || ';' || $2
+WHERE status = 'blocked'
+  AND split_part(split_part(note, ';', 1), ' | ', 1) = $1;
+`, coveredByBookingNote(bookingID), reason); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE reminders
+SET sent_at = NOW()
+WHERE booking_id = $1 AND sent_at IS NULL;
+`, bookingID); err != nil {
+		return err
+	}
+	if slotNote == "imported_schedule" {
+		if err := s.restoreImportedScheduleAfterCancellationTx(ctx, tx, adminID, slotID, startAt, endAt); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
+	return nil
+}
+
+func (s *appStore) restoreImportedScheduleAfterCancellationTx(ctx context.Context, tx *sql.Tx, adminID, slotID int64, startAt, endAt time.Time) error {
+	var activeOverlaps int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM bookings active
+JOIN schedule_slots occupied ON occupied.id = active.slot_id
+WHERE occupied.admin_user_id = $1
+  AND active.status IN ('booked', 'blocked')
+  AND occupied.start_at < $3
+  AND occupied.end_at > $2;
+`, adminID, startAt, endAt).Scan(&activeOverlaps); err != nil {
+		return err
+	}
+	if activeOverlaps > 0 {
+		return nil
+	}
+
+	day := startAt.In(s.loc).Format("2006-01-02")
+	var blockedDate bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM admin_settings setting
+    WHERE setting.admin_user_id = $1
+      AND setting.key = 'blocked_dates'
+      AND LEFT(LTRIM(setting.value), 1) = '['
+      AND setting.value::jsonb ? $2
+);
+`, adminID, day).Scan(&blockedDate); err != nil {
+		return err
+	}
+	if blockedDate {
+		_, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots
+SET status = 'closed', updated_at = NOW()
+WHERE id = $1;
+`, slotID)
+		return err
+	}
+
+	var offGrid bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM schedule_slots original
+    WHERE original.admin_user_id = $1
+      AND original.id <> $2
+      AND original.status = 'closed'
+      AND original.start_at < $3
+      AND original.end_at > $3
+);
+`, adminID, slotID, startAt).Scan(&offGrid); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots original
+SET status = 'open', updated_at = NOW()
+WHERE original.admin_user_id = $1
+  AND original.id <> $2
+  AND original.status = 'closed'
+  AND original.start_at < $4
+  AND original.end_at > $3;
+`, adminID, slotID, startAt, endAt); err != nil {
+		return err
+	}
+	if offGrid {
+		_, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots
+SET status = 'closed', updated_at = NOW()
+WHERE id = $1;
+`, slotID)
+		return err
+	}
+
+	durationMin := defaultSessionDuration
+	var rawDuration string
+	if err := tx.QueryRowContext(ctx, `
+SELECT value
+FROM admin_settings
+WHERE admin_user_id = $1 AND key = 'session_duration';
+`, adminID).Scan(&rawDuration); err == nil {
+		if parsed, parseErr := time.ParseDuration(strings.TrimSpace(rawDuration) + "m"); parseErr == nil && parsed > 0 {
+			durationMin = int(parsed / time.Minute)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots
+SET service_id = NULL,
+    end_at = start_at + ($2 * interval '1 minute'),
+    capacity = 1,
+    status = 'open',
+    note = '',
+    updated_at = NOW()
+WHERE id = $1;
+`, slotID, durationMin)
+	return err
 }
 
 func (s *appStore) adminIDFilterForBookingIDAction(ctx context.Context, telegramID int64) (int64, error) {
@@ -2270,15 +2434,7 @@ SELECT EXISTS (
 	if err != nil {
 		return bot.BookingChangeResult{}, err
 	}
-	if err := s.repo.DeleteBooking(ctx, bookingID, "cancelled_by_user"); err != nil {
-		return bot.BookingChangeResult{}, err
-	}
-	_, err = s.db.ExecContext(ctx, `
-UPDATE bookings
-SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(), note = note || ';cancelled_by_user'
-WHERE status = 'blocked' AND note = $1;
-`, coveredByBookingNote(bookingID))
-	if err != nil {
+	if err := s.cancelBookingAndRelease(ctx, bookingID, "cancelled_by_user"); err != nil {
 		return bot.BookingChangeResult{}, err
 	}
 	return result, nil

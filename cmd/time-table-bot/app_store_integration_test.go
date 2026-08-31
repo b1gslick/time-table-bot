@@ -760,6 +760,105 @@ func TestAppStore_AddBookingForContactByIndexUsesSelectedServiceSlot(t *testing.
 	}
 }
 
+func TestAppStore_DeleteImportedBookingRestoresReusableSchedule(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetSessionDuration(ctx, 2001, 15); err != nil {
+		t.Fatalf("SetSessionDuration: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Body > Massage > Endosphere", 30, ""); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+	if _, err := app.ListServices(ctx, 2001); err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+
+	createBaseSlots := func(start time.Time) []int64 {
+		t.Helper()
+		ids := make([]int64, 0, 3)
+		for i := 0; i < 3; i++ {
+			slotStart := start.Add(time.Duration(i*15) * time.Minute)
+			slot, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+				AdminUserID: admin.ID,
+				StartAt:     slotStart,
+				EndAt:       slotStart.Add(15 * time.Minute),
+				Capacity:    1,
+				Status:      domain.SlotStatusOpen,
+			})
+			if err != nil {
+				t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+			}
+			ids = append(ids, slot.ID)
+		}
+		return ids
+	}
+	cancelImported := func(start time.Time) {
+		t.Helper()
+		if _, err := app.AddImportedBooking(ctx, 2001, "phone", "+35799999999", []int{1}, start); err != nil {
+			t.Fatalf("AddImportedBooking at %s: %v", start, err)
+		}
+		bookings, err := app.ListAdminBookingsRange(ctx, 2001, start.Add(-time.Minute), start.Add(time.Hour))
+		if err != nil || len(bookings) != 1 {
+			t.Fatalf("ListAdminBookingsRange = %#v, %v", bookings, err)
+		}
+		if _, err := app.DeleteBookingByID(ctx, 2001, bookings[0].ID); err != nil {
+			t.Fatalf("DeleteBookingByID: %v", err)
+		}
+	}
+
+	alignedStart := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	alignedIDs := createBaseSlots(alignedStart)
+	cancelImported(alignedStart)
+	var alignedEnd time.Time
+	var alignedStatus, alignedNote string
+	if err := db.QueryRowContext(ctx, `SELECT end_at, status, note FROM schedule_slots WHERE id = $1`, alignedIDs[0]).Scan(&alignedEnd, &alignedStatus, &alignedNote); err != nil {
+		t.Fatalf("read restored aligned slot: %v", err)
+	}
+	if !alignedEnd.Equal(alignedStart.Add(15*time.Minute)) || alignedStatus != "open" || alignedNote != "" {
+		t.Fatalf("aligned slot = end %s status %q note %q", alignedEnd, alignedStatus, alignedNote)
+	}
+	for _, id := range alignedIDs[1:] {
+		var status string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM schedule_slots WHERE id = $1`, id).Scan(&status); err != nil || status != "open" {
+			t.Fatalf("restored aligned covered slot %d = %q, %v", id, status, err)
+		}
+	}
+	available, err := app.ListFreeSlotsForServicesRange(ctx, 2001, []int{1}, alignedStart, alignedStart.Add(time.Hour))
+	if err != nil || len(available) == 0 || !available[0].StartAt.Equal(alignedStart) {
+		t.Fatalf("availability after aligned cancellation = %#v, %v", available, err)
+	}
+	if _, err := app.AddBookingForContactByIndex(ctx, 2001, "phone", "+35799999999", 1); err != nil {
+		t.Fatalf("rebook same aligned time: %v", err)
+	}
+
+	offGridBase := alignedStart.AddDate(0, 0, 1)
+	offGridIDs := createBaseSlots(offGridBase)
+	offGridStart := offGridBase.Add(5 * time.Minute)
+	cancelImported(offGridStart)
+	for _, id := range offGridIDs {
+		var status string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM schedule_slots WHERE id = $1`, id).Scan(&status); err != nil || status != "open" {
+			t.Fatalf("restored off-grid slot %d = %q, %v", id, status, err)
+		}
+	}
+	var syntheticStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM schedule_slots WHERE admin_user_id = $1 AND start_at = $2`, admin.ID, offGridStart).Scan(&syntheticStatus); err != nil || syntheticStatus != "closed" {
+		t.Fatalf("off-grid synthetic status = %q, %v", syntheticStatus, err)
+	}
+}
+
 func TestAppStore_FinanceReportIncludesBookingsExpensesAndOverrides(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
