@@ -859,6 +859,99 @@ func TestAppStore_DeleteImportedBookingRestoresReusableSchedule(t *testing.T) {
 	}
 }
 
+func TestAppStore_SetWeeklyHoursSynchronizesExistingFutureSchedule(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	client, err := repo.UpsertUser(ctx, 3001, "client", "Client")
+	if err != nil {
+		t.Fatalf("UpsertUser client: %v", err)
+	}
+	if err := app.SetSessionDuration(ctx, 2001, 15); err != nil {
+		t.Fatalf("SetSessionDuration: %v", err)
+	}
+
+	day := time.Now().UTC().AddDate(0, 0, 7)
+	for day.Weekday() != time.Monday {
+		day = day.AddDate(0, 0, 1)
+	}
+	day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+	oldStart := day.Add(9*time.Hour + 30*time.Minute)
+	oldEnd := day.Add(17 * time.Hour)
+	for start := oldStart; start.Before(oldEnd); start = start.Add(15 * time.Minute) {
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     start,
+			EndAt:       start.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot: %v", err)
+		}
+	}
+
+	weekly := []bot.WeekdayHours{{Weekday: time.Monday, Working: true, Start: "09:30", End: "18:20"}}
+	if err := app.SetWeeklyHours(ctx, 2001, weekly); err != nil {
+		t.Fatalf("SetWeeklyHours extend: %v", err)
+	}
+	var slotCount int
+	var lastEnd time.Time
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*), MAX(end_at)
+FROM schedule_slots
+WHERE admin_user_id = $1 AND start_at >= $2 AND start_at < $3 AND status = 'open';
+`, admin.ID, day, day.AddDate(0, 0, 1)).Scan(&slotCount, &lastEnd); err != nil {
+		t.Fatalf("read extended schedule: %v", err)
+	}
+	if slotCount != 35 || !lastEnd.Equal(day.Add(18*time.Hour+15*time.Minute)) {
+		t.Fatalf("extended schedule = %d slots through %s, want 35 through 18:15", slotCount, lastEnd)
+	}
+
+	var bookedSlotID int64
+	if err := db.QueryRowContext(ctx, `
+SELECT id FROM schedule_slots WHERE admin_user_id = $1 AND start_at = $2;
+`, admin.ID, day.Add(18*time.Hour)).Scan(&bookedSlotID); err != nil {
+		t.Fatalf("find late slot: %v", err)
+	}
+	if _, err := repo.CreateBooking(ctx, domain.Booking{
+		SlotID:        bookedSlotID,
+		UserID:        &client.ID,
+		Status:        domain.BookingStatusBooked,
+		TravelMinutes: 0,
+	}); err != nil {
+		t.Fatalf("CreateBooking late slot: %v", err)
+	}
+	weekly[0].End = "17:00"
+	if err := app.SetWeeklyHours(ctx, 2001, weekly); err != nil {
+		t.Fatalf("SetWeeklyHours shorten: %v", err)
+	}
+	var unbookedStatus, unbookedNote, bookedStatus string
+	if err := db.QueryRowContext(ctx, `
+SELECT status, note FROM schedule_slots WHERE admin_user_id = $1 AND start_at = $2;
+`, admin.ID, day.Add(17*time.Hour)).Scan(&unbookedStatus, &unbookedNote); err != nil {
+		t.Fatalf("read closed late slot: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT status FROM schedule_slots WHERE id = $1;
+`, bookedSlotID).Scan(&bookedStatus); err != nil {
+		t.Fatalf("read booked late slot: %v", err)
+	}
+	if unbookedStatus != "closed" || unbookedNote != "weekly_hours_closed" || bookedStatus != "open" {
+		t.Fatalf("shortened schedule = unbooked %s/%s, booked %s; want closed/weekly_hours_closed and open", unbookedStatus, unbookedNote, bookedStatus)
+	}
+}
+
 func TestAppStore_RescheduleMovesDurationBlocksAndReleasesOldSlots(t *testing.T) {
 	ctx := context.Background()
 	db := openAppStorePostgresContainer(t, ctx)
@@ -1273,7 +1366,9 @@ func TestAppStore_AdminScheduleReminderAndMissingMonthNotice(t *testing.T) {
 		t.Fatalf("MarkReminderSent: %v", err)
 	}
 
-	if _, err := app.ListFreeSlotsForMonth(ctx, 3001, time.Date(2026, 8, 1, 0, 0, 0, 0, loc)); err != nil {
+	missingMonth := time.Now().In(loc).AddDate(0, 2, 0)
+	missingMonth = time.Date(missingMonth.Year(), missingMonth.Month(), 1, 0, 0, 0, 0, loc)
+	if _, err := app.ListFreeSlotsForMonth(ctx, 3001, missingMonth); err != nil {
 		t.Fatalf("ListFreeSlotsForMonth: %v", err)
 	}
 	reminders, err = app.DueReminders(ctx, time.Now().Add(time.Minute), 10)

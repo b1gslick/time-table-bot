@@ -762,7 +762,180 @@ func (s *appStore) SetWeeklyHours(ctx context.Context, adminTelegramID int64, ho
 		_ = s.repo.SetAdminSetting(ctx, adminID, "work_start", firstStart)
 		_ = s.repo.SetAdminSetting(ctx, adminID, "work_end", firstEnd)
 	}
+	if err := s.syncGeneratedScheduleToWeeklyHours(ctx, adminID, normalized); err != nil {
+		return fmt.Errorf("sync generated schedule to weekly hours: %w", err)
+	}
 	_ = s.clearScheduleCacheForAdminID(ctx, adminID)
+	return nil
+}
+
+func (s *appStore) syncGeneratedScheduleToWeeklyHours(ctx context.Context, adminID int64, hours []bot.WeekdayHours) error {
+	if adminID <= 0 {
+		return store.ErrInvalidArgument
+	}
+	durationMin, err := s.intSetting(ctx, adminID, "session_duration", defaultSessionDuration)
+	if err != nil || durationMin <= 0 {
+		durationMin = defaultSessionDuration
+	}
+	blockedDates, err := s.blockedDateSet(ctx, adminID)
+	if err != nil {
+		return err
+	}
+
+	rules := make(map[time.Weekday]scheduleRule, len(hours))
+	for _, item := range hours {
+		if !item.Working {
+			continue
+		}
+		start, err := parseClockSetting(item.Start)
+		if err != nil {
+			return err
+		}
+		end, err := parseClockSetting(item.End)
+		if err != nil || end <= start {
+			return store.ErrInvalidArgument
+		}
+		rules[item.Weekday] = scheduleRule{Start: start, End: end}
+	}
+
+	now := time.Now().In(s.loc)
+	today := dateOnlyLocal(now, s.loc)
+	var lastSlot sql.NullTime
+	if err := s.db.QueryRowContext(ctx, `
+SELECT MAX(start_at)
+FROM schedule_slots
+WHERE admin_user_id = $1 AND start_at >= $2;
+`, adminID, today).Scan(&lastSlot); err != nil {
+		return err
+	}
+	if !lastSlot.Valid {
+		return nil
+	}
+	horizon := dateOnlyLocal(lastSlot.Time, s.loc)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1);`, adminID); err != nil {
+		return err
+	}
+
+	for day := today; !day.After(horizon); day = day.AddDate(0, 0, 1) {
+		dayEnd := day.AddDate(0, 0, 1)
+		rule, working := rules[day.Weekday()]
+		blocked := blockedDates[day.Format("2006-01-02")]
+		if !working || blocked {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots slot
+SET status = 'closed', note = 'weekly_hours_closed', updated_at = NOW()
+WHERE slot.admin_user_id = $1
+  AND slot.start_at >= $2
+  AND slot.start_at < $3
+  AND slot.start_at >= $4
+  AND slot.status = 'open'
+  AND slot.note = ''
+  AND NOT EXISTS (
+      SELECT 1 FROM bookings booking
+      WHERE booking.slot_id = slot.id AND booking.status IN ('booked', 'blocked')
+  );
+`, adminID, day, dayEnd, now); err != nil {
+				return err
+			}
+			continue
+		}
+
+		workStart := day.Add(rule.Start)
+		workEnd := day.Add(rule.End)
+		if _, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots slot
+SET status = 'closed', note = 'weekly_hours_closed', updated_at = NOW()
+WHERE slot.admin_user_id = $1
+  AND slot.start_at >= $2
+  AND slot.start_at < $3
+  AND slot.start_at >= $4
+  AND slot.status = 'open'
+  AND slot.note = ''
+  AND (slot.start_at < $5 OR slot.end_at > $6)
+  AND NOT EXISTS (
+      SELECT 1 FROM bookings booking
+      WHERE booking.slot_id = slot.id AND booking.status IN ('booked', 'blocked')
+  );
+`, adminID, day, dayEnd, now, workStart, workEnd); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE schedule_slots slot
+SET end_at = slot.start_at + ($4 * interval '1 minute'),
+    status = 'open',
+    note = '',
+    updated_at = NOW()
+WHERE slot.admin_user_id = $1
+  AND slot.start_at >= $2
+  AND slot.start_at + ($4 * interval '1 minute') <= $3
+  AND slot.start_at >= $5
+  AND slot.status = 'closed'
+  AND slot.note = 'weekly_hours_closed';
+`, adminID, workStart, workEnd, durationMin, now); err != nil {
+			return err
+		}
+		step := time.Duration(durationMin) * time.Minute
+		for start := workStart; !start.Add(step).After(workEnd); start = start.Add(step) {
+			if start.Before(now) {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO schedule_slots (admin_user_id, service_id, start_at, end_at, capacity, status, note)
+VALUES ($1, NULL, $2, $3, 1, 'open', '')
+ON CONFLICT (admin_user_id, start_at) DO NOTHING;
+`, adminID, start, start.Add(step)); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *appStore) syncAllGeneratedSchedulesToWeeklyHours(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT admin_user_id, value
+FROM admin_settings
+WHERE key = 'weekly_hours';
+`)
+	if err != nil {
+		return err
+	}
+	type adminHours struct {
+		adminID int64
+		hours   []bot.WeekdayHours
+	}
+	var items []adminHours
+	for rows.Next() {
+		var item adminHours
+		var raw string
+		if err := rows.Scan(&item.adminID, &raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := json.Unmarshal([]byte(raw), &item.hours); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("parse weekly hours for admin %d: %w", item.adminID, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if err := s.syncGeneratedScheduleToWeeklyHours(ctx, item.adminID, item.hours); err != nil {
+			return fmt.Errorf("sync weekly hours for admin %d: %w", item.adminID, err)
+		}
+		_ = s.clearScheduleCacheForAdminID(ctx, item.adminID)
+	}
 	return nil
 }
 

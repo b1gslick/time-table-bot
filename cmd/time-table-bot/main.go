@@ -55,6 +55,9 @@ func main() {
 	}
 
 	appStore := newAppStore(db, repo, loc)
+	if err := appStore.syncAllGeneratedSchedulesToWeeklyHours(ctx); err != nil {
+		logger.Printf("sync existing schedules to weekly hours failed: %v", err)
+	}
 	tg := telegram.NewClient(cfg.TelegramBotToken)
 	bookingBot := bot.New(tg, appStore, logger, cfg.SuperAdminUsername)
 	var qwenParser *nlu.QwenParser

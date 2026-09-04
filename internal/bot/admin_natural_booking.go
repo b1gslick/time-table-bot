@@ -121,14 +121,41 @@ func (b *Bot) continueAdminBookingDraft(ctx context.Context, chatID int64, user 
 			return b.beginBookingConfirmation(ctx, chatID, user, state, index+1)
 		}
 	}
+	unavailableReason := b.adminBookingUnavailableReason(ctx, user, state, requested)
 	if len(slots) == 0 {
 		state.Step = conversationStepAdminBookingTime
 		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 		}
-		return b.sendText(ctx, chatID, tr(user.Language, "free_empty_try_other")+"\n"+tr(user.Language, "admin_booking_time_correction"))
+		return b.sendText(ctx, chatID, unavailableReason+"\n"+tr(user.Language, "admin_booking_time_correction"))
 	}
-	return b.showAdminBookingAlternatives(ctx, chatID, user, state, slots, requested)
+	return b.showAdminBookingAlternatives(ctx, chatID, user, state, slots, requested, unavailableReason)
+}
+
+func (b *Bot) adminBookingUnavailableReason(ctx context.Context, user UserRecord, state ConversationState, requested time.Time) string {
+	services, err := b.store.ListServices(ctx, user.TelegramID)
+	if err != nil {
+		return tr(user.Language, "admin_booking_alternatives")
+	}
+	durationMin := 0
+	seen := make(map[int]bool, len(state.ServiceIndexes))
+	for _, index := range state.ServiceIndexes {
+		if index <= 0 || index > len(services) || seen[index] {
+			continue
+		}
+		seen[index] = true
+		durationMin += services[index-1].DurationMin
+	}
+	if durationMin <= 0 {
+		return tr(user.Language, "admin_booking_alternatives")
+	}
+	return tr(
+		user.Language,
+		"admin_booking_unavailable_reason",
+		requested.Format("02.01.2006"),
+		requested.Format("15:04"),
+		durationMin,
+	)
 }
 
 func (b *Bot) correctAdminBookingTime(ctx context.Context, user UserRecord, state ConversationState, text string) (ConversationState, bool) {
@@ -227,7 +254,7 @@ func parseAdminBookingStart(value string, loc *time.Location) (time.Time, error)
 	return time.Time{}, errors.New("invalid admin booking start")
 }
 
-func (b *Bot) showAdminBookingAlternatives(ctx context.Context, chatID int64, user UserRecord, state ConversationState, slots []AvailabilitySlot, requested time.Time) error {
+func (b *Bot) showAdminBookingAlternatives(ctx context.Context, chatID int64, user UserRecord, state ConversationState, slots []AvailabilitySlot, requested time.Time, unavailableReason string) error {
 	type candidate struct {
 		index    int
 		distance time.Duration
@@ -263,6 +290,9 @@ func (b *Bot) showAdminBookingAlternatives(ctx context.Context, chatID int64, us
 	if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
 		return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
-	text := tr(user.Language, "admin_booking_alternatives") + "\n" + formatAvailabilitySlots(user.Language, selected, len(selected))
+	if strings.TrimSpace(unavailableReason) == "" {
+		unavailableReason = tr(user.Language, "admin_booking_alternatives")
+	}
+	text := unavailableReason + "\n" + tr(user.Language, "admin_booking_alternatives") + "\n" + formatAvailabilitySlots(user.Language, selected, len(selected))
 	return b.sendTextWithKeyboard(ctx, chatID, text, numberKeyboardWithPrefixLang(len(selected), "slot", user.Language))
 }
