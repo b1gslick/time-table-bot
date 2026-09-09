@@ -21,6 +21,14 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 	if err != nil {
 		return true, b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
 	}
+	// A complete new booking request must replace an unfinished booking draft.
+	// Otherwise it can be mistaken for a service-selection answer and retain the
+	// previous draft's client or appointment time.
+	if isAdmin(user.Role) && isAdminBookingConversation(state) && isExplicitAdminBookingRequest(text) {
+		if handled, handleErr := b.handleAdminNaturalBooking(ctx, chatID, user, text); handled {
+			return true, handleErr
+		}
+	}
 
 	switch state.Step {
 	case conversationStepLanguage:
@@ -146,6 +154,19 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 	default:
 		_ = b.store.ClearConversationState(ctx, user.TelegramID)
 		return false, nil
+	}
+}
+
+func isAdminBookingConversation(state ConversationState) bool {
+	if state.BookingDraft == "admin" || isAdminAppointmentState(state) {
+		return true
+	}
+	switch state.Step {
+	case conversationStepAppointKind, conversationStepAppointUser, conversationStepAppointTime,
+		conversationStepAdminBookingTime:
+		return true
+	default:
+		return false
 	}
 }
 

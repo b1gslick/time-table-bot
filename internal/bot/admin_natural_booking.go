@@ -210,6 +210,13 @@ func adminBookingDurationMatches(indexes []int, requestedMinutes int, services [
 }
 
 func looksLikeAdminBookingCandidate(text string, services []ServiceView) bool {
+	if isExplicitAdminBookingRequest(text) {
+		return true
+	}
+	return looksLikeNaturalBookingCandidate(text, services)
+}
+
+func isExplicitAdminBookingRequest(text string) bool {
 	normalized := normalizeMatchText(text)
 	for _, phrase := range []string{
 		"запиши", "запишите", "записать клиента", "создай запись", "поставь клиента",
@@ -219,7 +226,7 @@ func looksLikeAdminBookingCandidate(text string, services []ServiceView) bool {
 			return true
 		}
 	}
-	return looksLikeNaturalBookingCandidate(text, services)
+	return false
 }
 
 func normalizeAdminBookingContact(contactType, contact string) (string, string) {
