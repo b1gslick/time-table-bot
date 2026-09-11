@@ -370,6 +370,8 @@ type Store interface {
 	AddBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)
 	AddBookingByPhone(ctx context.Context, adminTelegramID int64, phone string, start time.Time) (BookingChangeResult, error)
 	AddBookingForContactByIndex(ctx context.Context, adminTelegramID int64, contactType, contact string, index int) (BookingChangeResult, error)
+	AddBookingForContactAtTime(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (BookingChangeResult, error)
+	CheckFreeSlotForServicesAtTime(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) (AvailabilitySlot, error)
 	FindImportBookingConflict(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) (*BookingConflict, error)
 	AddImportedBooking(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (BookingChangeResult, error)
 	DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (BookingChangeResult, error)

@@ -1434,6 +1434,11 @@ type importedBookingSpec struct {
 	durationMin  int
 }
 
+type scheduleCoverageSlot struct {
+	startAt time.Time
+	endAt   time.Time
+}
+
 func (s *appStore) importedBookingSpec(ctx context.Context, adminTelegramID int64, serviceIndexes []int) (importedBookingSpec, error) {
 	adminID, err := s.effectiveAdminIDByTelegram(ctx, adminTelegramID)
 	if err != nil {
@@ -1461,6 +1466,73 @@ func (s *appStore) importedBookingSpec(ctx context.Context, adminTelegramID int6
 		spec.durationMin += service.DurationMin
 	}
 	return spec, nil
+}
+
+func (s *appStore) CheckFreeSlotForServicesAtTime(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) (bot.AvailabilitySlot, error) {
+	if start.IsZero() {
+		return bot.AvailabilitySlot{}, store.ErrInvalidArgument
+	}
+	spec, err := s.importedBookingSpec(ctx, adminTelegramID, serviceIndexes)
+	if err != nil {
+		return bot.AvailabilitySlot{}, err
+	}
+	start = start.In(s.loc)
+	end := start.Add(time.Duration(spec.durationMin) * time.Minute)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT slot.start_at, slot.end_at
+FROM schedule_slots slot
+WHERE slot.admin_user_id = $1
+  AND slot.status = 'open'
+  AND slot.start_at < $3
+  AND slot.end_at > $2
+  AND NOT EXISTS (
+      SELECT 1
+      FROM bookings booking
+      WHERE booking.slot_id = slot.id
+        AND booking.status IN ('booked', 'blocked')
+  )
+ORDER BY slot.start_at ASC, slot.end_at ASC;
+`, spec.adminID, start, end)
+	if err != nil {
+		return bot.AvailabilitySlot{}, err
+	}
+	defer rows.Close()
+	coverage := make([]scheduleCoverageSlot, 0)
+	for rows.Next() {
+		var slot scheduleCoverageSlot
+		if err := rows.Scan(&slot.startAt, &slot.endAt); err != nil {
+			return bot.AvailabilitySlot{}, err
+		}
+		coverage = append(coverage, slot)
+	}
+	if err := rows.Err(); err != nil {
+		return bot.AvailabilitySlot{}, err
+	}
+	if !scheduleCoverageContains(coverage, start, end) {
+		return bot.AvailabilitySlot{}, store.ErrSlotUnavailable
+	}
+	adminName, _ := s.usernameByID(ctx, spec.adminID)
+	return bot.AvailabilitySlot{
+		StartAt: start, EndAt: end, AdminName: adminName,
+		ServiceNames: spec.serviceNames, DurationMin: spec.durationMin,
+	}, nil
+}
+
+func scheduleCoverageContains(slots []scheduleCoverageSlot, start, end time.Time) bool {
+	coveredUntil := start
+	for _, slot := range slots {
+		if !slot.endAt.After(coveredUntil) {
+			continue
+		}
+		if slot.startAt.After(coveredUntil) {
+			return false
+		}
+		coveredUntil = slot.endAt
+		if !coveredUntil.Before(end) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *appStore) FindImportBookingConflict(ctx context.Context, adminTelegramID int64, serviceIndexes []int, start time.Time) (*bot.BookingConflict, error) {
@@ -1554,6 +1626,14 @@ LEFT JOIN admin_services service ON service.id = primary_booking.service_id;
 }
 
 func (s *appStore) AddImportedBooking(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (bot.BookingChangeResult, error) {
+	return s.addBookingAtTime(ctx, adminTelegramID, contactType, contact, serviceIndexes, start, false)
+}
+
+func (s *appStore) AddBookingForContactAtTime(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time) (bot.BookingChangeResult, error) {
+	return s.addBookingAtTime(ctx, adminTelegramID, contactType, contact, serviceIndexes, start, true)
+}
+
+func (s *appStore) addBookingAtTime(ctx context.Context, adminTelegramID int64, contactType, contact string, serviceIndexes []int, start time.Time, requireScheduleCoverage bool) (bot.BookingChangeResult, error) {
 	if start.IsZero() {
 		return bot.BookingChangeResult{}, store.ErrInvalidArgument
 	}
@@ -1584,6 +1664,15 @@ func (s *appStore) AddImportedBooking(ctx context.Context, adminTelegramID int64
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1);`, spec.adminID); err != nil {
 		return bot.BookingChangeResult{}, err
+	}
+	if requireScheduleCoverage {
+		covered, err := s.lockAndCheckScheduleCoverage(ctx, tx, spec.adminID, start, end)
+		if err != nil {
+			return bot.BookingChangeResult{}, err
+		}
+		if !covered {
+			return bot.BookingChangeResult{}, store.ErrSlotUnavailable
+		}
 	}
 	var occupied bool
 	if err := tx.QueryRowContext(ctx, `
@@ -1649,6 +1738,62 @@ RETURNING id;
 	}
 	_ = s.clearScheduleCacheForAdminID(ctx, spec.adminID)
 	return s.bookingChangeByID(ctx, bookingID, spec.adminID)
+}
+
+func (s *appStore) lockAndCheckScheduleCoverage(ctx context.Context, tx *sql.Tx, adminID int64, start, end time.Time) (bool, error) {
+	type lockedSlot struct {
+		id       int64
+		startAt  time.Time
+		endAt    time.Time
+		capacity int
+		status   string
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, start_at, end_at, capacity, status
+FROM schedule_slots
+WHERE admin_user_id = $1
+  AND start_at < $3
+  AND end_at > $2
+ORDER BY start_at ASC, end_at ASC
+FOR UPDATE;
+`, adminID, start, end)
+	if err != nil {
+		return false, err
+	}
+	var locked []lockedSlot
+	for rows.Next() {
+		var slot lockedSlot
+		if err := rows.Scan(&slot.id, &slot.startAt, &slot.endAt, &slot.capacity, &slot.status); err != nil {
+			rows.Close()
+			return false, err
+		}
+		locked = append(locked, slot)
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	coverage := make([]scheduleCoverageSlot, 0, len(locked))
+	for _, slot := range locked {
+		if slot.status != string(domain.SlotStatusOpen) || slot.capacity <= 0 {
+			continue
+		}
+		var occupied int
+		if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM bookings
+WHERE slot_id = $1 AND status IN ('booked', 'blocked');
+`, slot.id).Scan(&occupied); err != nil {
+			return false, err
+		}
+		if occupied >= slot.capacity {
+			continue
+		}
+		coverage = append(coverage, scheduleCoverageSlot{startAt: slot.startAt, endAt: slot.endAt})
+	}
+	return scheduleCoverageContains(coverage, start, end), nil
 }
 
 func (s *appStore) DeleteBookingByUsername(ctx context.Context, adminTelegramID int64, username string, start time.Time) (bot.BookingChangeResult, error) {

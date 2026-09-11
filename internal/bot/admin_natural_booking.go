@@ -3,7 +3,9 @@ package bot
 import (
 	"context"
 	"errors"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -15,6 +17,12 @@ import (
 const (
 	adminBookingMinConfidence = 0.55
 	adminBookingMaxOptions    = 7
+	adminBookingDirectSlot    = -1
+)
+
+var (
+	adminBookingClockPattern       = regexp.MustCompile(`(?:^|[^0-9])(?:[01]?[0-9]|2[0-3]):[0-5][0-9](?:$|[^0-9])`)
+	adminBookingNumericDatePattern = regexp.MustCompile(`(?:^|[^0-9])(?:0?[1-9]|[12][0-9]|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-][0-9]{2,4})?(?:$|[^0-9])`)
 )
 
 func (b *Bot) handleAdminNaturalBooking(ctx context.Context, chatID int64, user UserRecord, text string) (bool, error) {
@@ -121,6 +129,20 @@ func (b *Bot) continueAdminBookingDraft(ctx context.Context, chatID int64, user 
 			return b.beginBookingConfirmation(ctx, chatID, user, state, index+1)
 		}
 	}
+	directSlot, directErr := b.store.CheckFreeSlotForServicesAtTime(ctx, user.TelegramID, state.ServiceIndexes, requested)
+	if directErr == nil {
+		state.Step = conversationStepBookingConfirm
+		state.PendingSlotIndex = adminBookingDirectSlot
+		state.VisibleSlotIndexes = nil
+		if err := b.store.SetConversationState(ctx, user.TelegramID, state); err != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "conversation_failed"))
+		}
+		return b.sendBookingConfirmation(ctx, chatID, user, state, directSlot)
+	}
+	if !errors.Is(directErr, store.ErrSlotUnavailable) && !errors.Is(directErr, store.ErrNotFound) && !errors.Is(directErr, store.ErrInvalidArgument) {
+		b.logger.Printf("admin natural booking: check exact time failed admin=%d services=%v start=%s: %v", user.TelegramID, state.ServiceIndexes, requested.Format(time.RFC3339), directErr)
+		return b.sendText(ctx, chatID, tr(user.Language, "free_failed"))
+	}
 	unavailableReason := b.adminBookingUnavailableReason(ctx, user, state, requested)
 	if len(slots) == 0 {
 		state.Step = conversationStepAdminBookingTime
@@ -210,10 +232,14 @@ func adminBookingDurationMatches(indexes []int, requestedMinutes int, services [
 }
 
 func looksLikeAdminBookingCandidate(text string, services []ServiceView) bool {
-	if isExplicitAdminBookingRequest(text) {
+	if looksLikeFreshAdminBookingRequest(text) {
 		return true
 	}
 	return looksLikeNaturalBookingCandidate(text, services)
+}
+
+func looksLikeFreshAdminBookingRequest(text string) bool {
+	return isExplicitAdminBookingRequest(text) || hasStandaloneAdminBookingDateTime(text)
 }
 
 func isExplicitAdminBookingRequest(text string) bool {
@@ -224,6 +250,43 @@ func isExplicitAdminBookingRequest(text string) bool {
 	} {
 		if strings.Contains(normalized, normalizeMatchText(phrase)) {
 			return true
+		}
+	}
+	return false
+}
+
+func hasStandaloneAdminBookingDateTime(text string) bool {
+	if !adminBookingClockPattern.MatchString(text) {
+		return false
+	}
+	if adminBookingNumericDatePattern.MatchString(text) {
+		return true
+	}
+	fields := strings.Fields(normalizeMatchText(text))
+	for _, field := range fields {
+		for _, dateWord := range []string{
+			"сегодня", "завтра", "послезавтра",
+			"понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресень",
+			"today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+		} {
+			if strings.HasPrefix(field, dateWord) {
+				return true
+			}
+		}
+	}
+	for index := 0; index+1 < len(fields); index++ {
+		day, err := strconv.Atoi(fields[index])
+		if err != nil || day < 1 || day > 31 {
+			continue
+		}
+		month := fields[index+1]
+		for _, monthWord := range []string{
+			"январ", "феврал", "март", "апрел", "май", "мая", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр",
+			"january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+		} {
+			if strings.HasPrefix(month, monthWord) {
+				return true
+			}
 		}
 	}
 	return false

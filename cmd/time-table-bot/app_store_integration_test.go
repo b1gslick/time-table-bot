@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -757,6 +758,60 @@ func TestAppStore_AddBookingForContactByIndexUsesSelectedServiceSlot(t *testing.
 	}
 	if result.Username != "+35799999999" || len(result.ServiceNames) != 1 || result.ServiceNames[0] != "Classic" {
 		t.Fatalf("booking result = %#v, want phone client and Classic service", result)
+	}
+}
+
+func TestAppStore_AddBookingForContactAtTimeBetweenScheduleSteps(t *testing.T) {
+	ctx := context.Background()
+	db := openAppStorePostgresContainer(t, ctx)
+	repo := store.NewPostgresStore(db)
+	if err := repo.ApplySchema(ctx); err != nil {
+		t.Fatalf("ApplySchema: %v", err)
+	}
+	app := newAppStore(db, repo, time.UTC)
+	admin, err := repo.UpsertUser(ctx, 2001, "master", "Master")
+	if err != nil {
+		t.Fatalf("UpsertUser admin: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE users SET role = $1 WHERE id = $2", domain.RoleAdmin, admin.ID); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	if err := app.SetSessionDuration(ctx, 2001, 15); err != nil {
+		t.Fatalf("SetSessionDuration: %v", err)
+	}
+	if err := app.AddService(ctx, 2001, "Electro > Timed > 30 min", 30, ""); err != nil {
+		t.Fatalf("AddService: %v", err)
+	}
+	gridStart := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Hour)
+	for i := 0; i < 3; i++ {
+		slotStart := gridStart.Add(time.Duration(i*15) * time.Minute)
+		if _, err := repo.CreateScheduleSlot(ctx, domain.ScheduleSlot{
+			AdminUserID: admin.ID,
+			StartAt:     slotStart,
+			EndAt:       slotStart.Add(15 * time.Minute),
+			Capacity:    1,
+			Status:      domain.SlotStatusOpen,
+		}); err != nil {
+			t.Fatalf("CreateScheduleSlot %d: %v", i, err)
+		}
+	}
+	requested := gridStart.Add(5 * time.Minute)
+	available, err := app.CheckFreeSlotForServicesAtTime(ctx, 2001, []int{1}, requested)
+	if err != nil {
+		t.Fatalf("CheckFreeSlotForServicesAtTime: %v", err)
+	}
+	if !available.StartAt.Equal(requested) || !available.EndAt.Equal(requested.Add(30*time.Minute)) {
+		t.Fatalf("direct availability = %s-%s, want %s-%s", available.StartAt, available.EndAt, requested, requested.Add(30*time.Minute))
+	}
+	result, err := app.AddBookingForContactAtTime(ctx, 2001, "phone", "+35799999999", []int{1}, requested)
+	if err != nil {
+		t.Fatalf("AddBookingForContactAtTime: %v", err)
+	}
+	if !result.StartAt.Equal(requested) || !result.EndAt.Equal(requested.Add(30*time.Minute)) {
+		t.Fatalf("direct booking = %s-%s, want %s-%s", result.StartAt, result.EndAt, requested, requested.Add(30*time.Minute))
+	}
+	if _, err := app.CheckFreeSlotForServicesAtTime(ctx, 2001, []int{1}, requested); !errors.Is(err, store.ErrSlotUnavailable) {
+		t.Fatalf("occupied direct interval error = %v, want ErrSlotUnavailable", err)
 	}
 }
 

@@ -39,9 +39,15 @@ func TestExplicitAdminBookingRequestRestartsActiveDraft(t *testing.T) {
 	if isExplicitAdminBookingRequest("воск ноги до колен") {
 		t.Fatal("a service-selection answer must continue the current draft")
 	}
+	if !looksLikeFreshAdminBookingRequest("Арина 15 сентября 13:20 электро 30 мин") {
+		t.Fatal("a complete shorthand booking request must replace the current draft")
+	}
+	if looksLikeFreshAdminBookingRequest("электро 30 мин") {
+		t.Fatal("a shorthand service-selection answer must continue the current draft")
+	}
 }
 
-func TestHandleMessageExplicitBookingReplacesStaleDraftDate(t *testing.T) {
+func TestHandleMessageShorthandBookingReplacesStaleDraftDate(t *testing.T) {
 	oldStart := "2099-09-15T10:20:00+03:00"
 	newStart := "2099-09-18T09:30:00+03:00"
 	start, err := time.Parse(time.RFC3339, newStart)
@@ -78,7 +84,7 @@ func TestHandleMessageExplicitBookingReplacesStaleDraftDate(t *testing.T) {
 	err = bookingBot.HandleMessage(context.Background(), &telegram.Message{
 		From: telegram.User{ID: 42, Username: "master"},
 		Chat: telegram.Chat{ID: 42},
-		Text: "Запиши Николь воск ноги до колен, руки на 18 сентября 9:30",
+		Text: "Николь 18 сентября 9:30 воск ноги до колен, руки",
 	})
 	if err != nil {
 		t.Fatalf("HandleMessage: %v", err)
@@ -94,11 +100,64 @@ func TestHandleMessageExplicitBookingReplacesStaleDraftDate(t *testing.T) {
 	}
 }
 
+func TestAdminNaturalBookingAcceptsStartBetweenScheduleSteps(t *testing.T) {
+	requestedStart := "2099-09-18T09:35:00+03:00"
+	start, err := time.Parse(time.RFC3339, requestedStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &adminBookingRestartStore{
+		state:    ConversationState{Step: conversationStepCategory, BookingDraft: "admin"},
+		services: []ServiceView{{Name: "Электро 30 мин", DurationMin: 30}},
+		slots: []AvailabilitySlot{
+			{StartAt: start.Add(-5 * time.Minute), EndAt: start.Add(25 * time.Minute), ServiceNames: []string{"Электро 30 мин"}},
+			{StartAt: start.Add(10 * time.Minute), EndAt: start.Add(40 * time.Minute), ServiceNames: []string{"Электро 30 мин"}},
+		},
+		directSlot: AvailabilitySlot{
+			StartAt: start, EndAt: start.Add(30 * time.Minute), ServiceNames: []string{"Электро 30 мин"}, DurationMin: 30,
+		},
+	}
+	parser := &adminBookingRestartParser{intent: nlu.AdminBookingIntent{
+		IsCreateBooking: true,
+		ContactType:     "telegram",
+		Contact:         "@arina",
+		ServiceIndexes:  []int{1},
+		DurationMin:     30,
+		StartAt:         requestedStart,
+		Confidence:      0.99,
+	}}
+	bookingBot := New(&adminBookingRestartTelegram{}, store, nil)
+	bookingBot.SetAdminBookingIntentParser(parser)
+	message := func(text string) error {
+		return bookingBot.HandleMessage(context.Background(), &telegram.Message{
+			From: telegram.User{ID: 42, Username: "master"},
+			Chat: telegram.Chat{ID: 42},
+			Text: text,
+		})
+	}
+
+	if err := message("Арина 18 сентября 9:35 электро 30 мин"); err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+	if store.state.Step != conversationStepBookingConfirm || store.state.PendingSlotIndex != adminBookingDirectSlot {
+		t.Fatalf("direct confirmation state = %#v", store.state)
+	}
+	if err := message("Да"); err != nil {
+		t.Fatalf("confirm direct booking: %v", err)
+	}
+	if store.addAtCalls != 1 || !store.addAtStart.Equal(start) {
+		t.Fatalf("direct bookings = %d at %s, want one at %s", store.addAtCalls, store.addAtStart, start)
+	}
+}
+
 type adminBookingRestartStore struct {
 	Store
-	state    ConversationState
-	services []ServiceView
-	slots    []AvailabilitySlot
+	state      ConversationState
+	services   []ServiceView
+	slots      []AvailabilitySlot
+	directSlot AvailabilitySlot
+	addAtCalls int
+	addAtStart time.Time
 }
 
 func (s *adminBookingRestartStore) RegisterOrUpdateUser(context.Context, UserRecord) (UserRecord, error) {
@@ -128,6 +187,23 @@ func (s *adminBookingRestartStore) ListFreeSlotsForServicesRange(context.Context
 
 func (s *adminBookingRestartStore) ListCachedAvailability(context.Context, int64) ([]AvailabilitySlot, error) {
 	return s.slots, nil
+}
+
+func (s *adminBookingRestartStore) CheckFreeSlotForServicesAtTime(context.Context, int64, []int, time.Time) (AvailabilitySlot, error) {
+	return s.directSlot, nil
+}
+
+func (s *adminBookingRestartStore) AddBookingForContactAtTime(_ context.Context, _ int64, _, _ string, _ []int, start time.Time) (BookingChangeResult, error) {
+	s.addAtCalls++
+	s.addAtStart = start
+	return BookingChangeResult{
+		Username: "arina", StartAt: start, EndAt: start.Add(30 * time.Minute), ServiceNames: []string{"Электро 30 мин"},
+	}, nil
+}
+
+func (s *adminBookingRestartStore) ClearConversationState(context.Context, int64) error {
+	s.state = ConversationState{}
+	return nil
 }
 
 type adminBookingRestartParser struct {

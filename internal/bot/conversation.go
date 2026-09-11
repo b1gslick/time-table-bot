@@ -24,7 +24,7 @@ func (b *Bot) handleConversation(ctx context.Context, chatID int64, user UserRec
 	// A complete new booking request must replace an unfinished booking draft.
 	// Otherwise it can be mistaken for a service-selection answer and retain the
 	// previous draft's client or appointment time.
-	if isAdmin(user.Role) && isAdminBookingConversation(state) && isExplicitAdminBookingRequest(text) {
+	if isAdmin(user.Role) && isAdminBookingConversation(state) && looksLikeFreshAdminBookingRequest(text) {
 		if handled, handleErr := b.handleAdminNaturalBooking(ctx, chatID, user, text); handled {
 			return true, handleErr
 		}
@@ -414,6 +414,18 @@ func (b *Bot) conversationBookingConfirm(ctx context.Context, chatID int64, user
 		}
 		return b.sendText(ctx, chatID, tr(user.Language, key))
 	default:
+		if state.PendingSlotIndex == adminBookingDirectSlot && isAdminAppointmentState(state) {
+			requested, parseErr := parseAdminBookingStart(state.FromDateTime, time.Local)
+			if parseErr != nil {
+				return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+			}
+			slot, slotErr := b.store.CheckFreeSlotForServicesAtTime(ctx, user.TelegramID, state.ServiceIndexes, requested)
+			if slotErr != nil {
+				state.PendingSlotIndex = 0
+				return b.continueAdminBookingDraft(ctx, chatID, user, state)
+			}
+			return b.sendBookingConfirmation(ctx, chatID, user, state, slot)
+		}
 		slots, err := b.store.ListCachedAvailability(ctx, user.TelegramID)
 		if err != nil || state.PendingSlotIndex <= 0 || state.PendingSlotIndex > len(slots) {
 			return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
@@ -487,18 +499,27 @@ func (b *Bot) conversationAdminBookingTime(ctx context.Context, chatID int64, us
 
 func (b *Bot) completePendingBooking(ctx context.Context, chatID int64, user UserRecord, state ConversationState) error {
 	index := state.PendingSlotIndex
-	if index <= 0 {
-		return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
-	}
 	var result BookingChangeResult
 	var err error
-	if isAdminAppointmentState(state) {
+	if index == adminBookingDirectSlot && isAdminAppointmentState(state) {
+		requested, parseErr := parseAdminBookingStart(state.FromDateTime, time.Local)
+		if parseErr != nil {
+			return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+		}
+		result, err = b.store.AddBookingForContactAtTime(ctx, user.TelegramID, state.ContactType, state.Username, state.ServiceIndexes, requested)
+	} else if index <= 0 {
+		return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
+	} else if isAdminAppointmentState(state) {
 		result, err = b.store.AddBookingForContactByIndex(ctx, user.TelegramID, state.ContactType, state.Username, index)
 	} else {
 		result, err = b.store.BookForUserByIndex(ctx, user.TelegramID, index)
 	}
 	if err != nil {
 		b.logger.Printf("conversation slot: book failed user=%d index=%d: %v", user.TelegramID, index, err)
+		if index == adminBookingDirectSlot && errors.Is(err, store.ErrSlotUnavailable) {
+			state.PendingSlotIndex = 0
+			return b.continueAdminBookingDraft(ctx, chatID, user, state)
+		}
 		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrInvalidArgument) {
 			return b.sendText(ctx, chatID, tr(user.Language, "book_need_schedule"))
 		}
