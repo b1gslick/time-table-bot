@@ -190,6 +190,13 @@ func TestMyBookingInlineKeyboards(t *testing.T) {
 	if got := move.InlineKeyboard[0][0].CallbackData; got != "mymove:42" {
 		t.Fatalf("move booking callback = %q, want mymove:42", got)
 	}
+	confirmCancel := reminderCancelConfirmKeyboard(LangRU, 42)
+	if got := confirmCancel.InlineKeyboard[0][0].CallbackData; got != "mycancel:42" {
+		t.Fatalf("reminder cancel confirmation callback = %q, want mycancel:42", got)
+	}
+	if got := confirmCancel.InlineKeyboard[1][0].CallbackData; got != "my:list" {
+		t.Fatalf("reminder keep-booking callback = %q, want my:list", got)
+	}
 	slots := moveSlotKeyboard(LangRU, 42, []AvailabilitySlot{{StartAt: start.Add(time.Hour), DurationMin: 30}})
 	if got := slots.InlineKeyboard[0][0].CallbackData; got != "moveslot:42:1" {
 		t.Fatalf("move slot callback = %q, want moveslot:42:1", got)

@@ -149,6 +149,13 @@ func bookingEditKeyboard(lang string, admin bool) *telegram.ReplyMarkup {
 	return &telegram.ReplyMarkup{InlineKeyboard: rows}
 }
 
+func reminderCancelConfirmKeyboard(lang string, bookingID int64) *telegram.ReplyMarkup {
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{{Text: tr(lang, "reminder_cancel_yes"), CallbackData: fmt.Sprintf("mycancel:%d", bookingID)}},
+		{{Text: tr(lang, "reminder_cancel_no"), CallbackData: "my:list"}},
+	}}
+}
+
 func calendarMenuKeyboard(lang string) *telegram.ReplyMarkup {
 	return menuKeyboard([][]string{
 		{tr(lang, "button_action_week"), tr(lang, "button_action_calendar")},

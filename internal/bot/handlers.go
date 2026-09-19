@@ -290,6 +290,12 @@ func (b *Bot) HandleCallback(ctx context.Context, cb *telegram.CallbackQuery) er
 	if cb.Data == "mycancel:list" {
 		return b.handleMyCancelListCallback(ctx, cb)
 	}
+	if strings.HasPrefix(cb.Data, "remindergo:") {
+		return b.handleReminderGoCallback(ctx, cb)
+	}
+	if strings.HasPrefix(cb.Data, "remindercancel:") {
+		return b.handleReminderCancelCallback(ctx, cb)
+	}
 	if cb.Data == "mymove:list" {
 		return b.handleMyMoveListCallback(ctx, cb)
 	}
@@ -523,6 +529,32 @@ func (b *Bot) handleMyMoveListCallback(ctx context.Context, cb *telegram.Callbac
 		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
 	}
 	return b.showMyMoveBookingPicker(ctx, cb.Message.Chat.ID, current)
+}
+
+func (b *Bot) handleReminderGoCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	rawID := strings.TrimPrefix(cb.Data, "remindergo:")
+	bookingID, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || bookingID <= 0 {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "book_failed"))
+	}
+	return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "reminder_go_ok"))
+}
+
+func (b *Bot) handleReminderCancelCallback(ctx context.Context, cb *telegram.CallbackQuery) error {
+	current, err := b.userFromCallback(ctx, cb)
+	if err != nil {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(LangRU, "register_failed"))
+	}
+	rawID := strings.TrimPrefix(cb.Data, "remindercancel:")
+	bookingID, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || bookingID <= 0 {
+		return b.sendText(ctx, cb.Message.Chat.ID, tr(current.Language, "my_cancel_failed"))
+	}
+	return b.sendTextWithKeyboard(ctx, cb.Message.Chat.ID, tr(current.Language, "reminder_cancel_confirm"), reminderCancelConfirmKeyboard(current.Language, bookingID))
 }
 
 func (b *Bot) handleMyCancelBookingCallback(ctx context.Context, cb *telegram.CallbackQuery) error {

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -122,9 +124,26 @@ type telegramSender struct {
 	client *telegram.Client
 }
 
-func (s telegramSender) SendMessage(ctx context.Context, chatID int64, text string) error {
-	return s.client.SendMessage(ctx, telegram.SendMessageRequest{
-		ChatID: chatID,
-		Text:   text,
-	})
+func (s telegramSender) SendReminder(ctx context.Context, reminder scheduler.Reminder) error {
+	req := telegram.SendMessageRequest{
+		ChatID: reminder.ChatID,
+		Text:   reminder.Text,
+	}
+	if reminder.BookingID > 0 && reminder.Kind == "day_before" && reminder.RecipientRole == "user" {
+		req.ReplyMarkup = reminderActionKeyboard(reminder.Text, reminder.BookingID)
+	}
+	return s.client.SendMessage(ctx, req)
+}
+
+func reminderActionKeyboard(text string, bookingID int64) *telegram.ReplyMarkup {
+	goText, cancelText := "Иду", "Отказаться"
+	if strings.HasPrefix(text, "Reminder:") {
+		goText, cancelText = "I'm coming", "Cancel"
+	}
+	return &telegram.ReplyMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{
+		{
+			{Text: goText, CallbackData: fmt.Sprintf("remindergo:%d", bookingID)},
+			{Text: cancelText, CallbackData: fmt.Sprintf("remindercancel:%d", bookingID)},
+		},
+	}}
 }

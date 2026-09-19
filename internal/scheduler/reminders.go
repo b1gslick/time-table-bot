@@ -7,13 +7,16 @@ import (
 )
 
 type Sender interface {
-	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendReminder(ctx context.Context, reminder Reminder) error
 }
 
 type Reminder struct {
-	ID     int64
-	ChatID int64
-	Text   string
+	ID            int64
+	BookingID     int64
+	ChatID        int64
+	Kind          string
+	RecipientRole string
+	Text          string
 }
 
 type Store interface {
@@ -68,7 +71,7 @@ func (s *Service) runTick(ctx context.Context) {
 	}
 
 	for _, reminder := range reminders {
-		if err := s.sender.SendMessage(ctx, reminder.ChatID, reminder.Text); err != nil {
+		if err := s.sender.SendReminder(ctx, reminder); err != nil {
 			s.logger.Printf("scheduler: send reminder #%d failed: %v", reminder.ID, err)
 			continue
 		}

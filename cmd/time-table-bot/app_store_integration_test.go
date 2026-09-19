@@ -1500,6 +1500,20 @@ WHERE booking_id = $1;
 	if adminDayBefore != 0 || userDayBefore != 1 || userHourBefore != 1 {
 		t.Fatalf("reminders = admin day %d, user day %d, user hour %d; want 0, 1, 1", adminDayBefore, userDayBefore, userHourBefore)
 	}
+	reminders, err := app.DueReminders(ctx, start.Add(-24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("DueReminders: %v", err)
+	}
+	if len(reminders) != 1 {
+		t.Fatalf("due reminders = %#v, want one user day-before reminder", reminders)
+	}
+	got := reminders[0]
+	if got.BookingID != booking.ID || got.ChatID != 3001 || got.Kind != "day_before" || got.RecipientRole != "user" {
+		t.Fatalf("due reminder metadata = %#v, want booking/user day_before", got)
+	}
+	if !strings.Contains(got.Text, "Выберите: иду или отказаться") {
+		t.Fatalf("day-before reminder text = %q, want action prompt", got.Text)
+	}
 }
 
 func TestAppStore_DailyAdminBookingSummary(t *testing.T) {

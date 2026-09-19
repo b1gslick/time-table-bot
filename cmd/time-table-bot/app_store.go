@@ -3215,7 +3215,7 @@ func (s *appStore) DueReminders(ctx context.Context, now time.Time, limit int) (
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, chat_id, payload
+SELECT id, COALESCE(booking_id, 0), chat_id, kind, recipient_role, payload
 FROM reminders
 WHERE sent_at IS NULL
   AND send_at <= $1
@@ -3239,7 +3239,7 @@ LIMIT $2;
 	items := make([]scheduler.Reminder, 0, limit)
 	for rows.Next() {
 		var r scheduler.Reminder
-		if err := rows.Scan(&r.ID, &r.ChatID, &r.Text); err != nil {
+		if err := rows.Scan(&r.ID, &r.BookingID, &r.ChatID, &r.Kind, &r.RecipientRole, &r.Text); err != nil {
 			return nil, err
 		}
 		items = append(items, r)
@@ -4737,9 +4737,9 @@ func splitServicePath(raw string) []string {
 
 func userReminderDayBefore(language string, startAt time.Time) string {
 	if language == bot.LangEN {
-		return fmt.Sprintf("Reminder: you have a booking on %s.", startAt.Format("02.01.2006 15:04"))
+		return fmt.Sprintf("Reminder: you have a booking on %s.\n\nPlease choose: coming or cancel.", startAt.Format("02.01.2006 15:04"))
 	}
-	return fmt.Sprintf("Напоминание: у вас запись %s.", startAt.Format("02.01.2006 15:04"))
+	return fmt.Sprintf("Напоминание: у вас запись %s.\n\nВыберите: иду или отказаться.", startAt.Format("02.01.2006 15:04"))
 }
 
 func userReminderHourBefore(language string, startAt time.Time) string {
